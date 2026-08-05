@@ -1,0 +1,1 @@
+{"type":"object","required":["stage","attempt_id","status","started_at","completed_at","dry_run","outputs","warnings"],"properties":{"stage":{"type":"string"},"attempt_id":{"type":"string"},"status":{"enum":["passed","failed","blocked","interrupted"]}}}

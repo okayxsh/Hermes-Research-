@@ -1,0 +1,1 @@
+{"experiment_id":"hermes-alfworld-rq1","environment":"alfworld_text","splits":{"acquisition":"train","pilot":"valid_seen","evaluation":"valid_unseen"},"retrieval":{"implementation":"hermes_native","custom_retriever":false},"evaluation":{"disable_memory":true,"disable_curator":true,"disable_skill_writes":true}}

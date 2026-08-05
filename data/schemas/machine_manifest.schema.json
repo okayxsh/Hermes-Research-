@@ -1,0 +1,1 @@
+{"type":"object","required":["generated_at","os","python","disk_free_gb"],"properties":{"generated_at":{"type":"string"},"os":{"type":"string"},"python":{"type":"string"}}}

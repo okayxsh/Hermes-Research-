@@ -1,0 +1,17 @@
+name: Documentation checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  markdown-present:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify required documentation files
+        run: |
+          test -f AGENTS.md
+          test -f docs/IMPLEMENTATION_STATUS.md
+          test -f docs/UNVERIFIED_INTEGRATIONS.md
+          test -f docs/PILOT_PROTOCOL.md

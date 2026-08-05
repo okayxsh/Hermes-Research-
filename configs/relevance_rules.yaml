@@ -1,0 +1,1 @@
+{"schema_version":1,"fields":["task_family","operation","required_state","goal_type","current_stage","preconditions"],"manual_audit_required":true,"status":"TO_BE_FROZEN_BEFORE_UNSEEN_EVALUATION"}

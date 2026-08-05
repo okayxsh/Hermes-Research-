@@ -1,0 +1,1 @@
+{"type":"object","required":["run_id","success","status"],"properties":{"success":{"type":"boolean"},"status":{"enum":["completed","failed","interrupted"]}}}

@@ -1,0 +1,1 @@
+{"type":"object","required":["skill_id","skill_name","creation_episode","creation_index","source_success"],"properties":{"source_success":{"const":true}}}

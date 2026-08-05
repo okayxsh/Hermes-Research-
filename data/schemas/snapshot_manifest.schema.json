@@ -1,0 +1,1 @@
+{"type":"object","required":["snapshot_id","skill_count","skills","directory_sha256","created_from_git_commit"],"properties":{"skill_count":{"type":"integer"},"skills":{"type":"array"}}}

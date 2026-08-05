@@ -1,0 +1,1 @@
+{"type":"object","required":["run_id","step","observation","selected_action","action_valid"],"properties":{"step":{"type":"integer"},"action_valid":{"type":"boolean"}}}

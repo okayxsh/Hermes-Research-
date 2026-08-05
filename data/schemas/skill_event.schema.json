@@ -1,0 +1,1 @@
+{"type":"object","required":["run_id","step","skill_id","event","relevant"],"properties":{"event":{"const":"skill_view"},"relevant":{"type":"boolean"}}}

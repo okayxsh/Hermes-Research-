@@ -1,0 +1,1 @@
+{"type":"object","required":["run_id","task_id","snapshot","profile","repetition","status"],"properties":{"run_id":{"type":"string"},"status":{"enum":["planned","claimed","running","completed","failed","interrupted","retry_planned","excluded","invalid"]}}}
