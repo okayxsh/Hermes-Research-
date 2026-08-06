@@ -119,3 +119,5 @@ RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
 ```
 
 Resume with the reported run ID and never substitute fake evidence for a blocked test. A `go` recommendation permits manual Phase 7 approval; it does not automatically freeze versions, counts, tasks, prompts, or recovery policy.
+
+If target relocation or native skill retrieval is not capability-observed, the relevant real handlers will produce immutable blocked evidence and the report remains `no_go`. Do not replace the controlled perturbation or retrieval-noise metric during execution; any alternative requires manual research-protocol approval.

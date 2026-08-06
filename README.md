@@ -39,7 +39,7 @@ python -m rq1.cli pilot run --mode fake
 python -m rq1.cli pilot status
 ```
 
-Fake completion validates `pilot_00` through `pilot_36` orchestration only and must retain `experimental_ready: false`. Real execution is reserved for Phase 7 and requires both `RQ1_RUN_REAL_PILOT_TESTS=1` and `--yes`; it installs and downloads nothing.
+Fake completion validates `pilot_00` through `pilot_36` orchestration only and must retain `experimental_ready: false`. Real execution is reserved for Phase 7 and requires both `RQ1_RUN_REAL_PILOT_TESTS=1` and `--yes`; it installs and downloads nothing. Each real pilot test has a capability-gated handler and reports its exact blocked dependency rather than using fake fallback.
 
 See [docs/PILOT_RUNNER.md](docs/PILOT_RUNNER.md) for selection, evidence, resume, artifacts, and university boundaries.
 

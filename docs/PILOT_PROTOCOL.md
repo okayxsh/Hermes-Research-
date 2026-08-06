@@ -23,4 +23,4 @@ python -m rq1.cli pilot plan --mode real
 RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
 ```
 
-Real mode installs, downloads, and pulls nothing. Missing capabilities become `blocked`; fake fallback is forbidden. `valid_unseen` is rejected before adapter calls. Pilot 27-29 use only disposable `train`/`valid_seen` resources and are not final acquisition or evaluation.
+Real mode installs, downloads, and pulls nothing. Each pilot has an explicit Phase 7 handler and capability record; missing Hermes dispatch, native skill events, ALFWorld, replay, perturbation, or solvability capabilities block only their dependent checks. Fake fallback is forbidden. `valid_unseen` is rejected before adapter calls. Pilot 27-29 use only disposable `train`/`valid_seen` resources and are not final acquisition or evaluation.

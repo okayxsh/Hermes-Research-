@@ -43,8 +43,12 @@ def build_decision(state: dict[str, Any]) -> GoNoGoDecision:
     if mode == PilotMode.FAKE:
         reasons = ("Fake execution validates runner orchestration only.", "Real Hermes, ALFWorld, and recovery evidence are required in Phase 7.")
         return GoNoGoDecision("no_go", False, reasons, mode)
-    if incomplete:
-        return GoNoGoDecision("no_go", False, (f"Blocking tests not passed: {', '.join(incomplete)}",), mode)
+    mandatory = ("pilot_03", "pilot_05", "pilot_06", "pilot_07", "pilot_08", "pilot_09", "pilot_12", "pilot_13", "pilot_16", "pilot_17", "pilot_18", "pilot_19", "pilot_21", "pilot_22", "pilot_23", "pilot_24", "pilot_32", "pilot_33")
+    missing_mandatory = [test_id for test_id in mandatory if state["tests"][test_id]["status"] != "passed"]
+    if incomplete or missing_mandatory:
+        reasons = [f"Blocking tests not passed: {', '.join(incomplete)}"] if incomplete else []
+        if missing_mandatory: reasons.append(f"Mandatory real-integrated gates missing: {', '.join(missing_mandatory)}")
+        return GoNoGoDecision("no_go", False, tuple(reasons), mode)
     return GoNoGoDecision("go", True, ("All blocking real pilot gates passed with validated evidence.",), mode)
 
 
@@ -66,6 +70,7 @@ def generate_reports(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     aggregate = {
         "schema_version": 1,
         "phase": 6,
+        "real_execution_phase": 7 if state["mode"] == "real" else None,
         "pilot_run_id": run_id,
         "generated_at": utc_now(),
         "mode": state["mode"],

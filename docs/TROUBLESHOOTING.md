@@ -75,6 +75,10 @@ This is expected until real ALFWorld is verified. The fake bridge confirms the H
 
 This is expected. `mock_orchestration_ready: true` means all 37 runner contracts completed; `pilot_ready` and `experimental_ready` remain false until Phase 7 records real integrated evidence.
 
+### A Phase 7 real pilot test is blocked
+
+Read the attempt's `block_code`, capability snapshot, and remediation rather than rerunning the entire sequence. Common expected blocks are unavailable Ollama, unsupported Hermes dispatch, missing native skill events, missing approved task trajectories, and unsupported target relocation. A block is evidence that a required external surface was not observed; do not work around it with fake mode or a changed recovery protocol.
+
 ### Resume or retry a pilot
 
 Use `python -m rq1.cli pilot status`, then `pilot resume --run-id <id>`. Ordinary resume does not rerun failed tests; use `pilot retry-failed --run-id <id>`. Real runs require the same opt-in and `--yes`. Every retry preserves prior evidence under a new attempt ID.

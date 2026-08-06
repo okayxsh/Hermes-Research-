@@ -90,6 +90,23 @@ def _capabilities(index: int) -> tuple[CapabilityRequirement, ...]:
     )
 
 
+def _prerequisites(index: int) -> tuple[str, ...]:
+    """Real execution uses capability dependencies, not a misleading linear chain."""
+    edges = {
+        0: (), 1: ("pilot_00",), 2: ("pilot_01",), 3: ("pilot_02",), 4: ("pilot_03",),
+        5: ("pilot_02",), 6: ("pilot_05",), 7: ("pilot_06",), 8: ("pilot_05",),
+        9: ("pilot_05",), 10: ("pilot_09",), 11: ("pilot_05",), 12: ("pilot_02",),
+        13: ("pilot_06", "pilot_12"), 14: ("pilot_13",), 15: ("pilot_14",), 16: ("pilot_15",),
+        17: ("pilot_16",), 18: ("pilot_17",), 19: ("pilot_18",), 20: ("pilot_19",),
+        21: ("pilot_20", "pilot_09"), 22: ("pilot_21", "pilot_10"), 23: ("pilot_22",),
+        24: ("pilot_13", "pilot_17", "pilot_23"), 25: ("pilot_08",), 26: ("pilot_12",),
+        27: ("pilot_03", "pilot_10"), 28: ("pilot_27",), 29: ("pilot_28", "pilot_23"),
+        30: ("pilot_02",), 31: ("pilot_30",), 32: ("pilot_03", "pilot_12"),
+        33: ("pilot_09", "pilot_29"), 34: ("pilot_03", "pilot_32"), 35: ("pilot_24", "pilot_33"), 36: (),
+    }
+    return edges[index]
+
+
 def _cleanup(index: int) -> CleanupPolicy:
     return CleanupPolicy.EXPLICIT_DESTRUCTIVE if index in {8, 9, 10, 11, 21, 22, 23, 27, 28, 29} else CleanupPolicy.NONE
 
@@ -100,7 +117,7 @@ PILOT_TESTS = tuple(
         name=name,
         purpose=name,
         group=_group(index),
-        prerequisites=(() if index in {0, 36} else (f"pilot_{index - 1:02d}",)),
+        prerequisites=_prerequisites(index),
         supported_modes=(PilotMode.FAKE, PilotMode.REAL),
         required_capabilities=_capabilities(index),
         timeout_seconds=_timeout(index),

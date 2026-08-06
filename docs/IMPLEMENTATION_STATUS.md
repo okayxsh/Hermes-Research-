@@ -13,6 +13,7 @@
 - Phase 4 typed profile plans, fake isolated profile lifecycle, contamination checks, profile manifests/archives, recovery-profile template, and capability-gated real-profile boundary.
 - Phase 5 deterministic fake recovery controller: checkpoint policies/manifests, canonical observable-state digests, explicit reset-and-replay, fake target relocation, solvability boundary, recovery contexts, and append-only recovery evidence.
 - Phase 6 typed `pilot_00`-`pilot_36` catalog, atomic run state, immutable attempt evidence, resume/retry boundaries, six-family fake runtime, capability-gated real runtime, mini-workflow instrumentation, and capability/runtime/protocol/go-no-go reports.
+- Phase 7 handler-routed real pilot boundary: per-test capability snapshots and precise blocked outcomes for model, Hermes, profile, ALFWorld, recovery, resilience, and disposable mini-workflow checks. It has installed-like fixture coverage only.
 
 The fake bridge is sufficient for installation-plumbing verification only. It is not evidence of real ALFWorld compatibility.
 

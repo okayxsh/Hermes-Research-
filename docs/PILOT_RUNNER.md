@@ -6,7 +6,7 @@
 
 Each test attempt has a unique ID and immutable `attempt-report.json` plus hashed raw evidence. Pilot state under `state/pilot_runs/` is resumable control state, not scientific evidence. Episode, pilot-attempt, and recovery bindings are additive SQLite records.
 
-Fake evidence is always `simulated` and cannot satisfy installed or real gates. Real mode re-probes capabilities and blocks if the installed setup, approved task list, Hermes surface, real ALFWorld adapter, or real recovery operation is unavailable.
+Fake evidence is always `simulated` and cannot satisfy installed or real gates. Real mode re-probes capabilities per test and preserves a fresh capability snapshot in immutable attempt evidence. It blocks with the named missing surface if the installed setup, approved task list, Hermes surface, real ALFWorld adapter, replay, perturbation, native skill event, or real recovery operation is unavailable.
 
 ## Execution
 
@@ -28,4 +28,4 @@ python -m rq1.cli pilot plan --mode real
 RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
 ```
 
-This command installs and downloads nothing, never uses `valid_unseen`, and never modifies personal/default Hermes profiles. Phase 7 supplies real installed-version evidence and performs the manual freeze after a go recommendation.
+This command installs and downloads nothing, never uses `valid_unseen`, and never modifies personal/default Hermes profiles. `experimental_ready` requires real model, Hermes dispatch, profile isolation, ALFWorld, replay, perturbation, solvability, recovery, skill-event, reconciliation, and runtime evidence; it does not freeze the protocol automatically.
