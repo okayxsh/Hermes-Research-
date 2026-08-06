@@ -5,3 +5,5 @@ Freeze `valid_unseen` task IDs, checkpoints, perturbations, recovery context, an
 `valid_unseen` metadata discovery is blocked until the approved real pilot and environment/protocol freezes exist. The repository never reads unseen instructions, outcomes, or trajectories for pilot calibration, relevance-rule design, or perturbation design.
 
 Final execution additionally requires an immutable evaluation activation manifest, `--yes`, and `RQ1_RUN_FINAL_EVALUATION=1`. The default configuration remains disabled; a changed YAML boolean cannot authorize an unseen task. Any evidence or capability drift invalidates activation and requires fresh manual approval.
+
+After validated execution, `rq1 analysis validate-inputs --evaluation-run <id>` must pass before computation. The report must account for every frozen paired unit, preserve exclusions, reconcile logs, prove read-only profiles/no skill writes, and expose post-failure boundaries. Analysis never reads task data directly or reruns a model/environment.

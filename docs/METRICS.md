@@ -1,3 +1,3 @@
 # Metrics
 
-Primary metrics: task success rate, retrieval-noise rate, relevant-skill hit rate, actions to completion, and invalid-action rate. A retrieval event means full skill content was actually loaded/viewed. Report no-retrieval separately; latency is a separate metric, not noise.
+Primary final metrics are calculated only by `rq1 analysis` from a validated, activated real evaluation report. Conditional recovery rate is successful valid, solvable, plan-invalidated post-failure episodes divided by eligible budget-complete episodes. Retrieval noise is irrelevant post-failure `skill_loaded`/legacy `skill_view` events divided by auditable relevant-or-irrelevant loads; repeated loads count and no-retrieval is reported separately. Relevant-skill hit rate is relevant-load episodes divided by episodes where a relevant skill is evidenced as available. Actions, invalid actions, tool/model calls, latency, and first-useful/relevant-event time retain null when unavailable.

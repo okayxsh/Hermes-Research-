@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["run_id","attempt_id","task_id","checkpoint_digest","perturbation_digest","recovery_context_digest","snapshot_id","snapshot_hash","recovery_success"],"properties":{"recovery_success":{"type":"boolean"}}}

@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["run_id","attempt_id","category","reason","scientific_failure","protocol_invalidation"]}

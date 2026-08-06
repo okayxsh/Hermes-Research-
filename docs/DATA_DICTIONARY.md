@@ -10,3 +10,5 @@
 - Pilot evidence: a schema-validated artifact path and SHA-256 hash labelled `static`, `mock`, `installed`, `real_component`, or `real_integrated`; mock evidence cannot satisfy a real gate.
 - Recovery evidence binding: additive registry link from run/attempt to checkpoint, perturbation, profile, snapshot, recovery log, and result.
 - Snapshot: skill list/count, order, hashes, source library, and Git revision.
+- Analysis record: one validated post-failure recovery attempt linked to immutable result and Hermes logs, paired-state digests, snapshot hash/count, efficiency measurements, and no fabricated runtime fields.
+- Analysis exclusion: preserved non-analysable attempt with scientific-failure, infrastructure-failure, or protocol-invalidation classification and reason.

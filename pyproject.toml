@@ -11,6 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 alfworld = ["alfworld==0.4.2"]
+analysis = ["matplotlib==3.9.4"]
 
 [project.scripts]
 rq1 = "rq1.cli:main"

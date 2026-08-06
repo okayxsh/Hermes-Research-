@@ -551,6 +551,33 @@ def command_final_derived(root: Path, command: str) -> int:
     raise RuntimeError(f"{command} is blocked until a validated final evaluation report exists; no derived scientific artifact was produced.")
 
 
+def command_analysis(root: Path, args: argparse.Namespace) -> int:
+    """Offline final analysis.  This function intentionally has no runtime clients."""
+    from rq1.analysis.pipeline import AnalysisInputError, compute_metrics, validate_inputs, write_analysis
+    from rq1.analysis.figures import FigureDependencyError, generate_figures
+    validation = validate_inputs(root, args.evaluation_run)
+    if args.analysis_command == "validate-inputs":
+        print(json.dumps({"valid": validation.valid, "errors": list(validation.errors), "records": len(validation.records), "exclusions": [item.to_dict() for item in validation.exclusions]}, indent=2, sort_keys=True))
+        return 0 if validation.valid else 1
+    if not validation.valid:
+        print(json.dumps({"valid": False, "errors": list(validation.errors)}, indent=2), file=sys.stderr)
+        return 1
+    metrics = compute_metrics(validation, args.resampling_seed)
+    output = write_analysis(root, validation, metrics, args.resampling_seed)
+    if args.analysis_command == "figures":
+        try:
+            figures = generate_figures(output)
+        except FigureDependencyError as exc:
+            print(json.dumps({"valid": False, "output": str(output.relative_to(root)), "error": str(exc)}, indent=2), file=sys.stderr)
+            return 1
+        print(json.dumps({"valid": True, "output": str(output.relative_to(root)), "figures": [str(item.relative_to(root)) for item in figures]}, indent=2)); return 0
+    if args.analysis_command == "run-all":
+        try: figures = [str(item.relative_to(root)) for item in generate_figures(output)]
+        except FigureDependencyError: figures = []
+        print(json.dumps({"valid": True, "output": str(output.relative_to(root)), "figures": figures, "figures_pending_optional_dependency": not bool(figures)}, indent=2)); return 0
+    print(json.dumps({"valid": True, "output": str(output.relative_to(root)), "command": args.analysis_command}, indent=2)); return 0
+
+
 def _task_manifest(path: Path):
     from rq1.tasks.models import TaskManifest, TaskRecord
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -754,7 +781,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("run", "resume"):
         item = evaluation_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--activation-manifest", required=True); item.add_argument("--yes", action="store_true")
     item = evaluation_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
-    sub.add_parser("analysis", help="Generate final analysis only from validated evaluation artifacts.")
+    analysis = sub.add_parser("analysis", help="Offline controlled-recovery analysis from validated final evidence only.")
+    analysis_sub = analysis.add_subparsers(dest="analysis_command", required=True)
+    for name in ("validate-inputs", "compute", "audit-sample", "figures", "report", "run-all"):
+        item = analysis_sub.add_parser(name); item.add_argument("--evaluation-run", required=True); item.add_argument("--resampling-seed", type=int, default=20260806)
     sub.add_parser("report-assets", help="Generate final report assets only from validated analysis.")
     sub.add_parser("archive", help="Archive final reproducibility package only from validated outputs.")
     stage = sub.add_parser("stage")
@@ -791,7 +821,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "acquisition": return command_acquisition(root, args)
         if args.command == "snapshots": return command_snapshots(root, args)
         if args.command == "evaluation": return command_evaluation(root, args)
-        if args.command in {"analysis", "report-assets", "archive"}: return command_final_derived(root, args.command)
+        if args.command == "analysis": return command_analysis(root, args)
+        if args.command in {"report-assets", "archive"}: return command_final_derived(root, args.command)
         if args.command == "stage": return _run_stage(root, args.name, args.dry_run)
         if args.command == "run-until": return command_run_until(root, args.stage, args.dry_run)
     except (RuntimeError, SetupError, StageTransitionError, FileNotFoundError) as exc:

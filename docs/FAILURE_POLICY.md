@@ -5,3 +5,5 @@ Freeze this policy before final evaluation. Malformed calls get one repair attem
 The Phase 6 runner resumes only between pilot tests. Stale running tests become `interrupted`; blocked capabilities are re-probed; and retries create new immutable attempts. Live service termination is never automated by fake failure tests.
 
 If a final-evaluation activation validation detects drift, it writes an immutable invalidation record. The activation is never silently repaired or reactivated; a reviewed approval and a new activation are required.
+
+Analysis fails closed on unvalidated activation/evaluation evidence, missing pairs, snapshot or configuration drift, unreconciled logs, profile contamination, skill writes, or absent post-failure boundaries. Excluded raw data is retained and classified; it is never silently dropped.

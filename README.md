@@ -34,6 +34,8 @@ Real task manifests are created only from installed-data metadata through the ca
 
 Final `valid_unseen` recovery evaluation is additionally disabled until a separate immutable activation manifest validates all real pilot, freeze, task, acquisition, snapshot, profile, and recovery evidence. It requires an explicit runtime opt-in and is not exercised during local development.
 
+Once a real final evaluation has been validated, its saved logs can be analysed offline with `python -m rq1.cli analysis validate-inputs --evaluation-run <id>` and `python -m rq1.cli analysis run-all --evaluation-run <id>`. These commands cannot start models, Hermes, or ALFWorld, and they reject fake/pilot-only or incomplete evidence.
+
 ## Recovery-aware pilot runner
 
 ```bash
