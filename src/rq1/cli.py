@@ -127,6 +127,25 @@ def command_bridge_server(root: Path, host: str, port: int) -> int:
         server.server_close()
 
 
+def command_hermes_capabilities(root: Path) -> int:
+    from rq1.hermes.capabilities import probe_hermes_capabilities
+
+    report = probe_hermes_capabilities(project_root=root)
+    path = root / "artifacts" / "manifests" / "hermes_integration_capabilities.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({"capabilities": report.to_dict(), "report": str(path.relative_to(root))}, indent=2, sort_keys=True))
+    return 0
+
+
+def command_verify_hermes_integration(root: Path, mode: str) -> int:
+    from rq1.hermes.verification import verify_fake_hermes_integration, verify_real_hermes_integration
+
+    report = verify_fake_hermes_integration(root) if mode == "fake" else verify_real_hermes_integration(root)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("mock_integration") or report.get("real_plugin_loading") else 1
+
+
 def _setup_options(args: argparse.Namespace) -> SetupOptions:
     return SetupOptions(
         dry_run=bool(getattr(args, "dry_run", False)),
@@ -223,6 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     bridge = sub.add_parser("bridge-server", help="Run the fake ALFWorld bridge on localhost.")
     bridge.add_argument("--host", default="127.0.0.1")
     bridge.add_argument("--port", type=int, default=8000)
+    sub.add_parser("hermes-capabilities", help="Probe Hermes read-only capability evidence without modifying Hermes.")
+    hermes_verify = sub.add_parser("verify-hermes-integration", help="Verify the project Hermes boundary in fake or explicitly opted-in real mode.")
+    hermes_verify.add_argument("--mode", choices=("fake", "real"), required=True)
     setup = sub.add_parser("setup-machine", help="Run the resumable Ubuntu machine setup.")
     _add_setup_options(setup)
     setup_stage = sub.add_parser("setup-stage", help="Run one machine-setup stage.")
@@ -250,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate-config": return command_validate_config(root)
         if args.command == "mock-run": return command_mock(root)
         if args.command == "bridge-server": return command_bridge_server(root, args.host, args.port)
+        if args.command == "hermes-capabilities": return command_hermes_capabilities(root)
+        if args.command == "verify-hermes-integration": return command_verify_hermes_integration(root, args.mode)
         if args.command == "setup-machine": return command_setup_machine(root, _setup_options(args))
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))

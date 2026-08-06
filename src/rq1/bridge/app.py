@@ -10,7 +10,13 @@ from urllib.parse import urlparse
 
 from rq1.bridge.environment import FakeALFWorldAdapter, real_adapter_capability
 from rq1.bridge.episode_manager import BridgeError, EpisodeManager
-from rq1.bridge.models import EpisodeStartRequest, EpisodeStepRequest, HealthResponse, RequestValidationError
+from rq1.bridge.models import (
+    CorrelationMetadata,
+    EpisodeStartRequest,
+    EpisodeStepRequest,
+    HealthResponse,
+    RequestValidationError,
+)
 
 
 def _decode_json(handler: BaseHTTPRequestHandler, required: bool = True) -> dict[str, Any]:
@@ -44,6 +50,7 @@ def create_bridge_server(
         def do_POST(self) -> None:  # noqa: N802
             try:
                 path = urlparse(self.path).path
+                correlation = CorrelationMetadata.from_headers(self.headers)
                 if path == "/health":
                     payload = _decode_json(self, required=False)
                     if payload:
@@ -51,19 +58,19 @@ def create_bridge_server(
                     capability = real_adapter_capability()
                     response = HealthResponse(True, "fake", episode_manager.active_episode_count, capability.available, capability.details).to_dict()
                 elif path == "/episode/start":
-                    response = episode_manager.start(EpisodeStartRequest.from_payload(_decode_json(self))).to_dict()
+                    response = episode_manager.start(EpisodeStartRequest.from_payload(_decode_json(self)), correlation).to_dict()
                 elif path == "/episode/step":
                     request = EpisodeStepRequest.from_payload(_decode_json(self))
-                    response = episode_manager.step(request.episode_id, request.action).to_dict()
+                    response = episode_manager.step(request.episode_id, request.action, correlation).to_dict()
                 elif path.endswith("/abort") and path.startswith("/episode/"):
                     reason = _decode_json(self, required=False).get("reason")
                     if reason is not None and (not isinstance(reason, str) or not reason.strip()):
                         raise RequestValidationError("reason must be a non-empty string when provided")
-                    response = episode_manager.abort(_episode_id(path, "abort"), reason).to_dict()
+                    response = episode_manager.abort(_episode_id(path, "abort"), reason, correlation).to_dict()
                 elif path.endswith("/reset") and path.startswith("/episode/"):
                     if _decode_json(self, required=False):
                         raise BridgeError(422, "reset does not accept request fields")
-                    response = episode_manager.reset(_episode_id(path, "reset")).to_dict()
+                    response = episode_manager.reset(_episode_id(path, "reset"), correlation).to_dict()
                 else:
                     raise BridgeError(404, "Unknown route")
                 self._write(HTTPStatus.OK, response)
@@ -77,8 +84,9 @@ def create_bridge_server(
         def do_GET(self) -> None:  # noqa: N802
             try:
                 path = urlparse(self.path).path
+                correlation = CorrelationMetadata.from_headers(self.headers)
                 if path.startswith("/episode/") and path.endswith("/status"):
-                    self._write(HTTPStatus.OK, episode_manager.status(_episode_id(path, "status")).to_dict())
+                    self._write(HTTPStatus.OK, episode_manager.status(_episode_id(path, "status"), correlation).to_dict())
                 else:
                     raise BridgeError(404, "Unknown route")
             except BridgeError as exc:

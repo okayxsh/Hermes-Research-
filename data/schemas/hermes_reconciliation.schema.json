@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","ok","episode_ids","actions","counts","mismatches"],"properties":{"schema_version":{"type":"integer"},"ok":{"type":"boolean"},"episode_ids":{"type":"object"},"actions":{"type":"object"},"counts":{"type":"object"},"mismatches":{"type":"array","items":{"type":"string"}}}}

@@ -690,7 +690,7 @@ def _verify_fake_bridge(ctx: StageContext) -> dict[str, Any]:
         status = read_json_response(f"{base}/episode/{episode_id}/status", None, 5)
         reset = read_json_response(f"{base}/episode/{episode_id}/reset", b"{}", 5)
         abort = read_json_response(f"{base}/episode/{episode_id}/abort", json.dumps({"reason": "installation verification"}).encode(), 5)
-        return {"healthy": health.get("available") is True, "episode_id": episode_id, "step_number": stepped.get("step_number"), "status_step_number": status.get("step_number"), "reset_count": reset.get("reset_count"), "aborted": abort.get("aborted"), "raw_event_log": ctx.portable(log_root / f"{episode_id}.jsonl")}
+        return {"healthy": health.get("bridge_available") is True, "episode_id": episode_id, "step_number": stepped.get("step_number"), "status_step_number": status.get("step_number"), "reset_count": reset.get("reset_count"), "aborted": abort.get("aborted"), "raw_event_log": ctx.portable(log_root / f"{episode_id}.jsonl")}
     finally:
         server.shutdown()
         server.server_close()

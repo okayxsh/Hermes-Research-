@@ -9,7 +9,7 @@ This repository intentionally separates an implemented contract from evidence th
 | Ollama | No live installation or serving test | Recorded version and installer hash, responsive localhost API, model metadata, and deterministic raw-inference smoke test. |
 | Hermes Agent | No live installation or CLI test | Recorded version/help output, clean `hermes doctor`, verified local-model configuration path, and capability manifest. |
 | Hermes profiles | Command shape derived from current official docs, not locally executed | Isolated `rq1-pilot` and `rq1-acquisition` homes, `--no-skills` evidence, unchanged default profile, and profile-specific configuration checks. |
-| Hermes plugin/tools/hooks | Placeholder boundary only | Installed-version schema probes and raw tool-call/hook evidence from the pilot. |
+| Hermes plugin/tools/hooks | Project-local capability-gated plugin and fake contract tests | Installed-version probe, explicit project-plugin discovery, raw tool-call/hook evidence, and a real registry dispatch on the pilot machine. |
 | ALFWorld package | Package discoverability probe only | Pinned package install, metadata/import checks, and clean downloader discovery. |
 | ALFWorld data | No download or dataset validation | Data inventory, size/count checks, digest, and successful task loading from the configured data directory. |
 | Fake bridge | Unit, contract, and local HTTP integration coverage | Already suitable for fake installation verification, but not for a real compatibility claim. |
@@ -25,6 +25,6 @@ A skip flag means "do not mutate this capability," not "pretend it passed." A sk
 
 ## Evidence boundary
 
-Fake bridge verification exercises health, start, step, status, reset, and abort over the local HTTP contract. It does not load ALFWorld data, run an ALFWorld environment, validate Hermes tools, or establish end-to-end compatibility.
+Fake bridge verification exercises health, start, step, status, reset, and abort over the local HTTP contract. Phase 3 fake Hermes verification additionally exercises its local tool boundary and evidence reconciliation. Neither run loads ALFWorld data, runs an ALFWorld environment, loads installed Hermes, captures native skills, or establishes end-to-end compatibility.
 
 Before operational use, preserve installed versions, installer hashes, command help, capability probes, model metadata, profile-isolation evidence, bridge logs, ALFWorld data inventory, and machine/software/model manifests. The exact real-ALFWorld pilot gate is an actual start → step → reset cycle; package import alone is insufficient.

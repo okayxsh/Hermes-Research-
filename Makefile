@@ -1,4 +1,4 @@
-.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test
+.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real
 
 help:
 	@python -m rq1.cli --help
@@ -32,3 +32,12 @@ mock:
 
 test:
 	@python -m unittest discover -s tests -v
+
+hermes-capabilities:
+	@python -m rq1.cli hermes-capabilities
+
+verify-hermes-fake:
+	@python -m rq1.cli verify-hermes-integration --mode fake
+
+verify-hermes-real:
+	@RQ1_RUN_REAL_HERMES_TESTS=1 python -m rq1.cli verify-hermes-integration --mode real

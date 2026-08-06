@@ -15,7 +15,11 @@ def invalid_action_rate(steps: Iterable[Mapping[str, Any]]) -> float | None:
 
 
 def retrieval_noise_rate(events: Iterable[Mapping[str, Any]]) -> float | None:
-    loads = [item for item in events if item.get("event") == "skill_view"]
+    loads = [
+        item
+        for item in events
+        if item.get("event") in {"skill_view", "skill_selected", "skill_loaded", "skill_managed"}
+    ]
     return None if not loads else sum(not bool(item.get("relevant")) for item in loads) / len(loads)
 
 

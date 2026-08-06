@@ -1,0 +1,3 @@
+name: alfworld-experiment
+version: "0.1.0"
+description: Capability-gated localhost ALFWorld bridge tools for the RQ1 experiment.

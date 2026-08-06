@@ -1,19 +1,17 @@
-"""Compatibility imports for the Phase 3 Hermes integration boundary."""
+"""Capability-gated Hermes-to-local-bridge integration boundary."""
 
 from rq1.hermes.adapter import FakeHermesAdapter, HermesAdapter, RealHermesAdapter
 from rq1.hermes.capabilities import HermesCapabilityReport, probe_hermes_capabilities
-from rq1.integrations.contracts import UnverifiedAdapter
-
-
-def unverified_hermes_adapter() -> UnverifiedAdapter:
-    return UnverifiedAdapter("Hermes")
-
+from rq1.hermes.models import HermesToolResult, ToolValidationError
+from rq1.hermes.reconcile import reconcile_evidence
 
 __all__ = [
     "FakeHermesAdapter",
     "HermesAdapter",
     "HermesCapabilityReport",
+    "HermesToolResult",
     "RealHermesAdapter",
+    "ToolValidationError",
     "probe_hermes_capabilities",
-    "unverified_hermes_adapter",
+    "reconcile_evidence",
 ]

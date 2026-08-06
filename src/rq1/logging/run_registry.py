@@ -25,6 +25,17 @@ class Run:
     attempt_id: str | None = None
 
 
+@dataclass(frozen=True)
+class EpisodeBinding:
+    run_id: str
+    attempt_id: str
+    episode_id: str
+    session_id: str | None
+    profile: str | None
+    hermes_log_path: str | None
+    bridge_log_path: str | None
+
+
 class RunRegistry:
     def __init__(self, database: Path) -> None:
         self.database = database
@@ -49,6 +60,14 @@ class RunRegistry:
                     status TEXT NOT NULL, attempt_id TEXT, machine_id TEXT,
                     claimed_at TEXT, started_at TEXT, completed_at TEXT,
                     result_path TEXT, error_type TEXT, retry_of TEXT, exclusion_reason TEXT
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS episode_bindings (
+                    run_id TEXT NOT NULL, attempt_id TEXT NOT NULL, episode_id TEXT NOT NULL,
+                    session_id TEXT, profile TEXT, hermes_log_path TEXT, bridge_log_path TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, attempt_id, episode_id)
                 )
             """)
 
@@ -108,3 +127,31 @@ class RunRegistry:
         self.initialize()
         with self.connection() as connection:
             return connection.execute("SELECT * FROM runs ORDER BY run_id").fetchall()
+
+    def bind_episode(self, binding: EpisodeBinding) -> None:
+        self.initialize()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO episode_bindings
+                (run_id, attempt_id, episode_id, session_id, profile, hermes_log_path, bridge_log_path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    binding.run_id,
+                    binding.attempt_id,
+                    binding.episode_id,
+                    binding.session_id,
+                    binding.profile,
+                    binding.hermes_log_path,
+                    binding.bridge_log_path,
+                    utc_now(),
+                ),
+            )
+
+    def episode_bindings(self, run_id: str | None = None) -> list[sqlite3.Row]:
+        self.initialize()
+        with self.connection() as connection:
+            if run_id is None:
+                return connection.execute("SELECT * FROM episode_bindings ORDER BY created_at, episode_id").fetchall()
+            return connection.execute(
+                "SELECT * FROM episode_bindings WHERE run_id=? ORDER BY created_at, episode_id", (run_id,)
+            ).fetchall()
