@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["activation_id","status","repository_commit","pilot_report_sha256","evaluation_task_manifest_sha256","approval_file_sha256","content_sha256"],"properties":{"status":{"enum":["active","invalidated"]},"evidence":{"type":"array"}}}

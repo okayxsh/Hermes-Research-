@@ -513,11 +513,36 @@ def command_snapshots(root: Path, args: argparse.Namespace) -> int:
 
 
 def command_evaluation(root: Path, args: argparse.Namespace) -> int:
+    if args.evaluation_command == "activation":
+        from rq1.evaluation.activation import ActivationError, build_activation, invalidate, prerequisite_report, validate_activation, write_activation
+        command = args.activation_command
+        if command == "plan":
+            print(json.dumps({"dry_run": True, "default_enabled": False, "required_evidence": ["real pilot go", "frozen evaluation tasks", "validated acquisition/snapshots/profiles/recovery"]}, indent=2)); return 0
+        if command == "prerequisites":
+            refs, reasons = prerequisite_report(root, {}); print(json.dumps({"valid": not reasons, "reasons": reasons, "references": [item.to_dict() for item in refs]}, indent=2)); return 0 if not reasons else 1
+        if command in {"validate", "status"}:
+            payload = json.loads(Path(args.activation_manifest).read_text(encoding="utf-8"))
+            from rq1.evaluation.activation import ActivationManifest, EvidenceReference
+            payload["evidence"] = tuple(EvidenceReference(**item) for item in payload["evidence"])
+            result = validate_activation(root, ActivationManifest(**payload))
+            invalidation = None
+            if result and command == "validate": invalidation = invalidate(root, Path(args.activation_manifest), "automatic drift: " + "; ".join(result))
+            print(json.dumps({"valid": not result, "reasons": result, "status": payload.get("status"), "invalidation": str(invalidation.relative_to(root)) if invalidation else None}, indent=2)); return 0 if not result else 1
+        if command == "invalidate":
+            if not args.yes: raise RuntimeError("Activation invalidation requires --yes")
+            path = invalidate(root, Path(args.activation_manifest), args.reason); print(json.dumps({"invalidated": str(path.relative_to(root))}, indent=2)); return 0
+        if not args.yes: raise RuntimeError("Activation requires --yes")
+        approval = json.loads(Path(args.approval_file).read_text(encoding="utf-8")); evidence = approval.get("evidence_paths", {})
+        manifest = build_activation(root, approval, evidence); path = write_activation(root, manifest)
+        print(json.dumps({"ok": True, "activation": str(path.relative_to(root)), "manifest": manifest.to_dict()}, indent=2)); return 0
     if args.evaluation_command == "profiles" and args.evaluation_profiles_command == "plan":
         from rq1.freeze.validation import validate_final_gates
         print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "profile_pattern": "rq1-recovery-<snapshot-id>"}, indent=2)); return 0
     _final_gate(root)
     if not getattr(args, "yes", False): raise RuntimeError("Final evaluation mutation requires --yes")
+    if args.evaluation_command in {"run", "resume"}:
+        from rq1.evaluation.runner import run_final_evaluation
+        run_final_evaluation(root, Path(args.activation_manifest))
     raise RuntimeError("Final evaluation is capability-gated: validated snapshots, read-only profile materialization, and real recovery/perturbation evidence are required; no valid_unseen task was started.")
 
 
@@ -714,13 +739,20 @@ def build_parser() -> argparse.ArgumentParser:
     snapshots_sub.add_parser("validate")
     evaluation = sub.add_parser("evaluation", help="Final paired controlled-recovery evaluation.")
     evaluation_sub = evaluation.add_subparsers(dest="evaluation_command", required=True)
+    activation = evaluation_sub.add_parser("activation", help="Inspect or manually activate the final evaluation gate.")
+    activation_sub = activation.add_subparsers(dest="activation_command", required=True)
+    activation_sub.add_parser("plan"); activation_sub.add_parser("prerequisites")
+    for name in ("validate", "status"):
+        item = activation_sub.add_parser(name); item.add_argument("--activation-manifest", required=True)
+    item = activation_sub.add_parser("activate"); item.add_argument("--approval-file", required=True); item.add_argument("--yes", action="store_true")
+    item = activation_sub.add_parser("invalidate"); item.add_argument("--activation-manifest", required=True); item.add_argument("--reason", required=True); item.add_argument("--yes", action="store_true")
     evaluation_profiles = evaluation_sub.add_parser("profiles").add_subparsers(dest="evaluation_profiles_command", required=True)
     evaluation_profiles.add_parser("plan")
     item = evaluation_profiles.add_parser("create"); item.add_argument("--yes", action="store_true")
     evaluation_queue = evaluation_sub.add_parser("queue").add_subparsers(dest="evaluation_queue_command", required=True)
     item = evaluation_queue.add_parser("generate"); item.add_argument("--yes", action="store_true")
     for name in ("run", "resume"):
-        item = evaluation_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--yes", action="store_true")
+        item = evaluation_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--activation-manifest", required=True); item.add_argument("--yes", action="store_true")
     item = evaluation_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
     sub.add_parser("analysis", help="Generate final analysis only from validated evaluation artifacts.")
     sub.add_parser("report-assets", help="Generate final report assets only from validated analysis.")

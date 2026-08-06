@@ -137,3 +137,7 @@ Every final runner revalidates both freezes, the clean Git commit, frozen model/
 ## 11. Task discovery and freezing
 
 With installed ALFWorld data, use `python -m rq1.cli tasks capabilities`, then discover/propose only the permitted split. Real `valid_unseen` metadata is inaccessible during pilot calibration and becomes available only after the approved final-stage gate. Never copy IDs into the committed placeholders manually.
+
+## 12. Evaluation activation
+
+After every prerequisite artifact is reviewed and frozen, inspect `python -m rq1.cli evaluation activation prerequisites`. Activation requires a separate approval file and `--yes`; execution additionally requires `RQ1_RUN_FINAL_EVALUATION=1` and the exact activation-manifest path. Do not interpret activation code or a YAML flag as permission to run the final experiment.

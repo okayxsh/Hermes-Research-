@@ -32,6 +32,8 @@ python -m rq1.cli alfworld index --split valid_seen
 
 Real task manifests are created only from installed-data metadata through the capability-gated `rq1 tasks` commands. The committed task lists remain empty placeholders until approved freezes; fake fixtures are never promoted to real IDs.
 
+Final `valid_unseen` recovery evaluation is additionally disabled until a separate immutable activation manifest validates all real pilot, freeze, task, acquisition, snapshot, profile, and recovery evidence. It requires an explicit runtime opt-in and is not exercised during local development.
+
 ## Recovery-aware pilot runner
 
 ```bash
