@@ -11,6 +11,7 @@ from rq1.orchestration.locks import StageLock
 from rq1.orchestration.reports import completed_report
 from rq1.orchestration.stages import STAGE_MAP
 from rq1.orchestration.state_registry import StageRegistry, StageTransitionError
+from rq1.pilot.models import EvidenceLevel
 from rq1.runners.mock import run_mock_workflow
 from rq1.setup.models import SETUP_STAGE_MAP, SetupOptions
 from rq1.setup.orchestrator import SetupError, SetupOrchestrator
@@ -267,6 +268,69 @@ def command_recovery(root: Path, args: argparse.Namespace) -> int:
     print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
 
 
+def _pilot_selection(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "test_id": getattr(args, "test_id", None),
+        "group": getattr(args, "group", None),
+        "start": getattr(args, "start", None),
+        "end": getattr(args, "end", None),
+        "include_prerequisites": bool(getattr(args, "include_prerequisites", False)),
+    }
+
+
+def _authorize_real_pilot(args: argparse.Namespace) -> None:
+    if not bool(getattr(args, "yes", False)):
+        raise RuntimeError("Real pilot execution requires --yes; use `rq1 pilot plan --mode real` first")
+    if os.environ.get("RQ1_RUN_REAL_PILOT_TESTS") != "1":
+        raise RuntimeError("Real pilot execution requires RQ1_RUN_REAL_PILOT_TESTS=1")
+
+
+def command_pilot(root: Path, args: argparse.Namespace) -> int:
+    from rq1.pilot.catalog import PILOT_GROUPS, PILOT_TEST_MAP, select_tests
+    from rq1.pilot.models import EvidenceLevel, PilotMode
+    from rq1.pilot.registry import PilotRegistry
+    from rq1.pilot.report import generate_reports
+    from rq1.pilot.runner import PilotRunner, add_manual_evidence, catalog_payload
+
+    command = args.pilot_command
+    if command == "list":
+        print(json.dumps(catalog_payload(), indent=2, sort_keys=True)); return 0
+    if command == "prerequisites":
+        spec = PILOT_TEST_MAP.get(args.test_id)
+        if spec is None: raise RuntimeError(f"Unknown pilot test: {args.test_id}")
+        print(json.dumps({"test": spec.to_dict(), "prerequisites": list(spec.prerequisites)}, indent=2, sort_keys=True)); return 0
+    if command == "plan":
+        selected = select_tests(**_pilot_selection(args))
+        print(json.dumps({"mode": args.mode, "dry_run": True, "groups": PILOT_GROUPS, "tests": [item.to_dict() for item in selected], "mutations": []}, indent=2, sort_keys=True)); return 0
+    registry = PilotRegistry(root)
+    if command == "run":
+        if args.dry_run:
+            selected = select_tests(**_pilot_selection(args))
+            print(json.dumps({"mode": args.mode, "dry_run": True, "tests": [item.test_id for item in selected], "mutations": []}, indent=2)); return 0
+        mode = PilotMode(args.mode)
+        if mode == PilotMode.REAL: _authorize_real_pilot(args)
+        result = PilotRunner(root).create_and_run(mode, candidate_model=args.candidate_model, **_pilot_selection(args))
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["mock_orchestration_ready"] or result["experimental_ready"] else 1
+    if command in {"resume", "retry-failed"}:
+        run_id = args.run_id
+        state = registry.load(run_id)
+        if state["mode"] == "real": _authorize_real_pilot(args)
+        result = PilotRunner(root).resume(run_id, retry_failed=command == "retry-failed")
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result["mock_orchestration_ready"] or result["experimental_ready"] else 1
+    run_id = getattr(args, "run_id", None) or registry.latest()
+    if not run_id: raise RuntimeError("No pilot run is available")
+    if command == "status":
+        print(json.dumps(registry.load(run_id), indent=2, sort_keys=True)); return 0
+    if command == "report":
+        report = generate_reports(root, registry.load(run_id)); print(json.dumps(report, indent=2, sort_keys=True)); return 0
+    if command == "evidence":
+        evidence = add_manual_evidence(root, run_id, args.test_id, Path(args.path), EvidenceLevel(args.level))
+        print(json.dumps(evidence, indent=2, sort_keys=True)); return 0
+    raise RuntimeError(f"Unsupported pilot command: {command}")
+
+
 def _setup_options(args: argparse.Namespace) -> SetupOptions:
     return SetupOptions(
         dry_run=bool(getattr(args, "dry_run", False)),
@@ -386,6 +450,39 @@ def build_parser() -> argparse.ArgumentParser:
     recovery_verify = recovery_sub.add_parser("verify"); recovery_verify.add_argument("--mode", choices=("fake", "real"), required=True)
     for name in ("validate-checkpoint", "validate-perturbation"):
         command = recovery_sub.add_parser(name); command.add_argument("manifest")
+    pilot = sub.add_parser("pilot", help="Run the typed recovery-aware Phase 6 pilot.")
+    pilot_sub = pilot.add_subparsers(dest="pilot_command", required=True)
+    pilot_sub.add_parser("list")
+    pilot_prerequisites = pilot_sub.add_parser("prerequisites")
+    pilot_prerequisites.add_argument("--test", dest="test_id", required=True)
+    def add_pilot_selection(command: argparse.ArgumentParser) -> None:
+        selection = command.add_mutually_exclusive_group()
+        selection.add_argument("--test", dest="test_id")
+        selection.add_argument("--group")
+        selection.add_argument("--from", dest="start")
+        command.add_argument("--to", dest="end")
+        command.add_argument("--include-prerequisites", action="store_true")
+    pilot_plan = pilot_sub.add_parser("plan")
+    pilot_plan.add_argument("--mode", choices=("fake", "real"), required=True)
+    add_pilot_selection(pilot_plan)
+    pilot_run = pilot_sub.add_parser("run")
+    pilot_run.add_argument("--mode", choices=("fake", "real"), required=True)
+    pilot_run.add_argument("--candidate-model", choices=("hermes3:8b", "llama3.1:8b"), default="hermes3:8b")
+    pilot_run.add_argument("--dry-run", action="store_true")
+    pilot_run.add_argument("--yes", action="store_true")
+    pilot_run.add_argument("--confirm-destructive", action="store_true")
+    add_pilot_selection(pilot_run)
+    for name in ("resume", "retry-failed"):
+        command = pilot_sub.add_parser(name)
+        command.add_argument("--run-id", required=True)
+        command.add_argument("--yes", action="store_true")
+        command.add_argument("--confirm-destructive", action="store_true")
+    for name in ("status", "report"):
+        command = pilot_sub.add_parser(name); command.add_argument("--run-id")
+    evidence = pilot_sub.add_parser("evidence")
+    evidence.add_argument("action", choices=("add",))
+    evidence.add_argument("--run-id", required=True); evidence.add_argument("--test", dest="test_id", required=True)
+    evidence.add_argument("--path", required=True); evidence.add_argument("--level", choices=tuple(item.value for item in EvidenceLevel), required=True)
     setup = sub.add_parser("setup-machine", help="Run the resumable Ubuntu machine setup.")
     _add_setup_options(setup)
     setup_stage = sub.add_parser("setup-stage", help="Run one machine-setup stage.")
@@ -417,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-hermes-integration": return command_verify_hermes_integration(root, args.mode)
         if args.command == "profiles": return command_profiles(root, args)
         if args.command == "recovery": return command_recovery(root, args)
+        if args.command == "pilot": return command_pilot(root, args)
         if args.command == "setup-machine": return command_setup_machine(root, _setup_options(args))
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))

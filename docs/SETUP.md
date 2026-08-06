@@ -99,3 +99,5 @@ Reports must omit usernames, hostnames, IP addresses, serial numbers, credential
 Stage 09 may start the existing deterministic fake bridge on an ephemeral localhost port and exercise health, start, step, status, reset, and abort. Passing that check validates only the local HTTP contract and installation plumbing.
 
 Before a real pilot may start, the capability-gated real adapter must use the installed ALFWorld package and downloaded data to complete a real episode start, one valid step, and an explicit reset. Until that exact gate passes, the report must keep `pilot_ready: false`, `real_integration_tested: false`, and real ALFWorld compatibility `unverified`.
+
+After installation verification, use `python -m rq1.cli pilot plan --mode real`. The Phase 6 runner never repairs installation state or downloads a missing capability; it records a structured blocked pilot test and leaves remediation to setup or the Phase 7 installed-version adapter task.

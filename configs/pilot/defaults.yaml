@@ -1,0 +1,1 @@
+{"schema_version":1,"primary_model":"hermes3:8b","fallback_model":"llama3.1:8b","pilot_split":"valid_seen","mini_acquisition_split":"train","forbidden_split":"valid_unseen","timeouts":{"probe":60,"static":180,"model_hermes":300,"episode_recovery":900,"mini_workflow":3600},"health_status_retry_limit":1,"mutation_retry_limit":0,"protocol_status":"UNFROZEN_UNTIL_PHASE7"}

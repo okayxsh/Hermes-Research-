@@ -65,6 +65,16 @@ Treat these as separate failures:
 
 This is expected until real ALFWorld is verified. The fake bridge confirms the HTTP contract and setup plumbing. The pilot remains blocked until the real adapter performs start → step → reset using actual ALFWorld data on the target machine.
 
+## Pilot runner failures
+
+### Fake Phase 6 passes but returns no-go
+
+This is expected. `mock_orchestration_ready: true` means all 37 runner contracts completed; `pilot_ready` and `experimental_ready` remain false until Phase 7 records real integrated evidence.
+
+### Resume or retry a pilot
+
+Use `python -m rq1.cli pilot status`, then `pilot resume --run-id <id>`. Ordinary resume does not rerun failed tests; use `pilot retry-failed --run-id <id>`. Real runs require the same opt-in and `--yes`. Every retry preserves prior evidence under a new attempt ID.
+
 ## Safe reporting
 
 Failures should end as `failed` or `blocked` with the probe name, redacted diagnostics, and a next action. If output contains credentials, tokens, usernames, hostnames, IP addresses, serial numbers, or environment values, do not copy it into committed documentation or reports.

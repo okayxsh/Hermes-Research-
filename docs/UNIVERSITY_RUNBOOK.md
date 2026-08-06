@@ -108,3 +108,14 @@ If the package, downloader, data, real adapter, or expected runtime behavior is 
 ## 8. Handoff
 
 Preserve the installation report, manifests, stage reports, repository revision, and raw gate logs. Do not publish credentials or machine-identifying details. Proceed to the separate pilot protocol only after both readiness fields and all required evidence have been reviewed.
+
+## 9. Phase 7 real pilot and freeze
+
+Phase 6 prepares the runner but does not create real evidence. On the approved machine:
+
+```bash
+python -m rq1.cli pilot plan --mode real
+RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
+```
+
+Resume with the reported run ID and never substitute fake evidence for a blocked test. A `go` recommendation permits manual Phase 7 approval; it does not automatically freeze versions, counts, tasks, prompts, or recovery policy.

@@ -24,6 +24,8 @@ Build a reproducible controlled-recovery experiment: determine whether a persist
 - Do not claim real Hermes or ALFWorld compatibility from mocks. Capability-gate unverified external behaviour.
 - Record Git revision, machine manifest, configuration, attempt ID, outputs, errors, and the next allowed command.
 - Analysis must run solely from saved logs.
+- Phase 6 fake pilot success is mock orchestration evidence only. Phase 7 is the real university pilot and environment/recovery-protocol freeze.
+- Pilot mini acquisition and snapshots are disposable artifacts; never promote them into final acquisition, snapshots, recovery profiles, or evaluation data.
 
 ## Validation rules
 

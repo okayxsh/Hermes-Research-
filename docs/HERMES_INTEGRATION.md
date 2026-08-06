@@ -57,3 +57,5 @@ RQ1_RUN_REAL_HERMES_TESTS=1 python -m rq1.cli verify-hermes-integration --mode r
 ```
 
 It never installs Hermes, modifies normal profiles, downloads models/data, or calls an LLM. It can prove project-plugin discovery only when a compatible Hermes CLI is already installed. Real tool dispatch, native skill capture, real ALFWorld, and Hermes-to-ALFWorld compatibility remain unverified until observed on the university machine.
+
+The Phase 6 pilot catalog consumes this boundary for plugin, dispatch, native-skill, integrated-loop, and reconciliation tests. Fake pilot events remain `simulated`; real-mode tests block unless the installed-version adapter exposes the required observed surface.

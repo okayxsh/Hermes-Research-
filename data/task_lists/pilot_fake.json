@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "split": "valid_seen",
+  "simulated": true,
+  "tasks": [
+    {"task_id": "fake-pick-and-place-001", "task_family": "pick_and_place"},
+    {"task_id": "fake-pick-two-001", "task_family": "pick_two_and_place"},
+    {"task_id": "fake-look-at-001", "task_family": "look_at_object"},
+    {"task_id": "fake-clean-and-place-001", "task_family": "clean_and_place"},
+    {"task_id": "fake-heat-and-place-001", "task_family": "heat_and_place"},
+    {"task_id": "fake-cool-and-place-001", "task_family": "cool_and_place"}
+  ]
+}

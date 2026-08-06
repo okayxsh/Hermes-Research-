@@ -52,7 +52,21 @@ class FakeALFWorldAdapter:
 
     def _family(self) -> str:
         assert self._request is not None
-        families = ("heat_and_place", "clean_and_place", "pick_and_place")
+        fixture_families = {
+            "fake-pick-and-place": "pick_and_place",
+            "fake-pick-two": "pick_two_and_place",
+            "fake-look-at": "look_at_object",
+            "fake-clean-and-place": "clean_and_place",
+            "fake-heat-and-place": "heat_and_place",
+            "fake-cool-and-place": "cool_and_place",
+        }
+        for prefix, family in fixture_families.items():
+            if self._request.task_id.startswith(prefix):
+                return family
+        families = (
+            "pick_and_place", "pick_two_and_place", "look_at_object",
+            "clean_and_place", "heat_and_place", "cool_and_place",
+        )
         digest = hashlib.sha256(f"{self._request.task_id}:{self._request.seed}".encode("utf-8")).digest()
         return families[digest[0] % len(families)]
 

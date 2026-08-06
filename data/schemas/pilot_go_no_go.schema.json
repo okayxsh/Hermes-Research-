@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["decision","experimental_ready","reasons","generated_from_mode"],"properties":{"decision":{"enum":["go","no_go"]},"experimental_ready":{"type":"boolean"},"generated_from_mode":{"enum":["fake","real"]}}}

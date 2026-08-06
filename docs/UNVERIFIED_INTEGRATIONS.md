@@ -15,6 +15,7 @@ This repository intentionally separates an implemented contract from evidence th
 | Fake bridge | Unit, contract, and local HTTP integration coverage | Already suitable for fake installation verification, but not for a real compatibility claim. |
 | Real ALFWorld bridge | Capability-gated and unavailable | Actual start → step → reset through the real adapter on the target machine. |
 | Real controlled recovery | Deterministic fake recovery contract only | Observed real checkpoint replay equality, supported perturbation, validated solvability, and reconciled recovery evidence. |
+| Phase 6 full pilot | Deterministic 37-test runner and fake evidence only | Phase 7 real-mode reports showing all blocking installed, real-component, and real-integrated gates passed. |
 | `hermes3:8b` | Candidate identifier only | Ollama pull metadata/digest and a successful raw inference smoke test. |
 | `llama3.1:8b` fallback | Optional candidate identifier only | Explicit fallback installation flag, recorded digest, and separate smoke-test evidence. |
 
@@ -25,6 +26,8 @@ Missing executables, packages, data, models, unsupported command help, unavailab
 A skip flag means "do not mutate this capability," not "pretend it passed." A skipped requirement may be accepted only when a fresh probe confirms an existing valid installation; otherwise `installation_ready` and `pilot_ready` remain false.
 
 ## Evidence boundary
+
+Manual pilot evidence is copied as validated JSON, hashed, and appended to a named pilot test. It cannot override a failed automated validator or promote fake evidence to real evidence.
 
 Fake bridge verification exercises health, start, step, status, reset, and abort over the local HTTP contract. Phase 3 fake Hermes verification additionally exercises its local tool boundary and evidence reconciliation. Neither run loads ALFWorld data, runs an ALFWorld environment, loads installed Hermes, captures native skills, or establishes end-to-end compatibility.
 

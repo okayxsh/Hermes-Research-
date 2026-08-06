@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["schema_version","pilot_run_id","mode","measurements","simulated"],"properties":{"schema_version":{"const":1},"measurements":{"type":"object"},"simulated":{"type":"boolean"}}}

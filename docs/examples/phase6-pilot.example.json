@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "phase": 6,
+  "pilot_run_id": "phase6-fake-example",
+  "mode": "fake",
+  "mock_orchestration_ready": true,
+  "pilot_ready": false,
+  "real_integrated": false,
+  "experimental_ready": false,
+  "go_no_go": {"decision": "no_go", "experimental_ready": false, "reasons": ["Mock evidence only."], "generated_from_mode": "fake"},
+  "protocol_frozen": false,
+  "phase7_required": true
+}

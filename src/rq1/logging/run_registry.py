@@ -36,6 +36,28 @@ class EpisodeBinding:
     bridge_log_path: str | None
 
 
+@dataclass(frozen=True)
+class PilotAttemptBinding:
+    pilot_run_id: str
+    pilot_test_id: str
+    attempt_id: str
+    mode: str
+    status: str
+    report_path: str
+
+
+@dataclass(frozen=True)
+class RecoveryEvidenceBinding:
+    run_id: str
+    attempt_id: str
+    checkpoint_id: str | None
+    perturbation_id: str | None
+    profile: str | None
+    snapshot: str | None
+    recovery_log_path: str | None
+    result_path: str | None
+
+
 class RunRegistry:
     def __init__(self, database: Path) -> None:
         self.database = database
@@ -68,6 +90,21 @@ class RunRegistry:
                     session_id TEXT, profile TEXT, hermes_log_path TEXT, bridge_log_path TEXT,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, attempt_id, episode_id)
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS pilot_attempt_bindings (
+                    pilot_run_id TEXT NOT NULL, pilot_test_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
+                    mode TEXT NOT NULL, status TEXT NOT NULL, report_path TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY (pilot_run_id, pilot_test_id, attempt_id)
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS recovery_evidence_bindings (
+                    run_id TEXT NOT NULL, attempt_id TEXT NOT NULL, checkpoint_id TEXT,
+                    perturbation_id TEXT, profile TEXT, snapshot TEXT, recovery_log_path TEXT,
+                    result_path TEXT, created_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, attempt_id)
                 )
             """)
 
@@ -154,4 +191,45 @@ class RunRegistry:
                 return connection.execute("SELECT * FROM episode_bindings ORDER BY created_at, episode_id").fetchall()
             return connection.execute(
                 "SELECT * FROM episode_bindings WHERE run_id=? ORDER BY created_at, episode_id", (run_id,)
+            ).fetchall()
+
+    def bind_pilot_attempt(self, binding: PilotAttemptBinding) -> None:
+        self.initialize()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT INTO pilot_attempt_bindings
+                (pilot_run_id, pilot_test_id, attempt_id, mode, status, report_path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (binding.pilot_run_id, binding.pilot_test_id, binding.attempt_id, binding.mode,
+                 binding.status, binding.report_path, utc_now()),
+            )
+
+    def pilot_attempt_bindings(self, pilot_run_id: str | None = None) -> list[sqlite3.Row]:
+        self.initialize()
+        with self.connection() as connection:
+            if pilot_run_id is None:
+                return connection.execute("SELECT * FROM pilot_attempt_bindings ORDER BY created_at").fetchall()
+            return connection.execute(
+                "SELECT * FROM pilot_attempt_bindings WHERE pilot_run_id=? ORDER BY created_at", (pilot_run_id,)
+            ).fetchall()
+
+    def bind_recovery_evidence(self, binding: RecoveryEvidenceBinding) -> None:
+        self.initialize()
+        with self.connection() as connection:
+            connection.execute(
+                """INSERT OR REPLACE INTO recovery_evidence_bindings
+                (run_id, attempt_id, checkpoint_id, perturbation_id, profile, snapshot,
+                 recovery_log_path, result_path, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (binding.run_id, binding.attempt_id, binding.checkpoint_id, binding.perturbation_id,
+                 binding.profile, binding.snapshot, binding.recovery_log_path, binding.result_path, utc_now()),
+            )
+
+    def recovery_evidence_bindings(self, run_id: str | None = None) -> list[sqlite3.Row]:
+        self.initialize()
+        with self.connection() as connection:
+            if run_id is None:
+                return connection.execute("SELECT * FROM recovery_evidence_bindings ORDER BY created_at").fetchall()
+            return connection.execute(
+                "SELECT * FROM recovery_evidence_bindings WHERE run_id=? ORDER BY created_at", (run_id,)
             ).fetchall()

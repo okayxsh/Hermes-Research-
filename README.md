@@ -2,7 +2,7 @@
 
 This repository provides a reproducible foundation for a controlled-recovery experiment: whether a persistent agent's naturally accumulated skill library helps it recover from plan-invalidating ALFWorld failures or creates post-failure retrieval noise. The public documentation intentionally describes implementation boundaries without claiming untested integrations.
 
-The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, and a capability-gated project-local Hermes plugin boundary. Hermes, Ollama, models, ALFWorld data/runtime, the real bridge adapter, and real Hermes plugin dispatch remain unverified.
+The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, a capability-gated project-local Hermes plugin boundary, and the typed Phase 6 pilot runner. Hermes, Ollama, models, ALFWorld data/runtime, the real bridge adapter, and real Hermes plugin dispatch remain unverified.
 
 ## Local development quick start
 
@@ -22,6 +22,19 @@ python -m rq1.cli bridge-server --host 127.0.0.1 --port 8000
 ```
 
 This bridge validates the local HTTP contract only; it does not run ALFWorld.
+
+## Recovery-aware pilot runner
+
+```bash
+python -m rq1.cli pilot list
+python -m rq1.cli pilot plan --mode fake
+python -m rq1.cli pilot run --mode fake
+python -m rq1.cli pilot status
+```
+
+Fake completion validates `pilot_00` through `pilot_36` orchestration only and must retain `experimental_ready: false`. Real execution is reserved for Phase 7 and requires both `RQ1_RUN_REAL_PILOT_TESTS=1` and `--yes`; it installs and downloads nothing.
+
+See [docs/PILOT_RUNNER.md](docs/PILOT_RUNNER.md) for selection, evidence, resume, artifacts, and university boundaries.
 
 ## Hermes boundary
 
@@ -48,5 +61,6 @@ Typed setup orchestration, the master script, thin stage wrappers, machine-reada
 - Installation verification may use the deterministic fake bridge to test health, start, step, status, reset, and abort.
 - Real ALFWorld support remains unverified until the real adapter passes an actual start → step → reset test with installed data on the target university machine.
 - Missing external capabilities must produce clean failed or blocked reports, never fabricated success or an unhandled traceback.
+- Bounded mini acquisition/snapshot/evaluation checks are disposable pilot instrumentation and never populate final experiment outputs.
 
 See [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md), [docs/UNVERIFIED_INTEGRATIONS.md](docs/UNVERIFIED_INTEGRATIONS.md), and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) before attempting external setup.

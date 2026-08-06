@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["path","sha256","level","validator","created_at","simulated"],"properties":{"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"level":{"enum":["static","mock","installed","real_component","real_integrated","experimental_ready"]},"simulated":{"type":"boolean"}}}

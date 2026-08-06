@@ -11,8 +11,11 @@
 - A project-local, opt-in Hermes plugin boundary with five bridge-backed tools, strict local validation, local-only HTTP enforcement, correlation headers, fake adapter/event coverage, run-registry bindings, reconciliation, and fake/real verification commands.
 - Phase 4 typed profile plans, fake isolated profile lifecycle, contamination checks, profile manifests/archives, recovery-profile template, and capability-gated real-profile boundary.
 - Phase 5 deterministic fake recovery controller: checkpoint policies/manifests, canonical observable-state digests, explicit reset-and-replay, fake target relocation, solvability boundary, recovery contexts, and append-only recovery evidence.
+- Phase 6 typed `pilot_00`-`pilot_36` catalog, atomic run state, immutable attempt evidence, resume/retry boundaries, six-family fake runtime, capability-gated real runtime, mini-workflow instrumentation, and capability/runtime/protocol/go-no-go reports.
 
 The fake bridge is sufficient for installation-plumbing verification only. It is not evidence of real ALFWorld compatibility.
+
+The complete fake Phase 6 sequence may pass all 37 tests while correctly returning `no_go`, `pilot_ready: false`, and `experimental_ready: false`. Phase 7 is the real university pilot and freeze.
 
 ## Installation workflow status
 
