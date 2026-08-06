@@ -27,6 +27,6 @@ class AnalysisAndIntegrityTests(unittest.TestCase):
     def test_schemas_are_json(self) -> None:
         schema_root = Path(__file__).resolve().parents[1] / "data" / "schemas"
         schemas = list(schema_root.glob("*.json"))
-        self.assertEqual(8, len(schemas))
+        self.assertGreaterEqual(len(schemas), 11)
         for schema in schemas:
             self.assertIsInstance(json.loads(schema.read_text(encoding="utf-8")), dict)

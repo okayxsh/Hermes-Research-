@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "status",
+    "installation_ready",
+    "pilot_ready",
+    "real_integration_tested",
+    "stages",
+    "attempts"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "status": {"enum": ["pending", "passed", "failed", "blocked", "skipped"]},
+    "installation_ready": {"type": "boolean"},
+    "pilot_ready": {"const": false},
+    "real_integration_tested": {"const": false},
+    "compatibility_claim": {"type": "string"},
+    "stages": {"type": "object"},
+    "attempts": {"type": "array"},
+    "readiness": {"type": "object"}
+  }
+}

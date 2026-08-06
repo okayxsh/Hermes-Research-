@@ -6,8 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "hermes-alfworld-rq1"
 version = "0.1.0"
 description = "Reproducible agent-environment experiment foundation"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = []
+
+[project.optional-dependencies]
+alfworld = ["alfworld==0.4.2"]
 
 [project.scripts]
 rq1 = "rq1.cli:main"

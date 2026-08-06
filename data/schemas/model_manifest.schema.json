@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "primary", "fallback_policy", "models"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "primary": {"const": "hermes3:8b"},
+    "fallback_policy": {"const": "explicit-flag-only"},
+    "models": {"type": "object"}
+  }
+}
