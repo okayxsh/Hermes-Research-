@@ -14,8 +14,13 @@ from rq1.utils.ids import new_attempt_id
 from rq1.utils.time import utc_now
 
 def real_recovery_capabilities() -> dict[str, object]:
-    return {"real_adapter_available": False, "reset_replay_supported": False, "state_observation_supported": False,
-        "internal_state_supported": False, "perturbation_supported": False, "status": "TO_BE_VERIFIED_BY_RECOVERY_PILOT"}
+    from rq1.bridge.environment import real_adapter_capability
+    capability = real_adapter_capability()
+    return {"real_adapter_available": capability.real_adapter_ready,
+        "reset_replay_supported": capability.real_reset_supported and capability.deterministic_replay_candidate,
+        "state_observation_supported": capability.admissible_actions_observable,
+        "internal_state_supported": False, "perturbation_supported": capability.target_relocation_supported,
+        "status": "TO_BE_VERIFIED_BY_RECOVERY_PILOT", "alfworld_capabilities": capability.to_dict()}
 
 def verify_fake_recovery(root: Path) -> dict[str, object]:
     env = FakeRecoveryEnvironment(); trajectory = env.reference_trajectory()

@@ -103,11 +103,13 @@ class AdapterState:
     observation: str
     inventory: tuple[str, ...]
     admissible_actions: tuple[str, ...]
-    reward: int
+    reward: int | float
     step_number: int
     done: bool
-    success: bool
+    success: bool | None
     action_valid: bool | None = None
+    field_sources: dict[str, str] | None = None
+    freshness: str = "observed"
 
 
 @dataclass(frozen=True)
@@ -120,20 +122,24 @@ class EpisodeResponse:
     observation: str
     inventory: tuple[str, ...]
     admissible_actions: tuple[str, ...]
-    reward: int
+    reward: int | float
     step_number: int
     action_count: int
     action_limit: int
     done: bool
-    success: bool
+    success: bool | None
     aborted: bool
     reset_count: int
     action_valid: bool | None = None
+    field_sources: dict[str, str] | None = None
+    freshness: str = "observed"
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["inventory"] = list(self.inventory)
         value["admissible_actions"] = list(self.admissible_actions)
+        if self.field_sources is None:
+            value.pop("field_sources")
         return value
 
 

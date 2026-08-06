@@ -4,6 +4,7 @@
 
 - Repository layout, configuration templates, stage state/report foundations, locks, SQLite run claiming, synthetic episode flow, metrics, snapshot validation, leakage checks, schemas, and CI.
 - A standard-library localhost HTTP bridge backed by a deterministic fake ALFWorld adapter.
+- A capability-gated, version-specific ALFWorld 0.4.2 text adapter with deterministic installed-data indexing, cached real status, explicit field-source limitations, and an opt-in smoke-test CLI. It has injected-fixture coverage only.
 - Fake bridge health, start, step, status, abort, reset, action limits, unique episode IDs, raw JSONL event logs, contract tests, and concurrent-episode integration tests.
 - Typed machine-setup options, stage-result models, setup-stage dependency definitions, command redaction, subprocess abstraction, and a setup-state registry.
 - Typed setup orchestration and stage handlers for preflight, system packages, Python, Ollama, Hermes, ALFWorld package/data, candidate models, base profiles, and installation verification.
@@ -31,7 +32,7 @@ No real apt packages, Ollama service, Hermes Agent installation, model pull, ALF
 - Ollama serving or `hermes3:8b` inference
 - Hermes installation, configuration, profiles, real tools, hooks, plugin discovery, or plugin behavior
 - ALFWorld 0.4.2 imports, downloader output, task data, or runtime API
-- the real bridge adapter
+- live real bridge execution or real controlled recovery
 
 Missing external capabilities must remain clean, structured `failed` or `blocked` states with remediation rather than tracebacks or fabricated passes.
 

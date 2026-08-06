@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 from dataclasses import replace
 
 from rq1.bridge.models import AdapterState, EpisodeStartRequest
-from rq1.integrations.contracts import CapabilityResult
+from rq1.bridge.adapters.alfworld_v042 import RealALFWorldAdapter
+from rq1.bridge.adapters.capabilities import ALFWorldCapabilityReport, probe_alfworld_capabilities
 
 
 class FakeALFWorldAdapter:
@@ -100,17 +100,6 @@ class FakeALFWorldAdapter:
         )
 
 
-def real_adapter_capability() -> CapabilityResult:
-    """Check only package discoverability; no ALFWorld import or data access occurs."""
-    found = importlib.util.find_spec("alfworld") is not None
-    if found:
-        return CapabilityResult(False, None, "ALFWorld package detected, but its API and data are unverified by the pilot.")
-    return CapabilityResult(False, None, "ALFWorld package is not installed; real bridge remains unverified and unavailable.")
-
-
-class RealALFWorldAdapter:
-    """Fails closed until a later capability-informed real implementation exists."""
-
-    def __init__(self) -> None:
-        details = real_adapter_capability().details
-        raise RuntimeError(f"Real ALFWorld adapter is unavailable: {details}")
+def real_adapter_capability() -> ALFWorldCapabilityReport:
+    """Return structured local capability evidence; it never claims live compatibility."""
+    return probe_alfworld_capabilities()

@@ -13,7 +13,7 @@ This repository intentionally separates an implemented contract from evidence th
 | ALFWorld package | Package discoverability probe only | Pinned package install, metadata/import checks, and clean downloader discovery. |
 | ALFWorld data | No download or dataset validation | Data inventory, size/count checks, digest, and successful task loading from the configured data directory. |
 | Fake bridge | Unit, contract, and local HTTP integration coverage | Already suitable for fake installation verification, but not for a real compatibility claim. |
-| Real ALFWorld bridge | Capability-gated and unavailable | Actual start → step → reset through the real adapter on the target machine. |
+| Real ALFWorld bridge | Version-specific 0.4.2 adapter code and injected-fixture tests; no live execution | Capability report plus immutable `valid_seen` start → step → status → reset → abort evidence on the target machine. |
 | Real controlled recovery | Deterministic fake recovery contract only | Observed real checkpoint replay equality, supported perturbation, validated solvability, and reconciled recovery evidence. |
 | Phase 6 full pilot | Deterministic 37-test runner and fake evidence only | Phase 7 real-mode reports showing all blocking installed, real-component, and real-integrated gates passed. |
 | `hermes3:8b` | Candidate identifier only | Ollama pull metadata/digest and a successful raw inference smoke test. |

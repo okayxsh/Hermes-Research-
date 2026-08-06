@@ -114,18 +114,73 @@ def command_mock(root: Path) -> int:
     return 0
 
 
-def command_bridge_server(root: Path, host: str, port: int) -> int:
-    """Run the Phase 2 fake bridge explicitly; this never selects real ALFWorld."""
+def command_bridge_server(root: Path, host: str, port: int, mode: str = "fake", yes: bool = False) -> int:
+    """Run fake mode by default; real serving is explicit and capability-gated."""
     from rq1.bridge.app import create_bridge_server
-
-    server = create_bridge_server(root / "runs" / "pilot" / "bridge", host=host, port=port)
-    print(json.dumps({"status": "serving", "mode": "fake", "host": host, "port": server.server_port}))
+    if mode == "real" and not yes:
+        raise RuntimeError("Real ALFWorld bridge serving requires --yes; use `rq1 alfworld capabilities` first.")
+    server = create_bridge_server(root / "runs" / "pilot" / "bridge", host=host, port=port, mode=mode)
+    print(json.dumps({"status": "serving", "mode": mode, "host": host, "port": server.server_port}))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         return 0
     finally:
         server.server_close()
+
+
+def command_alfworld(root: Path, args: argparse.Namespace) -> int:
+    """Read-only capability/index commands plus an explicitly approved real smoke test."""
+    from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
+    from rq1.bridge.adapters.task_index import TaskIndexError, build_task_index
+    from rq1.bridge.environment import RealALFWorldAdapter
+    from rq1.bridge.episode_manager import EpisodeManager
+    from rq1.bridge.models import EpisodeStartRequest
+    from rq1.utils.ids import new_attempt_id
+    from rq1.utils.time import utc_now
+
+    data_dir = default_data_dir()
+    if args.alfworld_command == "capabilities":
+        payload = probe_alfworld_capabilities(data_dir).to_dict()
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0 if payload["real_adapter_ready"] else 1
+    try:
+        index = build_task_index(data_dir)
+    except TaskIndexError as exc:
+        print(json.dumps({"ok": False, "error": {"code": "task_index_unavailable", "message": str(exc)}}))
+        return 1
+    if args.alfworld_command == "index":
+        print(json.dumps(index.to_dict(args.split), indent=2, sort_keys=True))
+        return 0
+    if not args.yes:
+        raise RuntimeError("Real ALFWorld smoke testing requires --yes; it never installs or downloads anything.")
+    tasks = index.for_split(args.split)
+    if not tasks:
+        raise RuntimeError("No indexed task is available for the requested split.")
+    attempt_id = new_attempt_id()
+    output = root / "artifacts" / "alfworld_smoke" / attempt_id
+    manager = EpisodeManager(lambda: RealALFWorldAdapter(data_dir=data_dir), output / "bridge")
+    request = EpisodeStartRequest(tasks[0].task_id, args.split, args.seed, args.action_limit)
+    try:
+        started = manager.start(request)
+        if not started.admissible_actions:
+            raise RuntimeError("The real initial state exposed no admissible action for smoke testing.")
+        stepped = manager.step(started.episode_id, started.admissible_actions[0])
+        status = manager.status(started.episode_id)
+        reset = manager.reset(started.episode_id)
+        aborted = manager.abort(started.episode_id, "explicit smoke-test cleanup")
+        payload = {"schema_version": 1, "generated_at": utc_now(), "mode": "real", "real_operation_executed": True,
+                   "task": tasks[0].to_dict(), "requests": {"start": request.__dict__},
+                   "responses": {"start": started.to_dict(), "step": stepped.to_dict(), "status": status.to_dict(), "reset": reset.to_dict(), "abort": aborted.to_dict()},
+                   "bridge_log": str((output / "bridge" / f"{started.episode_id}.jsonl").relative_to(root)), "real_compatibility_claimed": False}
+    except Exception as exc:
+        payload = {"schema_version": 1, "generated_at": utc_now(), "mode": "real", "real_operation_executed": True,
+                   "ok": False, "error": {"code": "real_smoke_failed", "message": str(exc)}, "real_compatibility_claimed": False}
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / "smoke-report.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({"report": str(path.relative_to(root)), **payload}, indent=2, sort_keys=True))
+    return 0 if payload.get("real_operation_executed") and "responses" in payload else 1
 
 
 def command_hermes_capabilities(root: Path) -> int:
@@ -424,9 +479,21 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stage-status")
     sub.add_parser("validate-config")
     sub.add_parser("mock-run")
-    bridge = sub.add_parser("bridge-server", help="Run the fake ALFWorld bridge on localhost.")
+    bridge = sub.add_parser("bridge-server", help="Run the fake or explicitly gated real ALFWorld bridge on localhost.")
     bridge.add_argument("--host", default="127.0.0.1")
     bridge.add_argument("--port", type=int, default=8000)
+    bridge.add_argument("--mode", choices=("fake", "real"), default="fake")
+    bridge.add_argument("--yes", action="store_true")
+    alfworld = sub.add_parser("alfworld", help="Inspect or explicitly smoke-test ALFWorld 0.4.2.")
+    alfworld_sub = alfworld.add_subparsers(dest="alfworld_command", required=True)
+    alfworld_sub.add_parser("capabilities")
+    alfworld_index = alfworld_sub.add_parser("index")
+    alfworld_index.add_argument("--split", choices=("train", "valid_seen"), required=True)
+    alfworld_smoke = alfworld_sub.add_parser("smoke-test")
+    alfworld_smoke.add_argument("--split", choices=("valid_seen",), required=True)
+    alfworld_smoke.add_argument("--seed", type=int, default=1)
+    alfworld_smoke.add_argument("--action-limit", type=int, default=12)
+    alfworld_smoke.add_argument("--yes", action="store_true")
     sub.add_parser("hermes-capabilities", help="Probe Hermes read-only capability evidence without modifying Hermes.")
     hermes_verify = sub.add_parser("verify-hermes-integration", help="Verify the project Hermes boundary in fake or explicitly opted-in real mode.")
     hermes_verify.add_argument("--mode", choices=("fake", "real"), required=True)
@@ -509,7 +576,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "stage-status": return command_status(root)
         if args.command == "validate-config": return command_validate_config(root)
         if args.command == "mock-run": return command_mock(root)
-        if args.command == "bridge-server": return command_bridge_server(root, args.host, args.port)
+        if args.command == "bridge-server": return command_bridge_server(root, args.host, args.port, args.mode, args.yes)
+        if args.command == "alfworld": return command_alfworld(root, args)
         if args.command == "hermes-capabilities": return command_hermes_capabilities(root)
         if args.command == "verify-hermes-integration": return command_verify_hermes_integration(root, args.mode)
         if args.command == "profiles": return command_profiles(root, args)

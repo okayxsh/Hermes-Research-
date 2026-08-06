@@ -74,6 +74,9 @@ class EpisodeManager:
             adapter = self._adapter_factory()
             try:
                 state = adapter.start(request)
+            except ValueError as exc:
+                logger.append("adapter_error", {"operation": "start", "error": str(exc)}, correlation)
+                raise BridgeError(422, str(exc)) from exc
             except Exception as exc:
                 logger.append("adapter_error", {"operation": "start", "error": str(exc)}, correlation)
                 raise BridgeError(500, "Adapter failed to start episode") from exc
@@ -179,5 +182,5 @@ class EpisodeManager:
             inventory=state.inventory, admissible_actions=state.admissible_actions, reward=state.reward,
             step_number=state.step_number, action_count=record.action_count, action_limit=record.request.action_limit,
             done=state.done, success=state.success, aborted=record.aborted, reset_count=record.reset_count,
-            action_valid=state.action_valid,
+            action_valid=state.action_valid, field_sources=state.field_sources, freshness=state.freshness,
         )

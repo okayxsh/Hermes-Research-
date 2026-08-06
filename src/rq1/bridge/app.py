@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rq1.bridge.environment import FakeALFWorldAdapter, real_adapter_capability
+from rq1.bridge.environment import FakeALFWorldAdapter, RealALFWorldAdapter, real_adapter_capability
 from rq1.bridge.episode_manager import BridgeError, EpisodeManager
 from rq1.bridge.models import (
     CorrelationMetadata,
@@ -40,9 +40,21 @@ def create_bridge_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     manager: EpisodeManager | None = None,
+    mode: str = "fake",
+    data_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
-    """Return an unstarted localhost server. Fake mode is the only runnable mode."""
-    episode_manager = manager or EpisodeManager(FakeALFWorldAdapter, log_root)
+    """Return an unstarted localhost server; real mode is explicit and capability-gated."""
+    if manager is not None and mode != "fake":
+        raise ValueError("Pass either a manager or an adapter mode, not both.")
+    if mode not in {"fake", "real"}:
+        raise ValueError("mode must be fake or real")
+    if mode == "real":
+        capability = real_adapter_capability()
+        if not capability.real_adapter_ready:
+            raise BridgeError(503, capability.details)
+        episode_manager = EpisodeManager(lambda: RealALFWorldAdapter(data_dir=data_dir), log_root)
+    else:
+        episode_manager = manager or EpisodeManager(FakeALFWorldAdapter, log_root)
 
     class BridgeRequestHandler(BaseHTTPRequestHandler):
         server_version = "RQ1ALFWorldBridge/0.2"
@@ -56,7 +68,7 @@ def create_bridge_server(
                     if payload:
                         raise BridgeError(422, "health does not accept request fields")
                     capability = real_adapter_capability()
-                    response = HealthResponse(True, "fake", episode_manager.active_episode_count, capability.available, capability.details).to_dict()
+                    response = HealthResponse(True, mode, episode_manager.active_episode_count, capability.available, capability.details).to_dict()
                 elif path == "/episode/start":
                     response = episode_manager.start(EpisodeStartRequest.from_payload(_decode_json(self)), correlation).to_dict()
                 elif path == "/episode/step":

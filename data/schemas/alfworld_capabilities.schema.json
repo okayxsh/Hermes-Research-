@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["package_detected", "version_supported", "data_detected", "real_adapter_ready", "direct_state_mutation_supported", "target_relocation_supported", "details"],
+  "properties": {
+    "package_detected": {"type": "boolean"},
+    "version_supported": {"type": "boolean"},
+    "data_detected": {"type": "boolean"},
+    "real_adapter_ready": {"type": "boolean"},
+    "direct_state_mutation_supported": {"const": false},
+    "target_relocation_supported": {"const": false},
+    "version": {"type": ["string", "null"]},
+    "details": {"type": "string"}
+  }
+}

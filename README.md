@@ -2,7 +2,7 @@
 
 This repository provides a reproducible foundation for a controlled-recovery experiment: whether a persistent agent's naturally accumulated skill library helps it recover from plan-invalidating ALFWorld failures or creates post-failure retrieval noise. The public documentation intentionally describes implementation boundaries without claiming untested integrations.
 
-The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, a capability-gated project-local Hermes plugin boundary, and the typed Phase 6 pilot runner. Hermes, Ollama, models, ALFWorld data/runtime, the real bridge adapter, and real Hermes plugin dispatch remain unverified.
+The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, a capability-gated ALFWorld 0.4.2 text-adapter implementation, a capability-gated project-local Hermes plugin boundary, and the typed Phase 6 pilot runner. Hermes, Ollama, models, ALFWorld data/runtime, real bridge execution, and real Hermes plugin dispatch remain unverified.
 
 ## Local development quick start
 
@@ -21,7 +21,14 @@ Run the fake bridge explicitly with:
 python -m rq1.cli bridge-server --host 127.0.0.1 --port 8000
 ```
 
-This bridge validates the local HTTP contract only; it does not run ALFWorld.
+This bridge defaults to the fake local contract. A real server requires `--mode real --yes`, a supported installed package, and an indexed local data directory; it never falls back to fake mode.
+
+Inspect the external boundary without installing or downloading anything:
+
+```bash
+python -m rq1.cli alfworld capabilities
+python -m rq1.cli alfworld index --split valid_seen
+```
 
 ## Recovery-aware pilot runner
 

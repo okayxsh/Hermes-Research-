@@ -57,6 +57,10 @@ Treat these as separate failures:
 
 `--skip-alfworld-data` prevents a download; it does not satisfy the data requirement. Missing package/data must produce structured remediation and keep readiness false.
 
+### Real adapter is unavailable
+
+Run `python -m rq1.cli alfworld capabilities`. The adapter supports exactly installed `alfworld==0.4.2`, indexed `train`/`valid_seen` text data, and no `valid_unseen` access. Do not alter package versions or substitute a random task. When capability evidence is ready, run the explicitly approved `rq1 alfworld smoke-test --split valid_seen --yes`; it records failure evidence rather than falling back to fake mode.
+
 ### Model missing or smoke test fails
 
 `--skip-model` prevents a pull but does not create a pass. The primary model remains `hermes3:8b`. Install the fallback only with `--install-fallback-model`; never silently change model selection after a failure.

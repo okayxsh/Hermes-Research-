@@ -94,7 +94,7 @@ A successful fake bridge workflow may set `installation_ready: true` when every 
 
 ## 7. Real ALFWorld pilot gate
 
-Before starting any pilot, the capability-gated real adapter must load the installed ALFWorld package and configured dataset, start a real episode, execute one valid step, and explicitly reset that episode. Capture the requests, responses, runtime version, data manifest, and bridge events.
+Before starting any pilot, inspect `python -m rq1.cli alfworld capabilities` and `python -m rq1.cli alfworld index --split valid_seen`. Then run `python -m rq1.cli alfworld smoke-test --split valid_seen --yes`. The capability-gated real adapter must load the installed ALFWorld 0.4.2 package and configured dataset, start one indexed real episode, execute one valid step, report cached status, explicitly reset, and controller-abort it. Capture the immutable report, runtime version, data identity, and bridge events.
 
 Only that successful start → step → reset test may set:
 
