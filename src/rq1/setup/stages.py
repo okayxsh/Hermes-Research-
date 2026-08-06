@@ -33,6 +33,7 @@ from rq1.setup.probes import (
     write_machine_yaml,
 )
 from rq1.setup.runner import CommandRunner, redact, redact_command
+from rq1.profiles.lifecycle import ProfileLifecycleError, base_profile_plans, real_profile_lifecycle
 from rq1.utils.time import utc_now
 
 
@@ -573,107 +574,33 @@ def run_candidate_models(ctx: StageContext) -> StageOutcome:
     return StageOutcome(probes=[ProbeResult("primary-model", True, f"{PRIMARY_MODEL} present and raw-smoke-tested")], artifacts=[manifest])
 
 
-PROFILE_NAMES = ("rq1-pilot", "rq1-acquisition")
-
-
-def _profile_settings(ctx: StageContext) -> dict[str, str]:
-    return {
-        "model.default": PRIMARY_MODEL,
-        "model.provider": "custom",
-        "model.base_url": f"{OLLAMA_HOST}/v1",
-        "model.context_length": str(MINIMUM_CONTEXT),
-        "terminal.backend": "local",
-        "terminal.cwd": str(ctx.root.resolve()),
-    }
-
-
-def _active_profile(list_output: str) -> str | None:
-    return next(
-        (line.strip().lstrip("*").strip().split()[0] for line in list_output.splitlines() if line.strip().startswith("*")),
-        None,
-    )
-
-
-def _profile_names(list_output: str) -> set[str]:
-    return {
-        line.strip().lstrip("*").strip().split()[0]
-        for line in list_output.splitlines()
-        if line.strip() and not line.lower().lstrip().startswith("profile")
-    }
-
-
-def _verify_profiles(
-    ctx: StageContext,
-    hermes: str,
-    selector: str,
-    *,
-    expected_active: str | None,
-) -> tuple[bool, dict[str, Any], str]:
-    listed = ctx.runner.run((hermes, "profile", "list"), timeout=30)
-    if not listed.ok:
-        return False, {}, "Hermes profile list failed"
-    active = _active_profile(listed.stdout)
-    if expected_active is None or active != expected_active:
-        return False, {"active_profile": active}, "Hermes active/default profile could not be proven unchanged"
-    existing = _profile_names(listed.stdout)
-    metadata: dict[str, Any] = {}
-    for name in PROFILE_NAMES:
-        marker = Path.home() / ".hermes" / "profiles" / name / ".no-bundled-skills"
-        if name not in existing or not marker.is_file():
-            return False, metadata, f"Hermes profile {name} or its no-skills marker is missing"
-        verified: dict[str, str] = {}
-        for key, expected in _profile_settings(ctx).items():
-            result = ctx.runner.run((hermes, selector, name, "config", "get", key), timeout=30)
-            actual = (result.stdout or result.stderr).strip()
-            if not result.ok or expected not in actual:
-                return False, metadata, f"Hermes profile {name} did not verify {key}"
-            verified[key] = ctx.sanitize_text(actual)
-        metadata[name] = {"settings": verified, "no_bundled_skills": True}
-    return True, metadata, "two isolated non-default profiles verified"
-
-
 def run_base_profiles(ctx: StageContext) -> StageOutcome:
-    hermes = _resolve_hermes(ctx)
-    if not hermes and ctx.options.dry_run:
-        hermes = str(Path.home() / ".local" / "bin" / "hermes")
-    if not hermes:
-        raise StageFailure("Hermes command is unavailable", "Run the Hermes installation stage first.")
-    capabilities, _ = _hermes_help_capabilities(ctx, hermes)
-    if not capabilities.get("supported") and not ctx.options.dry_run:
-        raise StageFailure("Hermes profile/config command shapes are unsupported")
-    selector = str(capabilities.get("profile_selector_flag") or "-p")
-    listed = ctx.runner.run((hermes, "profile", "list"), timeout=30, check=True).stdout
-    active_before = _active_profile(listed)
-    existing_profiles = _profile_names(listed)
-    for name in PROFILE_NAMES:
-        if name not in existing_profiles:
-            ctx.runner.run(
-                (hermes, "profile", "create", name, "--no-skills", "--description", "Isolated reproducible experiment profile"),
-                timeout=120,
-                check=True,
-            )
-        for key, value in _profile_settings(ctx).items():
-            ctx.runner.run((hermes, selector, name, "config", "set", key, value), timeout=30, check=True)
+    plans = base_profile_plans(ctx.root)
     if ctx.options.dry_run:
-        valid, profile_metadata, detail = True, {}, "profile operations planned and capability-gated"
-    else:
-        valid, profile_metadata, detail = _verify_profiles(
-            ctx, hermes, selector, expected_active=active_before
+        path = _write_json_yaml(
+            ctx.artifacts / "manifests" / "hermes_profiles.json",
+            {"schema_version": 1, "generated_at": utc_now(), "dry_run": True, "plans": [plan.to_dict() for plan in plans]},
         )
-    if not valid:
-        raise StageFailure(detail, "Restore the prior active profile and inspect the installed Hermes command help.")
-    path = ctx.artifacts / "manifests" / "hermes_profiles.json"
-    _write_json_yaml(
-        path,
-        {
-            "schema_version": 1,
-            "generated_at": utc_now(),
-            "active_profile_changed": False,
-            "active_profile": active_before,
-            "profiles": profile_metadata,
-        },
+        return StageOutcome(probes=[ProbeResult("hermes-profiles", False, "dry-run; profile creation is capability-gated")], artifacts=[path])
+
+    def execute(command: tuple[str, ...]) -> tuple[int, str, str]:
+        result = ctx.runner.run(command, timeout=120)
+        return result.returncode, result.stdout, result.stderr
+
+    try:
+        lifecycle = real_profile_lifecycle(ctx.root, executor=execute)
+        manifests = []
+        for plan in plans:
+            manifest = lifecycle.create(plan)
+            lifecycle.write_manifest(manifest)
+            manifests.append(manifest.to_dict())
+    except ProfileLifecycleError as exc:
+        raise StageFailure(str(exc), "Review the Hermes profile capability report; do not alter a personal/default profile.") from exc
+    path = _write_json_yaml(
+        ctx.artifacts / "manifests" / "hermes_profiles.json",
+        {"schema_version": 1, "generated_at": utc_now(), "profiles": manifests, "real_profiles_created": True},
     )
-    return StageOutcome(probes=[ProbeResult("hermes-profiles", True, detail)], artifacts=[path])
+    return StageOutcome(probes=[ProbeResult("hermes-profiles", True, "profiles created and validated through capability-gated lifecycle")], artifacts=[path])
 
 
 def _verify_fake_bridge(ctx: StageContext) -> dict[str, Any]:
@@ -711,20 +638,17 @@ def _python_environment_available(ctx: StageContext) -> tuple[bool, str]:
 
 
 def _hermes_profiles_available(ctx: StageContext) -> tuple[bool, dict[str, Any], str]:
-    hermes = _resolve_hermes(ctx)
-    if not hermes:
-        return False, {}, "Hermes command is unavailable"
-    capabilities, _ = _hermes_help_capabilities(ctx, hermes)
-    selector = capabilities.get("profile_selector_flag")
-    if not capabilities.get("supported") or not isinstance(selector, str):
-        return False, capabilities, "Hermes profile/config command shapes are unsupported"
-    listed = ctx.runner.run((hermes, "profile", "list"), timeout=30)
-    if not listed.ok:
-        return False, capabilities, "Hermes profile list failed"
-    valid, metadata, detail = _verify_profiles(
-        ctx, hermes, selector, expected_active=_active_profile(listed.stdout)
-    )
-    return valid, {"capabilities": capabilities, "profiles": metadata}, detail
+    def execute(command: tuple[str, ...]) -> tuple[int, str, str]:
+        result = ctx.runner.run(command, timeout=60)
+        return result.returncode, result.stdout, result.stderr
+
+    try:
+        lifecycle = real_profile_lifecycle(ctx.root, executor=execute)
+        manifests = [lifecycle.validate(plan).to_dict() for plan in base_profile_plans(ctx.root)]
+    except ProfileLifecycleError as exc:
+        return False, {}, str(exc)
+    valid = all(item["validation_result"]["valid"] for item in manifests)
+    return valid, {"profiles": manifests}, "profiles validated through capability-gated lifecycle" if valid else "profile contamination detected"
 
 
 def run_installation_verification(ctx: StageContext) -> StageOutcome:

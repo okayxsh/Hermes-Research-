@@ -1,1 +1,1 @@
-{"profile":"rq1-acquisition","bundled_skills":false,"skill_writes":"controlled","status":"TO_BE_VERIFIED_BY_CAPABILITY_PROBE"}
+{"profile":"rq1-acquisition","purpose":"train-only natural skill acquisition","bundled_skills":false,"memory":false,"curator":false,"plugin":"alfworld-experiment","skill_writes":"explicit-post-success-stage-only","forbid_valid_unseen":true,"status":"TO_BE_VERIFIED_BY_CAPABILITY_PROBE"}

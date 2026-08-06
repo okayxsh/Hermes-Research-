@@ -1,1 +1,1 @@
-{"profile":"rq1-pilot","bundled_skills":false,"status":"TO_BE_VERIFIED_BY_CAPABILITY_PROBE"}
+{"profile":"rq1-pilot","purpose":"controlled recovery and integration pilot","bundled_skills":false,"memory":false,"curator":false,"plugin":"alfworld-experiment","temporary_skill_writes":"controlled-pilot-only","status":"TO_BE_VERIFIED_BY_CAPABILITY_PROBE"}

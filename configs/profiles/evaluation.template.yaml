@@ -1,1 +1,1 @@
-{"profile":"rq1-eval-<SNAPSHOT>","bundled_skills":false,"memory":false,"curator":false,"skill_writes":false,"status":"TO_BE_VERIFIED_BY_CAPABILITY_PROBE"}
+{"profile":"rq1-recovery-<SNAPSHOT>","purpose":"future frozen controlled-recovery evaluation condition","bundled_skills":false,"memory":false,"curator":false,"skill_writes":false,"snapshot_read_only":true,"checkpoint_and_perturbation_metadata":"per-run-only","status":"UNINSTANTIATED_PHASE4_TEMPLATE"}

@@ -8,7 +8,7 @@ This repository intentionally separates an implemented contract from evidence th
 | `uv`/Python environment | Typed setup foundation only | `uv sync --locked`, project import, and test execution from the resulting Python 3.11 `.venv`. |
 | Ollama | No live installation or serving test | Recorded version and installer hash, responsive localhost API, model metadata, and deterministic raw-inference smoke test. |
 | Hermes Agent | No live installation or CLI test | Recorded version/help output, clean `hermes doctor`, verified local-model configuration path, and capability manifest. |
-| Hermes profiles | Command shape derived from current official docs, not locally executed | Isolated `rq1-pilot` and `rq1-acquisition` homes, `--no-skills` evidence, unchanged default profile, and profile-specific configuration checks. |
+| Hermes profiles | Fake lifecycle/isolation tests plus capability-gated real adapter; no live profile mutation | Installed capability evidence for no-skills creation, JSON inspection/location discovery, project-plugin activation, clean `rq1-pilot`/`rq1-acquisition` manifests, and observed real isolation. |
 | Hermes plugin/tools/hooks | Project-local capability-gated plugin and fake contract tests | Installed-version probe, explicit project-plugin discovery, raw tool-call/hook evidence, and a real registry dispatch on the pilot machine. |
 | ALFWorld package | Package discoverability probe only | Pinned package install, metadata/import checks, and clean downloader discovery. |
 | ALFWorld data | No download or dataset validation | Data inventory, size/count checks, digest, and successful task loading from the configured data directory. |

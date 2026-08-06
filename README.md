@@ -1,6 +1,6 @@
 # Reproducible agent-environment experiment
 
-This repository provides a reproducible foundation for studying agent behavior and task outcomes under controlled procedural guidance. The public documentation intentionally describes the research at a high level.
+This repository provides a reproducible foundation for a controlled-recovery experiment: whether a persistent agent's naturally accumulated skill library helps it recover from plan-invalidating ALFWorld failures or creates post-failure retrieval noise. The public documentation intentionally describes implementation boundaries without claiming untested integrations.
 
 The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, and a capability-gated project-local Hermes plugin boundary. Hermes, Ollama, models, ALFWorld data/runtime, the real bridge adapter, and real Hermes plugin dispatch remain unverified.
 
@@ -26,6 +26,10 @@ This bridge validates the local HTTP contract only; it does not run ALFWorld.
 ## Hermes boundary
 
 The five local bridge tools and fake verification are documented in [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md). The plugin is disabled unless an installed Hermes instance explicitly opts into trusted project plugins; fake verification does not establish Hermes compatibility.
+
+## Isolated profile boundary
+
+Phase 4 defines `rq1-pilot` and `rq1-acquisition` as isolated Hermes state, not repository copies. Use `python -m rq1.cli profiles plan` to inspect plans and `python -m rq1.cli profiles isolation-test` for the fully local fake lifecycle check. Real profile creation requires an installed, capability-confirmed Hermes CLI plus `--yes`; future `rq1-recovery-<snapshot>` profiles remain templates until frozen snapshots exist.
 
 ## University machine setup
 

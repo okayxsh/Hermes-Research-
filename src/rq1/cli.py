@@ -146,6 +146,103 @@ def command_verify_hermes_integration(root: Path, mode: str) -> int:
     return 0 if report.get("mock_integration") or report.get("real_plugin_loading") else 1
 
 
+def _profile_manifest_from_path(path: Path):
+    from rq1.profiles.models import ProfileManifest
+
+    return ProfileManifest(**json.loads(path.read_text(encoding="utf-8")))
+
+
+def command_profiles(root: Path, args: argparse.Namespace) -> int:
+    from rq1.hermes.capabilities import probe_hermes_capabilities
+    from rq1.profiles.lifecycle import (
+        ProfileLifecycleError,
+        base_profile_plans,
+        profile_plan,
+        real_profile_lifecycle,
+        recovery_profile_template,
+        verify_fake_profile_lifecycle,
+        write_phase4_report,
+    )
+
+    if args.profile_command == "capabilities":
+        report = probe_hermes_capabilities(project_root=root)
+        path = root / "artifacts" / "manifests" / "hermes_profile_capabilities.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(json.dumps({"capabilities": report.to_dict(), "report": str(path.relative_to(root))}, indent=2, sort_keys=True))
+        return 0 if report.installed else 1
+    if args.profile_command == "plan":
+        plans = [plan.to_dict() for plan in (*base_profile_plans(root), recovery_profile_template(root))]
+        print(json.dumps({"plans": plans, "dry_run": True}, indent=2, sort_keys=True))
+        return 0
+    if args.profile_command == "isolation-test":
+        report = verify_fake_profile_lifecycle(root)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["mock_profile_lifecycle_passed"] and report["mock_isolation_tested"] else 1
+    if args.profile_command == "create-base" and args.dry_run:
+        print(json.dumps({"dry_run": True, "plans": [plan.to_dict() for plan in base_profile_plans(root)]}, indent=2, sort_keys=True))
+        return 0
+    if args.profile_command == "create-base" and not args.yes:
+        raise ProfileLifecycleError("Real profile creation requires --yes; use `rq1 profiles plan` for a non-mutating preview.")
+    lifecycle = real_profile_lifecycle(root)
+    if args.profile_command == "create-base":
+        manifests = []
+        for plan in base_profile_plans(root):
+            manifest = lifecycle.create(plan)
+            lifecycle.write_manifest(manifest)
+            manifests.append(manifest.to_dict())
+        report = {
+            "schema_version": 1,
+            "generated_at": utc_now(),
+            "mock_profile_lifecycle_passed": False,
+            "mock_isolation_tested": False,
+            "contamination_checks_passed_mock": False,
+            "hermes_detected": True,
+            "profile_capability_detected": True,
+            "no_skills_capability_detected": True,
+            "pilot_profile_actually_created": True,
+            "acquisition_profile_actually_created": True,
+            "real_profile_isolation_tested": False,
+            "contamination_checks_passed_real": all(item["validation_result"]["valid"] for item in manifests),
+            "future_recovery_profile_template_generated": True,
+            "phase6_blocked": True,
+            "real_compatibility": False,
+        }
+        report_path = write_phase4_report(root, report)
+        print(json.dumps({"created": manifests, "report": str(report_path.relative_to(root))}, indent=2, sort_keys=True))
+        return 0
+    name = args.profile_name
+    plan = profile_plan(name, root)
+    if args.profile_command == "inspect":
+        print(json.dumps(lifecycle.inspect(name).to_dict(), indent=2, sort_keys=True))
+        return 0
+    manifest_path = root / "artifacts" / "manifests" / "profiles" / f"{name}.json"
+    baseline = _profile_manifest_from_path(manifest_path) if manifest_path.is_file() else None
+    if args.profile_command in {"validate", "contamination-check", "manifest"}:
+        manifest = lifecycle.validate(plan, baseline=baseline)
+        if args.profile_command == "manifest":
+            path = lifecycle.write_manifest(manifest)
+            print(json.dumps({"manifest": str(path.relative_to(root)), "value": manifest.to_dict()}, indent=2, sort_keys=True))
+        else:
+            print(json.dumps(manifest.to_dict(), indent=2, sort_keys=True))
+        return 0 if manifest.validation_result["valid"] else 1
+    if args.profile_command == "archive-manifest":
+        manifest = lifecycle.validate(plan, baseline=baseline)
+        path = lifecycle.archive_manifest(manifest)
+        print(json.dumps({"archive": str(path.relative_to(root)), "value": manifest.to_dict()}, indent=2, sort_keys=True))
+        return 0 if manifest.validation_result["valid"] else 1
+    if args.profile_command == "cleanup-test-profile":
+        if args.dry_run:
+            print(json.dumps({"dry_run": True, "would_clean": name}))
+            return 0
+        if not args.confirm_destructive:
+            raise ProfileLifecycleError("Cleanup requires --confirm-destructive and is limited to rq1-test-* profiles.")
+        lifecycle.backend.delete(name)
+        print(json.dumps({"cleaned": name, "real_operation": True}))
+        return 0
+    raise ProfileLifecycleError("Unknown profile command")
+
+
 def _setup_options(args: argparse.Namespace) -> SetupOptions:
     return SetupOptions(
         dry_run=bool(getattr(args, "dry_run", False)),
@@ -245,6 +342,20 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("hermes-capabilities", help="Probe Hermes read-only capability evidence without modifying Hermes.")
     hermes_verify = sub.add_parser("verify-hermes-integration", help="Verify the project Hermes boundary in fake or explicitly opted-in real mode.")
     hermes_verify.add_argument("--mode", choices=("fake", "real"), required=True)
+    profiles = sub.add_parser("profiles", help="Plan and validate isolated Hermes research profiles.")
+    profile_sub = profiles.add_subparsers(dest="profile_command", required=True)
+    profile_sub.add_parser("capabilities")
+    profile_sub.add_parser("plan")
+    create_base = profile_sub.add_parser("create-base")
+    create_base.add_argument("--yes", action="store_true")
+    create_base.add_argument("--dry-run", action="store_true")
+    profile_sub.add_parser("isolation-test")
+    for name in ("inspect", "validate", "contamination-check", "manifest", "archive-manifest", "cleanup-test-profile"):
+        command = profile_sub.add_parser(name)
+        command.add_argument("profile_name")
+        command.add_argument("--dry-run", action="store_true")
+        if name == "cleanup-test-profile":
+            command.add_argument("--confirm-destructive", action="store_true")
     setup = sub.add_parser("setup-machine", help="Run the resumable Ubuntu machine setup.")
     _add_setup_options(setup)
     setup_stage = sub.add_parser("setup-stage", help="Run one machine-setup stage.")
@@ -274,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bridge-server": return command_bridge_server(root, args.host, args.port)
         if args.command == "hermes-capabilities": return command_hermes_capabilities(root)
         if args.command == "verify-hermes-integration": return command_verify_hermes_integration(root, args.mode)
+        if args.command == "profiles": return command_profiles(root, args)
         if args.command == "setup-machine": return command_setup_machine(root, _setup_options(args))
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))

@@ -391,44 +391,26 @@ class SetupModelsAndParsingTests(unittest.TestCase):
             self.assertIn(("ollama", "pull", "hermes3:8b"), runner.commands)
             self.assertNotIn(("ollama", "pull", "llama3.1:8b"), runner.commands)
 
-    def test_profile_verification_requires_isolated_settings_and_no_skills_markers(self) -> None:
+    def test_profile_verification_fails_closed_without_observed_json_inspection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"
-            home = Path(directory) / "home"
             root.mkdir()
-            for name in ("rq1-pilot", "rq1-acquisition"):
-                marker = home / ".hermes" / "profiles" / name / ".no-bundled-skills"
-                marker.parent.mkdir(parents=True)
-                marker.write_text("", encoding="utf-8")
             responses: dict[tuple[str, ...], CommandResult] = {}
 
             def response(command: tuple[str, ...], stdout: str) -> None:
                 responses[command] = CommandResult(command, 0, stdout)
 
-            response(("hermes", "--help"), "usage: hermes [-p PROFILE] --profile PROFILE")
-            response(("hermes", "profile", "create", "--help"), "--no-skills --description")
-            response(("hermes", "config", "--help"), "set get")
-            response(("hermes", "config", "set", "--help"), "config set KEY VALUE")
-            response(("hermes", "config", "get", "--help"), "config get KEY")
-            response(("hermes", "profile", "list"), "* default\n  rq1-pilot\n  rq1-acquisition\n")
-            settings = {
-                "model.default": "hermes3:8b",
-                "model.provider": "custom",
-                "model.base_url": "http://127.0.0.1:11434/v1",
-                "model.context_length": "65536",
-                "terminal.backend": "local",
-                "terminal.cwd": str(root.resolve()),
-            }
-            for name in ("rq1-pilot", "rq1-acquisition"):
-                for key, value in settings.items():
-                    response(("hermes", "-p", name, "config", "get", key), value)
+            response(("hermes", "--version"), "Hermes 1.2.3")
+            response(("hermes", "--help"), "usage: hermes profile plugins")
+            response(("hermes", "profile", "--help"), "create show")
+            response(("hermes", "profile", "create", "--help"), "--no-skills")
+            response(("hermes", "profile", "show", "--help"), "show profile")
+            response(("hermes", "plugins", "--help"), "hooks")
             runner = FakeCommandRunner(available={"hermes": "hermes"}, responses=responses, reject_unconfigured=True)
-            with mock.patch("rq1.setup.stages.Path.home", return_value=home):
-                valid, metadata, _ = _hermes_profiles_available(
-                    StageContext(root, SetupOptions(), runner)
-                )
-            self.assertTrue(valid)
-            self.assertEqual({"rq1-pilot", "rq1-acquisition"}, set(metadata["profiles"]))
+            valid, metadata, detail = _hermes_profiles_available(StageContext(root, SetupOptions(), runner))
+            self.assertFalse(valid)
+            self.assertEqual({}, metadata)
+            self.assertIn("blocked", detail)
 
 
 class SetupRegistryTests(unittest.TestCase):

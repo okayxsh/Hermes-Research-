@@ -1,3 +1,3 @@
 # Experiment boundary
 
-Acquire skills only on `train`; run pilots/calibration only on `valid_seen`; freeze task lists, relevance rules, model, prompts, tool schemas, and failure policy before final evaluation on untouched `valid_unseen`. Evaluation must use one read-only isolated profile per library snapshot.
+The canonical RQ concerns recovery after a controlled plan-invalidating failure, not ordinary task success. Acquire skills only on `train`; use `valid_seen` for pilots and recovery-protocol calibration; reserve untouched `valid_unseen` for final paired controlled-recovery evaluation. Each paired condition must replay the same checkpoint, apply the same solvable perturbation, receive the same recovery context, and differ only by frozen read-only skill snapshot/profile.

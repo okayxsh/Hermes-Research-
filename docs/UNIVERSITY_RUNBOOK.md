@@ -88,7 +88,7 @@ Confirm that sensitive machine identifiers and secrets are absent. Verify that e
 
 ## 6. Installation verification
 
-Stage 09 starts the deterministic fake bridge on an ephemeral localhost port and exercises health, episode start, step, status, reset, and abort. It also verifies profile isolation and re-probes external commands and local services.
+Stage 09 starts the deterministic fake bridge on an ephemeral localhost port and exercises health, episode start, step, status, reset, and abort. It re-probes external commands and validates base profiles only through the Phase 4 capability-gated lifecycle; real profile isolation requires separate observed evidence.
 
 A successful fake bridge workflow may set `installation_ready: true` when every other installation requirement passes. It does not establish real ALFWorld or Hermes-to-ALFWorld compatibility.
 

@@ -1,4 +1,4 @@
-.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real
+.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real profiles-plan profiles-create-base profiles-validate profiles-isolation-test profiles-contamination-check
 
 help:
 	@python -m rq1.cli --help
@@ -41,3 +41,19 @@ verify-hermes-fake:
 
 verify-hermes-real:
 	@RQ1_RUN_REAL_HERMES_TESTS=1 python -m rq1.cli verify-hermes-integration --mode real
+
+profiles-plan:
+	@python -m rq1.cli profiles plan
+
+profiles-create-base:
+	@python -m rq1.cli profiles create-base --yes
+
+profiles-validate:
+	@python -m rq1.cli profiles validate rq1-pilot
+	@python -m rq1.cli profiles validate rq1-acquisition
+
+profiles-isolation-test:
+	@python -m rq1.cli profiles isolation-test
+
+profiles-contamination-check:
+	@python -m rq1.cli profiles contamination-check rq1-pilot

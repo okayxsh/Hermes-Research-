@@ -6,6 +6,8 @@ Phase 3 provides a project-local, capability-gated plugin at `.hermes/plugins/al
 
 The plugin is discovered only when Hermes supports project plugins and the caller explicitly sets `HERMES_ENABLE_PROJECT_PLUGINS=1`. Registration requires the documented `register_tool` and `register_hook` surface; otherwise it raises a clear registration error and Hermes disables the plugin. It does not modify a personal/default profile, enable itself in a profile, install a package, download data, or start an LLM.
 
+Profile creation, isolation, and contamination controls are a separate Phase 4 boundary documented in [HERMES_PROFILES.md](HERMES_PROFILES.md). A successful fake plugin check is not profile evidence.
+
 Probe installed evidence without modifying Hermes:
 
 ```bash

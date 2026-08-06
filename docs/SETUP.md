@@ -37,7 +37,7 @@ The master entry point is `scripts/setup_machine.sh`. It executes these stages i
 | 05 | `05_install_alfworld.sh` | Install and import-test pinned text-only ALFWorld, then verify that `alfworld-download` is discoverable. Do not download data in this stage. |
 | 06 | `06_download_alfworld_data.sh` | Reuse valid existing data or explicitly invoke the official downloader. Use `RQ1_ALFWORLD_DATA_DIR` when set; otherwise use an isolated experiment cache. |
 | 07 | `07_pull_candidate_models.sh` | Pull and inspect `hermes3:8b`, then run a deterministic raw-inference smoke test. Pull `llama3.1:8b` only when explicitly requested. |
-| 08 | `08_create_base_profiles.sh` | Create and validate isolated `rq1-pilot` and `rq1-acquisition` profiles with `--no-skills`; configure only settings confirmed by installed Hermes capability/help probes. |
+| 08 | `08_create_base_profiles.sh` | Delegate to the Phase 4 lifecycle for isolated `rq1-pilot` and `rq1-acquisition` profiles. Creation requires capability-confirmed no-skills, JSON inspection/location discovery, and project-plugin activation; it never assumes a profile path or config key. |
 | 09 | `09_verify_installation.sh` | Re-probe dependencies, validate the profiles, and exercise the deterministic fake bridge over local HTTP. Keep real ALFWorld compatibility unverified. |
 
 No stage may perform an implicit ALFWorld reset or data download. Missing commands, unsupported help output, absent data, unavailable services, and unsupported platforms must produce a structured failed or blocked result with remediation guidance, not an unhandled traceback.

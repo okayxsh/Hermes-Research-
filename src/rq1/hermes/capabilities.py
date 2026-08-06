@@ -33,6 +33,9 @@ class HermesCapabilityReport:
     cli_supported: bool
     profile_supported: bool
     no_skills_supported: bool
+    profile_inspection_supported: bool
+    profile_location_supported: bool
+    project_plugin_activation_supported: bool
     plugin_supported: bool
     hook_supported: bool
     config_validation_supported: bool
@@ -69,7 +72,7 @@ def probe_hermes_capabilities(
     resolved = shutil.which(executable) if runner is _run_command else executable
     if runner is _run_command and not resolved:
         return HermesCapabilityReport(
-            1, utc_now(), False, None, None, None, False, False, False, False, False, False, False,
+            1, utc_now(), False, None, None, None, False, False, False, False, False, False, False, False, False, False,
             (), "unsupported", ("Hermes executable is unavailable",), {}, "Hermes is not installed or not on PATH."
         )
     target = resolved or executable
@@ -81,6 +84,7 @@ def probe_hermes_capabilities(
     # advertised in help. They are all help-only and cannot alter profiles.
     profile_help = ""
     profile_create_help = ""
+    profile_show_help = ""
     if help_code == 0 and _contains(combined_help, "profile"):
         code, out, err = runner((target, "profile", "--help"))
         evidence["profile_help"] = out + "\n" + err
@@ -91,6 +95,11 @@ def probe_hermes_capabilities(
             evidence["profile_create_help"] = out + "\n" + err
             if code == 0:
                 profile_create_help = evidence["profile_create_help"]
+        if code == 0 and _contains(profile_help, "show"):
+            code, out, err = runner((target, "profile", "show", "--help"))
+            evidence["profile_show_help"] = out + "\n" + err
+            if code == 0:
+                profile_show_help = evidence["profile_show_help"]
     plugin_help = ""
     if help_code == 0 and _contains(combined_help, "plugin"):
         code, out, err = runner((target, "plugins", "--help"))
@@ -105,19 +114,25 @@ def probe_hermes_capabilities(
             skill_help = evidence["skills_help"]
 
     no_skills = "--no-skills" in (profile_create_help + profile_help)
+    profile_inspection = bool(profile_show_help) and "--json" in profile_show_help
+    profile_location = profile_inspection and _contains(profile_show_help, "path")
     plugin = bool(plugin_help)
     hooks = plugin and _contains(combined_help + plugin_help, "hook")
     adapter = select_version_adapter((version_out or version_err).strip() or None, combined_help + plugin_help)
+    locations = (str((project_root or Path.cwd()) / ".hermes" / "plugins"),) if plugin else ()
+    project_plugin_activation = plugin and bool(locations)
     requirements: list[str] = []
     for name, present in (
         ("profile", bool(profile_help)),
         ("--no-skills", no_skills),
+        ("profile inspection JSON", profile_inspection),
+        ("profile location discovery", profile_location),
+        ("project plugin activation", project_plugin_activation),
         ("plugin", plugin),
         ("pre_tool_call/post_tool_call hooks", hooks),
     ):
         if not present:
             requirements.append(name)
-    locations = (str((project_root or Path.cwd()) / ".hermes" / "plugins"),) if plugin else ()
     return HermesCapabilityReport(
         1,
         utc_now(),
@@ -128,6 +143,9 @@ def probe_hermes_capabilities(
         help_code == 0,
         bool(profile_help),
         no_skills,
+        profile_inspection,
+        profile_location,
+        project_plugin_activation,
         plugin,
         hooks,
         _contains(combined_help + profile_help, "config"),
