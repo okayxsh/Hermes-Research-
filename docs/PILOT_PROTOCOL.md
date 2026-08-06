@@ -6,6 +6,8 @@ Before plugin/profile validation, inspect `rq1 hermes-capabilities` and run the 
 
 No final acquisition or unseen evaluation is permitted before a passing pilot report.
 
+Real pilot tasks must be proposed from the installed `valid_seen` metadata through `rq1 tasks discover --split valid_seen` and `rq1 tasks propose --kind pilot`. Placeholder or manually typed task IDs cannot satisfy a real-pilot task-manifest gate.
+
 ## Phase 6 runner
 
 The typed catalog contains `pilot_00` through `pilot_36`. Fake mode runs all 37 tests with simulated evidence and keeps `pilot_ready`, `real_integrated`, and `experimental_ready` false:

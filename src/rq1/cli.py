@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -525,6 +526,76 @@ def command_final_derived(root: Path, command: str) -> int:
     raise RuntimeError(f"{command} is blocked until a validated final evaluation report exists; no derived scientific artifact was produced.")
 
 
+def _task_manifest(path: Path):
+    from rq1.tasks.models import TaskManifest, TaskRecord
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["tasks"] = tuple(TaskRecord(**item) for item in value.get("tasks", []))
+    value["exclusions"] = tuple(value.get("exclusions", [])); value["duplicate_resolution"] = tuple(value.get("duplicate_resolution", []))
+    return TaskManifest(**value)
+
+
+def command_tasks(root: Path, args: argparse.Namespace) -> int:
+    from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
+    from rq1.freeze.validation import git_state
+    from rq1.tasks.discovery import TaskDiscoveryError, discover_tasks
+    from rq1.tasks.freeze import freeze_manifest, gate_kind
+    from rq1.tasks.reporting import write_immutable
+    from rq1.tasks.selection import propose_manifest
+    from rq1.tasks.models import SelectionPolicy
+    from rq1.tasks.validation import overlap_errors, validate_manifest
+    command = args.tasks_command; data_dir = default_data_dir()
+    if command == "capabilities":
+        report = probe_alfworld_capabilities(data_dir).to_dict()
+        print(json.dumps({"alfworld": report, "task_discovery": {"train": report["task_index_constructible"], "valid_seen": report["task_index_constructible"], "valid_unseen": False}}, indent=2, sort_keys=True)); return 0 if report["data_detected"] else 1
+    if command == "discover":
+        try:
+            value = discover_tasks(data_dir, args.split, allow_unseen_metadata=False)
+        except TaskDiscoveryError as exc:
+            print(json.dumps({"ok": False, "status": "blocked", "error": str(exc)})); return 1
+        output = root / "artifacts" / "task_manifests" / "discoveries" / f"{args.split}-{value.data_root_identity[:12]}.json"
+        write_immutable(output, value.to_dict()); print(json.dumps({"ok": True, "report": str(output.relative_to(root)), "discovery": value.to_dict()}, indent=2)); return 0
+    if command == "validate":
+        manifest = _task_manifest(Path(args.manifest)); errors = validate_manifest(manifest, require_frozen=args.require_frozen)
+        print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
+    if command == "overlap-check":
+        manifests = [_task_manifest(Path(path)) for path in args.manifest]
+        errors = overlap_errors(manifests); print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
+    kind = args.kind; split = {"pilot": "valid_seen", "acquisition": "train", "evaluation": "valid_unseen"}[kind]
+    if command == "freeze":
+        proposals = root / "artifacts" / "task_manifests" / "proposals"
+        proposal_path = Path(args.proposal) if args.proposal else next(iter(sorted(proposals.glob(f"{kind}-*.json"), reverse=True)), None)
+        if proposal_path is None or not proposal_path.is_file():
+            print(json.dumps({"ok": False, "status": "blocked", "error": "a persisted proposed manifest is required before freezing"})); return 1
+        manifest = _task_manifest(proposal_path)
+        if manifest.manifest_type != kind: print(json.dumps({"ok": False, "status": "blocked", "error": "proposal kind mismatch"})); return 1
+        try:
+            gate_kind(root, kind)
+            current = discover_tasks(data_dir, split, allow_unseen_metadata=kind == "evaluation")
+            if current.data_root_identity != manifest.data_root_identity: raise TaskDiscoveryError("dataset/index identity changed since proposal")
+        except (TaskDiscoveryError, RuntimeError) as exc:
+            print(json.dumps({"ok": False, "status": "blocked", "error": str(exc)})); return 1
+        if not args.yes: raise RuntimeError("Task freezing requires --yes")
+        approval = json.loads(Path(args.approval_file).read_text(encoding="utf-8"))
+        archive = root / "artifacts" / "task_manifests" / "proposal_archive" / proposal_path.name
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        if not archive.exists(): shutil.copy2(proposal_path, archive)
+        frozen = root / "artifacts" / "task_manifests" / "frozen" / f"{kind}-{manifest.manifest_sha256[:16]}.json"
+        result = freeze_manifest(root, manifest, approval, frozen)
+        print(json.dumps({"ok": True, "frozen": str(frozen.relative_to(root)), "archived_proposal": str(archive.relative_to(root)), "manifest": result.to_dict()}, indent=2)); return 0
+    try:
+        if kind == "evaluation": gate_kind(root, kind)
+        if args.count is None or args.count < 1: raise TaskDiscoveryError("proposal requires an approved positive --count; final counts are not inferred")
+        discovery = discover_tasks(data_dir, split, allow_unseen_metadata=kind == "evaluation")
+        commit, _clean, _error = git_state(root)
+        manifest = propose_manifest(kind, discovery, SelectionPolicy("task-selection-v1", args.seed, args.count), alfworld_version=probe_alfworld_capabilities(data_dir).version, repository_commit=commit)
+    except (TaskDiscoveryError, RuntimeError) as exc:
+        print(json.dumps({"ok": False, "status": "blocked", "error": str(exc)})); return 1
+    proposal = root / "artifacts" / "task_manifests" / "proposals" / f"{kind}-{manifest.manifest_sha256[:16]}.json"
+    if command == "propose":
+        write_immutable(proposal, manifest.to_dict()); print(json.dumps({"ok": True, "proposal": str(proposal.relative_to(root)), "manifest": manifest.to_dict()}, indent=2)); return 0
+    raise RuntimeError("unsupported task command")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RQ1 experiment foundation CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -612,6 +683,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify-installation", help="Run the final installation verification stage.")
     _add_setup_options(verify)
     sub.add_parser("setup-status", help="Show machine-setup stage state.")
+    tasks = sub.add_parser("tasks", help="Discover, propose, validate, and freeze deterministic ALFWorld task manifests.")
+    tasks_sub = tasks.add_subparsers(dest="tasks_command", required=True)
+    tasks_sub.add_parser("capabilities")
+    discover = tasks_sub.add_parser("discover"); discover.add_argument("--split", choices=("train", "valid_seen"), required=True)
+    for name in ("propose", "freeze"):
+        item = tasks_sub.add_parser(name); item.add_argument("--kind", choices=("pilot", "acquisition", "evaluation"), required=True)
+        item.add_argument("--seed", type=int, default=1); item.add_argument("--count", type=int)
+        if name == "freeze": item.add_argument("--approval-file", required=True); item.add_argument("--proposal"); item.add_argument("--yes", action="store_true")
+    validate_task = tasks_sub.add_parser("validate"); validate_task.add_argument("--manifest", required=True); validate_task.add_argument("--require-frozen", action="store_true")
+    overlap = tasks_sub.add_parser("overlap-check"); overlap.add_argument("--manifest", action="append", required=True)
     freeze = sub.add_parser("freeze", help="Plan or create immutable final-experiment freezes.")
     freeze_sub = freeze.add_subparsers(dest="freeze_command", required=True)
     freeze_sub.add_parser("plan")
@@ -673,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))
         if args.command == "setup-status": return command_setup_status(root)
+        if args.command == "tasks": return command_tasks(root, args)
         if args.command == "freeze": return command_freeze(root, args)
         if args.command == "acquisition": return command_acquisition(root, args)
         if args.command == "snapshots": return command_snapshots(root, args)

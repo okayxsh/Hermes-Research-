@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"evaluation","split":"valid_unseen","selection_policy_version":"task-selection-v1","requested_count":null,"seed":null,"balancing":"round_robin_families","status":"BLOCKED_UNTIL_REAL_PILOT_AND_PROTOCOL_FREEZE"}

@@ -30,6 +30,8 @@ python -m rq1.cli alfworld capabilities
 python -m rq1.cli alfworld index --split valid_seen
 ```
 
+Real task manifests are created only from installed-data metadata through the capability-gated `rq1 tasks` commands. The committed task lists remain empty placeholders until approved freezes; fake fixtures are never promoted to real IDs.
+
 ## Recovery-aware pilot runner
 
 ```bash

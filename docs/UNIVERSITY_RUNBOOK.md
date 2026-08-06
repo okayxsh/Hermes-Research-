@@ -133,3 +133,7 @@ python -m rq1.cli freeze protocol --approval-file <protocol.json> --pilot-report
 ```
 
 Every final runner revalidates both freezes, the clean Git commit, frozen model/prompts/manifests, and capability evidence. It blocks rather than falling back to a fake adapter when recovery-profile, Hermes, or controlled-perturbation support is unavailable.
+
+## 11. Task discovery and freezing
+
+With installed ALFWorld data, use `python -m rq1.cli tasks capabilities`, then discover/propose only the permitted split. Real `valid_unseen` metadata is inaccessible during pilot calibration and becomes available only after the approved final-stage gate. Never copy IDs into the committed placeholders manually.

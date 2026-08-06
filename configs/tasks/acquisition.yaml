@@ -1,0 +1,1 @@
+{"schema_version":1,"kind":"acquisition","split":"train","selection_policy_version":"task-selection-v1","requested_count":null,"seed":null,"balancing":"round_robin_families","status":"REQUIRES_FREEZE_APPROVAL"}
