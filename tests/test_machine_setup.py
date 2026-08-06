@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import sys
 import tempfile
 import tomllib
@@ -23,6 +24,8 @@ from rq1.setup.models import (  # noqa: E402
 from rq1.setup.orchestrator import SetupError, SetupOrchestrator  # noqa: E402
 from rq1.cli import command_setup_machine  # noqa: E402
 from rq1.setup.probes import python_executable, read_os_release, total_ram_gib, wsl_generation  # noqa: E402
+from rq1.setup.probes import network_probe  # noqa: E402
+from urllib.error import HTTPError, URLError  # noqa: E402
 from rq1.setup.registry import SetupRegistry  # noqa: E402
 from rq1.setup.runner import redact, redact_command  # noqa: E402
 from rq1.setup.stages import (  # noqa: E402
@@ -170,6 +173,25 @@ def make_handlers(
 
 
 class SetupModelsAndParsingTests(unittest.TestCase):
+    @mock.patch("rq1.setup.probes.urlopen")
+    def test_network_probe_accepts_http_responses_including_404(self, urlopen) -> None:
+        response = mock.MagicMock(status=200)
+        urlopen.return_value.__enter__.return_value = response
+        self.assertTrue(network_probe("https://registry.ollama.ai").available)
+
+        urlopen.reset_mock()
+        urlopen.side_effect = HTTPError("https://registry.ollama.ai", 404, "Not Found", {}, None)
+        result = network_probe("https://registry.ollama.ai")
+        self.assertTrue(result.available)
+        self.assertEqual("HTTP 404", result.details)
+
+    @mock.patch("rq1.setup.probes.urlopen")
+    def test_network_probe_rejects_transport_failures(self, urlopen) -> None:
+        for failure in (TimeoutError("timed out"), URLError("DNS failure"), ssl.SSLError("TLS failure")):
+            urlopen.reset_mock()
+            urlopen.side_effect = failure
+            result = network_probe("https://registry.ollama.ai")
+            self.assertFalse(result.available)
     def test_uv_lock_is_python311_and_contains_complete_alfworld_closure(self) -> None:
         root = Path(__file__).resolve().parents[1]
         lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))

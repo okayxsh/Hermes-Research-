@@ -1,147 +1,111 @@
-# University machine runbook
+# University-machine execution runbook
 
-This runbook provisions and verifies one Ubuntu machine for a reproducible agent-environment experiment. It does not run acquisition, evaluation, or analysis.
+Use native Ubuntu 22.04/24.04 or WSL2 Ubuntu on x86_64 with at least 16 GiB RAM, 25 GiB free disk, and GPU visibility when available. Start from a fresh checkout and do not reuse untrusted setup state.
 
-> **Implementation gate:** do not follow the execution commands until [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) says the complete setup workflow is runnable. No real external installation was executed during repository implementation.
-
-## 1. Prepare the machine
-
-Use an x86_64 Ubuntu 22.04 or 24.04 installation, either native or under WSL2. Confirm at least 16 GiB RAM and 25 GiB available storage; 24 GiB RAM is recommended. Clone the repository to a stable writable path and check out the intended commit.
-
-Do not manually create or modify Hermes profiles before setup. If Hermes is already installed, preserve the default/personal profile and let capability probes determine whether the installation can be reused.
-
-## 2. Preview the staged setup
-
-From the repository root:
+## 1. Preflight
 
 ```bash
+uname -m
+python3 --version
+git status --short
+python3 -m rq1.cli doctor
+python3 -m rq1.cli validate-config
 bash scripts/setup_machine.sh --dry-run --verbose
 ```
 
-Review the proposed preflight, system package, Python, Ollama, Hermes, ALFWorld, data, model, profile, and verification stages. Dry-run must not install packages, invoke remote installers, pull models, download data, create profiles, or mutate services.
+Confirm x86_64, Python 3.11 availability, a clean intended commit, supported Ubuntu/WSL2, resources, network, and a dry-run with no installer/model/data mutation.
 
-## 3. Run or resume installation
-
-After the preview and local approval:
+## 2. Full setup
 
 ```bash
 bash scripts/setup_machine.sh --yes --resume --verbose
 ```
 
-The default run installs or reuses:
+This runs the existing 00–09 setup sequence: dependencies, Python/uv, Ollama, Hermes, ALFWorld 0.4.2/data, model, isolated profiles, and installation verification.
 
-- documented Ubuntu prerequisites;
-- a locked Python 3.11 `.venv` managed by `uv`;
-- Ollama serving on localhost;
-- a per-user Hermes Agent CLI installation without browser setup, followed by experiment profiles created without bundled skills;
-- pinned text-only `alfworld==0.4.2` and its separately downloaded data;
-- primary model `hermes3:8b`;
-- isolated `rq1-pilot` and `rq1-acquisition` Hermes profiles; and
-- the repository's local ALFWorld bridge.
+## 3. Inspect status and logs
 
-Optional flags are exactly:
-
-```text
---dry-run
---yes
---resume
---skip-system-packages
---skip-model
---skip-alfworld-data
---install-fallback-model
---force-stage <stage>
---verbose
+```bash
+python3 -m rq1.cli setup-status
+python3 -m rq1.cli stage-status
+find artifacts/stage_reports artifacts/manifests -type f -maxdepth 2 -print
 ```
 
-Skip flags are non-mutating choices. They leave setup incomplete unless the capability already exists and passes a fresh probe. `--install-fallback-model` additionally installs `llama3.1:8b`; it never silently replaces the primary model.
+Review `artifacts/stage_reports/installation.json` and the machine, software, model, ALFWorld-data, and Hermes manifests.
 
-## 4. Recover without deleting state
-
-Resume after an interruption with the same command:
+## 4. Recover a blocked setup
 
 ```bash
 bash scripts/setup_machine.sh --yes --resume --verbose
-```
-
-To rerun one stage, first preview:
-
-```bash
 bash scripts/setup_machine.sh --dry-run --force-stage <stage> --verbose
+bash scripts/setup_machine.sh --yes --force-stage <stage> --resume --verbose
 ```
 
-Then execute with `--yes`. A forced stage invalidates only that stage and its downstream setup status. It preserves installed software, models, profiles, ALFWorld data, logs, and historical reports.
+Use only the documented stage names in `docs/SETUP.md`; preserve reports and data. Do not bypass a blocked capability.
 
-## 5. Review installation evidence
-
-Do not rely only on terminal output. Review:
-
-```text
-artifacts/stage_reports/installation.json
-artifacts/manifests/machine_manifest.yaml
-artifacts/manifests/software_versions.yaml
-artifacts/manifests/model_manifest.yaml
-artifacts/manifests/alfworld_data_manifest.yaml
-artifacts/manifests/hermes_capabilities.json
-```
-
-Confirm that sensitive machine identifiers and secrets are absent. Verify that each required stage is `passed`, no required capability is merely `skipped`, and the aggregate report distinguishes installation, configuration, import tests, smoke tests, real integration tests, and unverified items.
-
-## 6. Installation verification
-
-Stage 09 starts the deterministic fake bridge on an ephemeral localhost port and exercises health, episode start, step, status, reset, and abort. It re-probes external commands and validates base profiles only through the Phase 4 capability-gated lifecycle; real profile isolation requires separate observed evidence.
-
-A successful fake bridge workflow may set `installation_ready: true` when every other installation requirement passes. It does not establish real ALFWorld or Hermes-to-ALFWorld compatibility.
-
-## 7. Real ALFWorld pilot gate
-
-Before starting any pilot, inspect `python -m rq1.cli alfworld capabilities` and `python -m rq1.cli alfworld index --split valid_seen`. Then run `python -m rq1.cli alfworld smoke-test --split valid_seen --yes`. The capability-gated real adapter must load the installed ALFWorld 0.4.2 package and configured dataset, start one indexed real episode, execute one valid step, report cached status, explicitly reset, and controller-abort it. Capture the immutable report, runtime version, data identity, and bridge events.
-
-Only that successful start → step → reset test may set:
-
-```text
-pilot_ready: true
-real_integration_tested: true
-```
-
-If the package, downloader, data, real adapter, or expected runtime behavior is missing, malformed, or unsupported, stop with a structured blocked report and remediation. Do not fall back to the fake adapter while labeling the result as real.
-
-## 8. Handoff
-
-Preserve the installation report, manifests, stage reports, repository revision, and raw gate logs. Do not publish credentials or machine-identifying details. Proceed to the separate pilot protocol only after both readiness fields and all required evidence have been reviewed.
-
-## 9. Phase 7 real pilot and freeze
-
-Phase 6 prepares the runner but does not create real evidence. On the approved machine:
+## 5. Real pilot
 
 ```bash
-python -m rq1.cli pilot plan --mode real
-RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
+python3 -m rq1.cli alfworld capabilities
+python3 -m rq1.cli alfworld index --split valid_seen
+python3 -m rq1.cli alfworld smoke-test --split valid_seen --yes
+python3 -m rq1.cli pilot plan --mode real
+RQ1_RUN_REAL_PILOT_TESTS=1 python3 -m rq1.cli pilot run --mode real --yes
 ```
 
-Resume with the reported run ID and never substitute fake evidence for a blocked test. A `go` recommendation permits manual Phase 7 approval; it does not automatically freeze versions, counts, tasks, prompts, or recovery policy.
+The pilot uses only approved `valid_seen` tasks and performs real capability-gated checks.
 
-If target relocation or native skill retrieval is not capability-observed, the relevant real handlers will produce immutable blocked evidence and the report remains `no_go`. Do not replace the controlled perturbation or retrieval-noise metric during execution; any alternative requires manual research-protocol approval.
-
-## 10. Final-stage gate
-
-Do not begin final acquisition or evaluation during the pilot. After a real Phase 7 `go`, create separately approved immutable freezes:
+## 6. Confirm PILOT_GO and readiness
 
 ```bash
-python -m rq1.cli freeze plan
-python -m rq1.cli freeze environment --approval-file <environment.json> --pilot-report <go-report.json> --yes
-python -m rq1.cli freeze protocol --approval-file <protocol.json> --pilot-report <go-report.json> --yes
+python3 -m rq1.cli pilot report --run-id <PILOT_RUN_ID>
+python3 -c 'import json; p=json.load(open("artifacts/pilot_reports/<PILOT_RUN_ID>/pilot-report.json")); assert p["go_no_go"]["decision"] == "go" and p["pilot_ready"] is True and p["experimental_ready"] is True; print("PILOT_GO and experimental_ready=true")'
 ```
 
-Every final runner revalidates both freezes, the clean Git commit, frozen model/prompts/manifests, and capability evidence. It blocks rather than falling back to a fake adapter when recovery-profile, Hermes, or controlled-perturbation support is unavailable.
+Do not proceed unless the checks pass and all mandatory real-integrated evidence is reviewed.
 
-## 11. Task discovery and freezing
+## 7. Manual approval and freezes
 
-With installed ALFWorld data, use `python -m rq1.cli tasks capabilities`, then discover/propose only the permitted split. Real `valid_unseen` metadata is inaccessible during pilot calibration and becomes available only after the approved final-stage gate. Never copy IDs into the committed placeholders manually.
+```bash
+python3 -m rq1.cli freeze plan
+python3 -m rq1.cli freeze environment --approval-file <ENVIRONMENT_APPROVAL.json> --pilot-report artifacts/pilot_reports/<PILOT_RUN_ID>/pilot-report.json --yes
+python3 -m rq1.cli freeze protocol --approval-file <PROTOCOL_APPROVAL.json> --pilot-report artifacts/pilot_reports/<PILOT_RUN_ID>/pilot-report.json --yes
+```
 
-## 12. Evaluation activation
+Approval files must contain the reviewed frozen model, prompts, policies, task counts, budgets, timeouts, relevance/exclusion rules, and references.
 
-After every prerequisite artifact is reviewed and frozen, inspect `python -m rq1.cli evaluation activation prerequisites`. Activation requires a separate approval file and `--yes`; execution additionally requires `RQ1_RUN_FINAL_EVALUATION=1` and the exact activation-manifest path. Do not interpret activation code or a YAML flag as permission to run the final experiment.
+## 8. Final autopilot
 
-## Autopilot boundary
+```bash
+bash scripts/rq1_autopilot.sh plan --mode final
+bash scripts/rq1_autopilot.sh final --approval artifacts/approvals/final-run-approved.json --yes
+```
 
-After inspecting the real pilot evidence, use `bash scripts/rq1_autopilot.sh plan --mode bootstrap` before any unattended run. A blocked autopilot result is evidence of an unresolved machine or scientific gate, not a request to bypass it.
+The final command revalidates every freeze and approval and blocks if any real adapter or evidence is unavailable.
+
+## 9. Stop and resume safely
+
+```bash
+python3 -m rq1.cli autopilot stop --run-id <AUTOPILOT_RUN_ID>
+python3 -m rq1.cli autopilot status --run-id <AUTOPILOT_RUN_ID>
+python3 -m rq1.cli autopilot logs --run-id <AUTOPILOT_RUN_ID>
+python3 -m rq1.cli autopilot resume --run-id <AUTOPILOT_RUN_ID>
+```
+
+Uncertain mutations always create a new attempt; never retry them in place.
+
+## 10. Final outputs
+
+Setup evidence is under `artifacts/stage_reports/` and `artifacts/manifests/`; pilot evidence is under `artifacts/pilot_reports/<PILOT_RUN_ID>/`; autopilot state is under `artifacts/autopilot/<AUTOPILOT_RUN_ID>/`; final outputs are under `results/final/<RUN_ID>/` when a validated final run exists.
+
+## 11. Common blockers
+
+- Ollama: service unavailable, model digest mismatch, tool-calling failure, or 4 GiB VRAM OOM; reduce concurrency or remain blocked.
+- Hermes: unsupported CLI/profile/plugin/hooks, missing native skill observability, or contaminated profiles; do not invent commands or use personal profiles.
+- ALFWorld: missing 0.4.2 package/data, invalid index, unsupported runtime, reset/replay mismatch, perturbation, or solvability failure.
+- GPU: absent/incorrect driver, CUDA visibility failure, OOM, or unstable latency; CPU fallback is not a real-readiness substitute.
+- Disk/profiles: below 25 GiB free, interrupted writes, path collisions, shared state, or evaluation skill writes; stop and preserve evidence.
+
+## 12. `valid_unseen` protection
+
+Never discover, read, freeze, queue, or run `valid_unseen` before the approved environment/protocol freezes, validated acquisition/snapshots/profiles/recovery evidence, and immutable evaluation activation. The YAML flag alone cannot authorize it; only the explicitly activated final evaluation command may access the frozen list.

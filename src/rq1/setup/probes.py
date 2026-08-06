@@ -8,7 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from rq1.setup.models import ProbeResult
@@ -65,7 +65,10 @@ def network_probe(url: str, timeout: int = 8) -> ProbeResult:
         request = Request(url, headers={"User-Agent": "rq1-installation-probe/1"})
         with urlopen(request, timeout=timeout) as response:
             status = getattr(response, "status", 200)
-        return ProbeResult(f"network:{url}", status < 500, f"HTTP {status}")
+        return ProbeResult(f"network:{url}", True, f"HTTP {status}")
+    except HTTPError as exc:
+        # An HTTPError still proves DNS, TLS, and HTTP-layer connectivity.
+        return ProbeResult(f"network:{url}", True, f"HTTP {exc.code}")
     except (OSError, URLError) as exc:
         return ProbeResult(f"network:{url}", False, f"unreachable: {type(exc).__name__}")
 
