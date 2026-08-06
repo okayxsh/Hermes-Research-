@@ -787,6 +787,16 @@ def build_parser() -> argparse.ArgumentParser:
         item = analysis_sub.add_parser(name); item.add_argument("--evaluation-run", required=True); item.add_argument("--resampling-seed", type=int, default=20260806)
     sub.add_parser("report-assets", help="Generate final report assets only from validated analysis.")
     sub.add_parser("archive", help="Archive final reproducibility package only from validated outputs.")
+    autopilot = sub.add_parser("autopilot", help="Fail-closed unattended RQ1 supervisor.")
+    autopilot_sub = autopilot.add_subparsers(dest="autopilot_command", required=True)
+    plan_auto=autopilot_sub.add_parser("plan"); plan_auto.add_argument("--mode", choices=("bootstrap","final"), required=True); plan_auto.add_argument("--output-dir")
+    for name in ("bootstrap","final"):
+        item=autopilot_sub.add_parser(name); item.add_argument("--yes",action="store_true"); item.add_argument("--detach",action="store_true"); item.add_argument("--output-dir")
+        if name=="final": item.add_argument("--approval",required=True)
+    for name in ("status","logs","resume","stop"):
+        item=autopilot_sub.add_parser(name); item.add_argument("--run-id",required=True)
+    autopilot_sub.add_parser("doctor")
+    forecast_auto=autopilot_sub.add_parser("forecast"); forecast_auto.add_argument("--pilot-report",required=True)
     stage = sub.add_parser("stage")
     stage.add_argument("name", choices=tuple(STAGE_MAP))
     stage.add_argument("--dry-run", action="store_true")
@@ -822,6 +832,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "snapshots": return command_snapshots(root, args)
         if args.command == "evaluation": return command_evaluation(root, args)
         if args.command == "analysis": return command_analysis(root, args)
+        if args.command == "autopilot":
+            from rq1.autopilot.cli import command as autopilot_command
+            return autopilot_command(root, args)
         if args.command in {"report-assets", "archive"}: return command_final_derived(root, args.command)
         if args.command == "stage": return _run_stage(root, args.name, args.dry_run)
         if args.command == "run-until": return command_run_until(root, args.stage, args.dry_run)

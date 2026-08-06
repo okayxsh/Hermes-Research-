@@ -6,6 +6,7 @@
 - Fix 4 task-manifest boundaries: deterministic fixture-tested discovery, canonical family mapping, balanced seeded proposal contracts, hash-bound validation, and capability-gated frozen manifests. No installed ALFWorld task data or real task lists were populated.
 - Fix 5 activation boundary: immutable evaluation activation manifests, prerequisite/drift validation, explicit runtime opt-in, and invalidation records. It is contract-tested only; final evaluation remains disabled and unexecuted.
 - Fix 6 offline analysis boundary: fail-closed validated-evidence ingestion, paired post-failure metrics, exclusions, deterministic cluster-bootstrap uncertainty, relevance-audit exports, hash-addressed analysis outputs, and optional figure rendering. It has synthetic fixture coverage only and has not analysed any real or fake pilot result as research evidence.
+- Final autopilot boundary: typed run plans, atomic supervisor state, stage graph, contingencies, cooperative stop/resume, runtime forecasts, and local archive validation. It stops at unverified real adapters and has fixture coverage only; it has not executed setup, pilot, acquisition, or evaluation.
 
 - Repository layout, configuration templates, stage state/report foundations, locks, SQLite run claiming, synthetic episode flow, metrics, snapshot validation, leakage checks, schemas, and CI.
 - A standard-library localhost HTTP bridge backed by a deterministic fake ALFWorld adapter.

@@ -1,4 +1,4 @@
-.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real profiles-plan profiles-create-base profiles-validate profiles-isolation-test profiles-contamination-check recovery-plan recovery-verify recovery-capabilities pilot-list pilot-plan pilot-fake pilot-real pilot-status pilot-report freeze-plan acquisition-plan snapshots-plan evaluation-profiles-plan evaluation-activation-plan tasks-capabilities tasks-pilot-plan analysis-validate analysis-compute analysis-run-all
+.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real profiles-plan profiles-create-base profiles-validate profiles-isolation-test profiles-contamination-check recovery-plan recovery-verify recovery-capabilities pilot-list pilot-plan pilot-fake pilot-real pilot-status pilot-report freeze-plan acquisition-plan snapshots-plan evaluation-profiles-plan evaluation-activation-plan tasks-capabilities tasks-pilot-plan analysis-validate analysis-compute analysis-run-all autopilot-plan autopilot-bootstrap
 
 help:
 	@python -m rq1.cli --help
@@ -114,3 +114,9 @@ analysis-compute:
 
 analysis-run-all:
 	@python -m rq1.cli analysis run-all --evaluation-run $(RUN_ID)
+
+autopilot-plan:
+	@python -m rq1.cli autopilot plan --mode bootstrap
+
+autopilot-bootstrap:
+	@bash scripts/rq1_autopilot.sh bootstrap --yes

@@ -32,3 +32,7 @@ Manual pilot evidence is copied as validated JSON, hashed, and appended to a nam
 Fake bridge verification exercises health, start, step, status, reset, and abort over the local HTTP contract. Phase 3 fake Hermes verification additionally exercises its local tool boundary and evidence reconciliation. Neither run loads ALFWorld data, runs an ALFWorld environment, loads installed Hermes, captures native skills, or establishes end-to-end compatibility.
 
 Before operational use, preserve installed versions, installer hashes, command help, capability probes, model metadata, profile-isolation evidence, bridge logs, ALFWorld data inventory, and machine/software/model manifests. The exact real-ALFWorld pilot gate is an actual start → step → reset cycle; package import alone is insufficient.
+
+## Autopilot
+
+Autopilot orchestration is locally fixture-tested only. It does not establish detached-service, Hermes, Ollama, ALFWorld, recovery, profile, or archive compatibility on a university machine.

@@ -36,6 +36,8 @@ Final `valid_unseen` recovery evaluation is additionally disabled until a separa
 
 Once a real final evaluation has been validated, its saved logs can be analysed offline with `python -m rq1.cli analysis validate-inputs --evaluation-run <id>` and `python -m rq1.cli analysis run-all --evaluation-run <id>`. These commands cannot start models, Hermes, or ALFWorld, and they reject fake/pilot-only or incomplete evidence.
 
+The local supervisor entry point is `bash scripts/rq1_autopilot.sh plan --mode bootstrap`. It is deliberately fail-closed: until real external adapters are observed and validated, bootstrap/final runs record a blocker rather than create final outputs or claim readiness.
+
 ## Recovery-aware pilot runner
 
 ```bash

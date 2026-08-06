@@ -86,3 +86,7 @@ Use `python -m rq1.cli pilot status`, then `pilot resume --run-id <id>`. Ordinar
 ## Safe reporting
 
 Failures should end as `failed` or `blocked` with the probe name, redacted diagnostics, and a next action. If output contains credentials, tokens, usernames, hostnames, IP addresses, serial numbers, or environment values, do not copy it into committed documentation or reports.
+
+## Autopilot blockers
+
+Use `rq1 autopilot status --run-id <id>` and `logs --run-id <id>` to inspect append-only contingency evidence. Do not retry an uncertain environment or skill mutation in place; resolve the blocker and resume from the documented safe boundary.

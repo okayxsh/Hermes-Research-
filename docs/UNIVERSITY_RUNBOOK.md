@@ -141,3 +141,7 @@ With installed ALFWorld data, use `python -m rq1.cli tasks capabilities`, then d
 ## 12. Evaluation activation
 
 After every prerequisite artifact is reviewed and frozen, inspect `python -m rq1.cli evaluation activation prerequisites`. Activation requires a separate approval file and `--yes`; execution additionally requires `RQ1_RUN_FINAL_EVALUATION=1` and the exact activation-manifest path. Do not interpret activation code or a YAML flag as permission to run the final experiment.
+
+## Autopilot boundary
+
+After inspecting the real pilot evidence, use `bash scripts/rq1_autopilot.sh plan --mode bootstrap` before any unattended run. A blocked autopilot result is evidence of an unresolved machine or scientific gate, not a request to bypass it.
