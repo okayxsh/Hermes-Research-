@@ -59,6 +59,8 @@ def command_validate_config(root: Path) -> int:
 
 
 def _run_stage(root: Path, stage: str, dry_run: bool) -> int:
+    if stage != "preflight":
+        raise RuntimeError("Generic stage execution is retired for scientific stages; use the dedicated freeze, acquisition, snapshots, evaluation, analysis, report-assets, or archive command.")
     registry = _registry(root)
     attempt = new_attempt_id()
     started = utc_now()
@@ -70,13 +72,8 @@ def _run_stage(root: Path, stage: str, dry_run: bool) -> int:
             if stage == "preflight":
                 command_preflight(root)
                 warnings: list[str] = []
-            elif STAGE_MAP[stage].external and not dry_run:
-                raise RuntimeError(
-                    f"{stage} requires unverified external integrations and is not implemented in this foundation. "
-                    "Use --dry-run for orchestration validation or mock-run for local workflow tests."
-                )
             else:
-                warnings = ["Placeholder stage: no external integration was executed."] if stage in STAGE_MAP else []
+                raise RuntimeError("Generic placeholder stage execution is disabled.")
             next_name = STAGE_MAP.get(stage)
             report = completed_report(stage, attempt, started, dry_run=dry_run, outputs=[], warnings=warnings, next_command=None, metadata={"external": next_name.external if next_name else False})
             report.write(report_path)
@@ -471,6 +468,63 @@ def command_setup_status(root: Path) -> int:
     return 0
 
 
+def _final_gate(root: Path) -> dict[str, object]:
+    from rq1.freeze.validation import validate_final_gates
+    result = validate_final_gates(root)
+    if not result.valid:
+        raise RuntimeError(json.dumps({"ok": False, "status": "blocked", "error": {"code": "final_freeze_gate", "reasons": list(result.reasons)}}))
+    return result.to_dict()
+
+
+def command_freeze(root: Path, args: argparse.Namespace) -> int:
+    from rq1.freeze.validation import build_freeze, validate_final_gates, write_freeze
+    if args.freeze_command == "plan":
+        print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "required": "approved real Phase 7 go report and manual approval inputs"}, indent=2)); return 0
+    if not args.yes: raise RuntimeError("Creating a freeze requires --yes; use `freeze plan` first")
+    approval = json.loads(Path(args.approval_file).read_text(encoding="utf-8"))
+    pilot_report = json.loads(Path(args.pilot_report).read_text(encoding="utf-8"))
+    manifest = build_freeze(root, args.freeze_command, approval, pilot_report)
+    path = write_freeze(root, manifest)
+    print(json.dumps({"ok": True, "freeze": manifest.to_dict(), "path": str(path.relative_to(root))}, indent=2, sort_keys=True)); return 0
+
+
+def command_acquisition(root: Path, args: argparse.Namespace) -> int:
+    from rq1.acquisition.runner import AcquisitionRunner
+    if args.acquisition_command == "plan":
+        from rq1.freeze.validation import validate_final_gates
+        print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "split": "train", "profile": "rq1-acquisition"}, indent=2)); return 0
+    _final_gate(root)
+    if args.acquisition_command == "validate":
+        print(json.dumps({"ok": False, "status": "blocked", "reason": "No validated final acquisition report exists for the supplied run."}, indent=2)); return 1
+    if not args.yes: raise RuntimeError("Final acquisition requires --yes")
+    raise RuntimeError("Final acquisition execution requires a frozen queue and an observed real Hermes acquisition adapter; no final run was started.")
+
+
+def command_snapshots(root: Path, args: argparse.Namespace) -> int:
+    if args.snapshots_command == "plan":
+        from rq1.freeze.validation import validate_final_gates
+        print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "source": "validated acquisition history only"}, indent=2)); return 0
+    _final_gate(root)
+    if args.snapshots_command == "validate":
+        print(json.dumps({"ok": False, "status": "blocked", "reason": "No immutable final snapshot manifests exist."}, indent=2)); return 1
+    if not args.yes: raise RuntimeError("Final snapshot creation requires --yes")
+    raise RuntimeError("Final snapshots require validated acquisition history; no snapshots were created.")
+
+
+def command_evaluation(root: Path, args: argparse.Namespace) -> int:
+    if args.evaluation_command == "profiles" and args.evaluation_profiles_command == "plan":
+        from rq1.freeze.validation import validate_final_gates
+        print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "profile_pattern": "rq1-recovery-<snapshot-id>"}, indent=2)); return 0
+    _final_gate(root)
+    if not getattr(args, "yes", False): raise RuntimeError("Final evaluation mutation requires --yes")
+    raise RuntimeError("Final evaluation is capability-gated: validated snapshots, read-only profile materialization, and real recovery/perturbation evidence are required; no valid_unseen task was started.")
+
+
+def command_final_derived(root: Path, command: str) -> int:
+    _final_gate(root)
+    raise RuntimeError(f"{command} is blocked until a validated final evaluation report exists; no derived scientific artifact was produced.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RQ1 experiment foundation CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -558,6 +612,38 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify-installation", help="Run the final installation verification stage.")
     _add_setup_options(verify)
     sub.add_parser("setup-status", help="Show machine-setup stage state.")
+    freeze = sub.add_parser("freeze", help="Plan or create immutable final-experiment freezes.")
+    freeze_sub = freeze.add_subparsers(dest="freeze_command", required=True)
+    freeze_sub.add_parser("plan")
+    for name in ("environment", "protocol"):
+        item = freeze_sub.add_parser(name)
+        item.add_argument("--approval-file", required=True)
+        item.add_argument("--pilot-report", required=True)
+        item.add_argument("--yes", action="store_true")
+    acquisition = sub.add_parser("acquisition", help="Final train-only acquisition (strictly freeze-gated).")
+    acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
+    acquisition_sub.add_parser("plan")
+    for name in ("run", "resume"):
+        item = acquisition_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--yes", action="store_true")
+    item = acquisition_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
+    snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")
+    snapshots_sub = snapshots.add_subparsers(dest="snapshots_command", required=True)
+    snapshots_sub.add_parser("plan")
+    item = snapshots_sub.add_parser("build"); item.add_argument("--yes", action="store_true")
+    snapshots_sub.add_parser("validate")
+    evaluation = sub.add_parser("evaluation", help="Final paired controlled-recovery evaluation.")
+    evaluation_sub = evaluation.add_subparsers(dest="evaluation_command", required=True)
+    evaluation_profiles = evaluation_sub.add_parser("profiles").add_subparsers(dest="evaluation_profiles_command", required=True)
+    evaluation_profiles.add_parser("plan")
+    item = evaluation_profiles.add_parser("create"); item.add_argument("--yes", action="store_true")
+    evaluation_queue = evaluation_sub.add_parser("queue").add_subparsers(dest="evaluation_queue_command", required=True)
+    item = evaluation_queue.add_parser("generate"); item.add_argument("--yes", action="store_true")
+    for name in ("run", "resume"):
+        item = evaluation_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--yes", action="store_true")
+    item = evaluation_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
+    sub.add_parser("analysis", help="Generate final analysis only from validated evaluation artifacts.")
+    sub.add_parser("report-assets", help="Generate final report assets only from validated analysis.")
+    sub.add_parser("archive", help="Archive final reproducibility package only from validated outputs.")
     stage = sub.add_parser("stage")
     stage.add_argument("name", choices=tuple(STAGE_MAP))
     stage.add_argument("--dry-run", action="store_true")
@@ -587,6 +673,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))
         if args.command == "setup-status": return command_setup_status(root)
+        if args.command == "freeze": return command_freeze(root, args)
+        if args.command == "acquisition": return command_acquisition(root, args)
+        if args.command == "snapshots": return command_snapshots(root, args)
+        if args.command == "evaluation": return command_evaluation(root, args)
+        if args.command in {"analysis", "report-assets", "archive"}: return command_final_derived(root, args.command)
         if args.command == "stage": return _run_stage(root, args.name, args.dry_run)
         if args.command == "run-until": return command_run_until(root, args.stage, args.dry_run)
     except (RuntimeError, SetupError, StageTransitionError, FileNotFoundError) as exc:

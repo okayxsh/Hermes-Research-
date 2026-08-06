@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python -m rq1.cli stage acquisition "$@"
+python -m rq1.cli acquisition run "$@"

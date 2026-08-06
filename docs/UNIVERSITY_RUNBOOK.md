@@ -121,3 +121,15 @@ RQ1_RUN_REAL_PILOT_TESTS=1 python -m rq1.cli pilot run --mode real --yes
 Resume with the reported run ID and never substitute fake evidence for a blocked test. A `go` recommendation permits manual Phase 7 approval; it does not automatically freeze versions, counts, tasks, prompts, or recovery policy.
 
 If target relocation or native skill retrieval is not capability-observed, the relevant real handlers will produce immutable blocked evidence and the report remains `no_go`. Do not replace the controlled perturbation or retrieval-noise metric during execution; any alternative requires manual research-protocol approval.
+
+## 10. Final-stage gate
+
+Do not begin final acquisition or evaluation during the pilot. After a real Phase 7 `go`, create separately approved immutable freezes:
+
+```bash
+python -m rq1.cli freeze plan
+python -m rq1.cli freeze environment --approval-file <environment.json> --pilot-report <go-report.json> --yes
+python -m rq1.cli freeze protocol --approval-file <protocol.json> --pilot-report <go-report.json> --yes
+```
+
+Every final runner revalidates both freezes, the clean Git commit, frozen model/prompts/manifests, and capability evidence. It blocks rather than falling back to a fake adapter when recovery-profile, Hermes, or controlled-perturbation support is unavailable.

@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python -m rq1.cli stage evaluation --dry-run "$@"
+python -m rq1.cli evaluation queue generate "$@"

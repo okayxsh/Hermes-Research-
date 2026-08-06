@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python -m rq1.cli stage freeze "$@"
+python -m rq1.cli freeze environment "$@"

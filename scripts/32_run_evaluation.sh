@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python -m rq1.cli stage evaluation "$@"
+python -m rq1.cli evaluation run "$@"

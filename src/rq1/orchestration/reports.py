@@ -21,6 +21,10 @@ class StageReport:
     error: str | None = None
     next_command: str | None = None
     metadata: dict[str, Any] | None = None
+    input_fingerprint: str | None = None
+    validated_artifacts: list[str] | None = None
+    evidence_level: str | None = None
+    gate_validation: dict[str, Any] | None = None
 
     def write(self, path: Path, overwrite: bool = False) -> None:
         if path.exists() and not overwrite:

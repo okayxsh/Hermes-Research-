@@ -19,6 +19,10 @@ class StageState:
     completed_at: str | None = None
     report: str | None = None
     attempt_id: str | None = None
+    input_fingerprint: str | None = None
+    validated_artifacts: tuple[str, ...] = ()
+    evidence_level: str | None = None
+    gate_validation: dict[str, object] | None = None
 
 
 class StageRegistry:
@@ -35,10 +39,20 @@ class StageRegistry:
         self.initialize()
         raw: dict[str, Any] = json.loads(self.path.read_text(encoding="utf-8"))
         stages = raw.get("stages", {})
-        return {name: StageState(**stages.get(name, {})) for name in STAGE_MAP}
+        values = {name: StageState(**stages.get(name, {})) for name in STAGE_MAP}
+        # Old generic reports are orchestration history, never scientific evidence.
+        final = {"freeze", "acquisition", "validate-acquisition", "snapshots", "validate-snapshots", "evaluation", "validate-evaluation", "analysis", "report-assets", "archive"}
+        changed = False
+        for name in final:
+            state = values[name]
+            if state.status == "passed" and not state.validated_artifacts:
+                values[name] = StageState(status="invalidated", report=state.report, attempt_id=state.attempt_id)
+                changed = True
+        if changed: self._save(values)
+        return values
 
     def _save(self, states: dict[str, StageState]) -> None:
-        payload = {"schema_version": 1, "stages": {name: asdict(value) for name, value in states.items()}}
+        payload = {"schema_version": 2, "stages": {name: asdict(value) for name, value in states.items()}}
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(self.path)
