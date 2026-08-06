@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["checkpoint_id","task_id","split","task_family","prefix_actions","prefix_length","observable_state_digest","validation_result"]}

@@ -10,6 +10,7 @@
 - CLI surfaces for `setup-machine`, `setup-stage`, `verify-installation`, and `setup-status`.
 - A project-local, opt-in Hermes plugin boundary with five bridge-backed tools, strict local validation, local-only HTTP enforcement, correlation headers, fake adapter/event coverage, run-registry bindings, reconciliation, and fake/real verification commands.
 - Phase 4 typed profile plans, fake isolated profile lifecycle, contamination checks, profile manifests/archives, recovery-profile template, and capability-gated real-profile boundary.
+- Phase 5 deterministic fake recovery controller: checkpoint policies/manifests, canonical observable-state digests, explicit reset-and-replay, fake target relocation, solvability boundary, recovery contexts, and append-only recovery evidence.
 
 The fake bridge is sufficient for installation-plumbing verification only. It is not evidence of real ALFWorld compatibility.
 

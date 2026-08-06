@@ -14,6 +14,7 @@ This repository intentionally separates an implemented contract from evidence th
 | ALFWorld data | No download or dataset validation | Data inventory, size/count checks, digest, and successful task loading from the configured data directory. |
 | Fake bridge | Unit, contract, and local HTTP integration coverage | Already suitable for fake installation verification, but not for a real compatibility claim. |
 | Real ALFWorld bridge | Capability-gated and unavailable | Actual start → step → reset through the real adapter on the target machine. |
+| Real controlled recovery | Deterministic fake recovery contract only | Observed real checkpoint replay equality, supported perturbation, validated solvability, and reconciled recovery evidence. |
 | `hermes3:8b` | Candidate identifier only | Ollama pull metadata/digest and a successful raw inference smoke test. |
 | `llama3.1:8b` fallback | Optional candidate identifier only | Explicit fallback installation flag, recorded digest, and separate smoke-test evidence. |
 

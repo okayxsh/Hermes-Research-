@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","required":["perturbation_id","checkpoint_id","type","observable_post_state_digest","solvable","visible_message"]}

@@ -1,4 +1,4 @@
-.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real profiles-plan profiles-create-base profiles-validate profiles-isolation-test profiles-contamination-check
+.PHONY: help preflight doctor status setup setup-dry-run verify-installation setup-status validate mock test hermes-capabilities verify-hermes-fake verify-hermes-real profiles-plan profiles-create-base profiles-validate profiles-isolation-test profiles-contamination-check recovery-plan recovery-verify recovery-capabilities
 
 help:
 	@python -m rq1.cli --help
@@ -57,3 +57,12 @@ profiles-isolation-test:
 
 profiles-contamination-check:
 	@python -m rq1.cli profiles contamination-check rq1-pilot
+
+recovery-plan:
+	@python -m rq1.cli recovery plan
+
+recovery-verify:
+	@python -m rq1.cli recovery verify --mode fake
+
+recovery-capabilities:
+	@python -m rq1.cli recovery capabilities

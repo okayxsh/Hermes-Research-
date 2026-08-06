@@ -243,6 +243,30 @@ def command_profiles(root: Path, args: argparse.Namespace) -> int:
     raise ProfileLifecycleError("Unknown profile command")
 
 
+def command_recovery(root: Path, args: argparse.Namespace) -> int:
+    from rq1.recovery.fake import FakeRecoveryEnvironment
+    from rq1.recovery.models import CheckpointPolicy, to_dict
+    from rq1.recovery.checkpoints import create_manifest
+    from rq1.recovery.validation import validate_checkpoint_payload, validate_perturbation_payload
+    from rq1.recovery.verification import real_recovery_capabilities, verify_fake_recovery
+
+    if args.recovery_command == "plan":
+        print(json.dumps({"policies": ["prefix_length", "action_index", "trajectory_fraction", "frozen_prefix"], "real_status": "TO_BE_VERIFIED_BY_RECOVERY_PILOT"}, indent=2))
+        return 0
+    if args.recovery_command == "capabilities":
+        print(json.dumps(real_recovery_capabilities(), indent=2)); return 1
+    if args.recovery_command == "verify":
+        if args.mode != "fake":
+            print(json.dumps({"ok": False, "error": "real recovery verification requires observed installed ALFWorld capabilities"}), file=sys.stderr); return 1
+        report = verify_fake_recovery(root); print(json.dumps(report, indent=2, sort_keys=True)); return 0 if report["mock_recovery"] else 1
+    try:
+        payload = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"valid": False, "errors": [str(exc)]})); return 1
+    errors = validate_checkpoint_payload(payload) if args.recovery_command == "validate-checkpoint" else validate_perturbation_payload(payload)
+    print(json.dumps({"valid": not errors, "errors": errors}, indent=2)); return 0 if not errors else 1
+
+
 def _setup_options(args: argparse.Namespace) -> SetupOptions:
     return SetupOptions(
         dry_run=bool(getattr(args, "dry_run", False)),
@@ -356,6 +380,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--dry-run", action="store_true")
         if name == "cleanup-test-profile":
             command.add_argument("--confirm-destructive", action="store_true")
+    recovery = sub.add_parser("recovery", help="Controlled-recovery contract and fake verification.")
+    recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
+    recovery_sub.add_parser("plan"); recovery_sub.add_parser("capabilities")
+    recovery_verify = recovery_sub.add_parser("verify"); recovery_verify.add_argument("--mode", choices=("fake", "real"), required=True)
+    for name in ("validate-checkpoint", "validate-perturbation"):
+        command = recovery_sub.add_parser(name); command.add_argument("manifest")
     setup = sub.add_parser("setup-machine", help="Run the resumable Ubuntu machine setup.")
     _add_setup_options(setup)
     setup_stage = sub.add_parser("setup-stage", help="Run one machine-setup stage.")
@@ -386,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "hermes-capabilities": return command_hermes_capabilities(root)
         if args.command == "verify-hermes-integration": return command_verify_hermes_integration(root, args.mode)
         if args.command == "profiles": return command_profiles(root, args)
+        if args.command == "recovery": return command_recovery(root, args)
         if args.command == "setup-machine": return command_setup_machine(root, _setup_options(args))
         if args.command == "setup-stage": return command_setup_stage(root, args.name, _setup_options(args))
         if args.command == "verify-installation": return command_setup_stage(root, "installation-verification", _setup_options(args))
