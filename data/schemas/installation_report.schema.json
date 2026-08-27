@@ -23,6 +23,21 @@
     "compatibility_claim": {"type": "string"},
     "stages": {"type": "object"},
     "attempts": {"type": "array"},
-    "readiness": {"type": "object"}
+    "readiness": {
+      "type": "object",
+      "properties": {
+        "required_capabilities": {
+          "type": "object",
+          "additionalProperties": {"type": "boolean"}
+        },
+        "blocking_capabilities": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "installation_ready": {"type": "boolean"},
+        "pilot_ready": {"const": false}
+      }
+    }
   }
 }

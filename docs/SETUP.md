@@ -37,10 +37,10 @@ The master entry point is `scripts/setup_machine.sh`. It executes these stages i
 | 05 | `05_install_alfworld.sh` | Install and import-test pinned text-only ALFWorld, then verify that `alfworld-download` is discoverable. Do not download data in this stage. |
 | 06 | `06_download_alfworld_data.sh` | Reuse valid existing data or explicitly invoke the official downloader. Use `RQ1_ALFWORLD_DATA_DIR` when set; otherwise use an isolated experiment cache. |
 | 07 | `07_pull_candidate_models.sh` | Pull and inspect `hermes3:8b`, then run a deterministic raw-inference smoke test. Pull `llama3.1:8b` only when explicitly requested. |
-| 08 | `08_create_base_profiles.sh` | Delegate to the Phase 4 lifecycle for isolated `rq1-pilot` and `rq1-acquisition` profiles. Creation requires capability-confirmed no-skills, JSON inspection/location discovery, and project-plugin activation; it never assumes a profile path or config key. |
-| 09 | `09_verify_installation.sh` | Re-probe dependencies, validate the profiles, and exercise the deterministic fake bridge over local HTTP. Keep real ALFWorld compatibility unverified. |
+| 08 | `08_create_base_profiles.sh` | Delegate to the Phase 4 lifecycle for isolated `rq1-pilot` and `rq1-acquisition` profiles. Creation requires capability-confirmed no-skills, JSON inspection/location discovery, and project-plugin activation; it never assumes a profile path or config key. An installed Hermes version that does not advertise every required safe profile capability produces a preserved `blocked` result. |
+| 09 | `09_verify_installation.sh` | Re-probe dependencies, validate the profiles, and exercise the deterministic fake bridge over local HTTP. This diagnostic stage may run after a blocked Stage 08 to collect all other available evidence, while keeping real ALFWorld compatibility and installation readiness unverified. |
 
-No stage may perform an implicit ALFWorld reset or data download. Missing commands, unsupported help output, absent data, unavailable services, and unsupported platforms must produce a structured failed or blocked result with remediation guidance, not an unhandled traceback.
+No stage may perform an implicit ALFWorld reset or data download. Missing commands, unsupported help output, absent data, unavailable services, and unsupported platforms must produce a structured failed or blocked result with remediation guidance, not an unhandled traceback. Failed stages and blocked stages remain fatal by default; only an explicitly declared deferrable blocker may allow a later diagnostic stage to run, and the blocker remains unresolved.
 
 ## Master command and flags
 
@@ -70,6 +70,8 @@ Valid `--force-stage` names are `preflight`, `system-packages`, `python-environm
 
 `--resume` does not trust a prior `passed` label by itself. It recomputes the stage input fingerprint and re-runs non-mutating capability checks. A changed input, missing artifact, absent service, or invalid report makes that stage incomplete and prevents dependent stages from being treated as passed.
 
+If Stage 08 is blocked because the installed Hermes version does not yet advertise profile inspection JSON or safe profile-location discovery, Stage 09 may still complete its diagnostic procedure. The Stage 08 blocker remains recorded, `required_capabilities.hermes_profiles` remains false, and the aggregate status remains `blocked`. A later `--resume` retries Stage 08 and always reruns Stage 09 so stale verification evidence cannot promote readiness after the installed capabilities change.
+
 `--force-stage` is a non-destructive recovery mechanism. It resets the selected stage and its downstream setup-state entries to pending, while preserving immutable historical reports and externally installed assets. Forcing a stage must require confirmation unless combined with `--dry-run`.
 
 ## Reports and manifests
@@ -87,16 +89,22 @@ artifacts/manifests/hermes_capabilities.json
 
 Per-stage reports use `pending`, `running`, `passed`, `failed`, `blocked`, or `skipped`. They record a run ID, attempt ID, timestamps, input fingerprint, redacted commands, probes, produced artifacts, warnings, errors, skip reason, and remediation.
 
+Stage 09 uses `passed` to mean that its diagnostic procedure completed. This is distinct from the aggregate readiness decision: `readiness.blocking_capabilities` lists every false required capability, and any unresolved blocker keeps the top-level report `blocked` with `installation_ready: false`. No `passed_with_blockers` status is used.
+
 The aggregate installation report distinguishes `installed`, `configured`, `import_tested`, `smoke_tested`, `real_integration_tested`, and `unverified`. It exposes separate booleans:
 
 - `installation_ready`: the required software, data, model, profiles, and fake bridge verification are present.
 - `pilot_ready`: `installation_ready` is true and the real ALFWorld adapter has passed an actual start → step → reset test on the target machine.
+
+The master `setup-machine` command exits non-zero whenever `installation_ready` is false, including when Stage 09 itself passed after collecting partial verification evidence.
 
 Reports must omit usernames, hostnames, IP addresses, serial numbers, credentials, tokens, and raw environment-variable values.
 
 ## Bridge verification and pilot gate
 
 Stage 09 may start the existing deterministic fake bridge on an ephemeral localhost port and exercise health, start, step, status, reset, and abort. Passing that check validates only the local HTTP contract and installation plumbing.
+
+A capability-blocked Stage 08 does not become passed or skipped merely to reach Stage 09. Profile validation remains false, the blocker is exposed in the stage state and readiness metadata, and neither `installation_ready` nor `pilot_ready` may be promoted.
 
 Before a real pilot may start, the capability-gated real adapter must use the installed ALFWorld package and downloaded data to complete a real episode start, one valid step, and an explicit reset. Until that exact gate passes, the report must keep `pilot_ready: false`, `real_integration_tested: false`, and real ALFWorld compatibility `unverified`.
 

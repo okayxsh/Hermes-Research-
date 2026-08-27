@@ -22,12 +22,13 @@ from rq1.setup.models import (  # noqa: E402
     SetupState,
 )
 from rq1.setup.orchestrator import SetupError, SetupOrchestrator  # noqa: E402
-from rq1.cli import command_setup_machine  # noqa: E402
+from rq1.cli import command_setup_machine, command_setup_stage  # noqa: E402
 from rq1.setup.probes import python_executable, read_os_release, total_ram_gib, wsl_generation  # noqa: E402
 from rq1.setup.probes import network_probe  # noqa: E402
 from urllib.error import HTTPError, URLError  # noqa: E402
 from rq1.setup.registry import SetupRegistry  # noqa: E402
 from rq1.setup.runner import redact, redact_command  # noqa: E402
+from rq1.profiles.lifecycle import ProfileLifecycleError  # noqa: E402
 from rq1.setup.stages import (  # noqa: E402
     SYSTEM_PACKAGES,
     StageContext,
@@ -36,7 +37,9 @@ from rq1.setup.stages import (  # noqa: E402
     _system_packages_installed,
     _systemd_available,
     _hermes_profiles_available,
+    run_base_profiles,
     run_candidate_models,
+    run_installation_verification,
     _valid_alfworld_data,
 )
 
@@ -172,6 +175,30 @@ def make_handlers(
     return handlers
 
 
+def incomplete_installation_outcome(
+    blocking_capabilities: tuple[str, ...] = ("hermes_profiles",),
+) -> StageOutcome:
+    required = {
+        "python_environment": True,
+        "ollama_primary_model": True,
+        "hermes_profiles": True,
+        "alfworld_package": True,
+        "alfworld_data": True,
+        "fake_bridge": True,
+    }
+    for capability in blocking_capabilities:
+        required[capability] = False
+    return StageOutcome(
+        status="passed",
+        metadata={
+            "required_capabilities": required,
+            "blocking_capabilities": list(blocking_capabilities),
+            "installation_ready": not blocking_capabilities,
+            "pilot_ready": False,
+        },
+    )
+
+
 class SetupModelsAndParsingTests(unittest.TestCase):
     @mock.patch("rq1.setup.probes.urlopen")
     def test_network_probe_accepts_http_responses_including_404(self, urlopen) -> None:
@@ -265,19 +292,30 @@ class SetupModelsAndParsingTests(unittest.TestCase):
 
     def test_setup_stage_order_and_prerequisites(self) -> None:
         self.assertEqual(EXPECTED_STAGE_ORDER, [stage.name for stage in SETUP_STAGES])
-        prerequisites = {stage.name: stage.prerequisites for stage in SETUP_STAGES}
-        self.assertEqual((), prerequisites["preflight"])
-        self.assertEqual(("preflight",), prerequisites["system-packages"])
-        self.assertEqual(("system-packages",), prerequisites["python-environment"])
-        self.assertEqual(("python-environment",), prerequisites["ollama"])
-        self.assertEqual(("python-environment",), prerequisites["hermes"])
-        self.assertEqual(("python-environment",), prerequisites["alfworld-package"])
-        self.assertEqual(("alfworld-package",), prerequisites["alfworld-data"])
-        self.assertEqual(("ollama",), prerequisites["candidate-models"])
-        self.assertEqual(("hermes", "ollama"), prerequisites["base-profiles"])
+        hard = {stage.name: stage.hard_prerequisites for stage in SETUP_STAGES}
+        soft = {stage.name: stage.soft_prerequisites for stage in SETUP_STAGES}
+        deferrable = {stage.name: stage.continue_if_blocked for stage in SETUP_STAGES}
+        self.assertEqual((), hard["preflight"])
+        self.assertEqual(("preflight",), hard["system-packages"])
+        self.assertEqual(("system-packages",), hard["python-environment"])
+        self.assertEqual(("python-environment",), hard["ollama"])
+        self.assertEqual(("python-environment",), hard["hermes"])
+        self.assertEqual(("python-environment",), hard["alfworld-package"])
+        self.assertEqual(("alfworld-package",), hard["alfworld-data"])
+        self.assertEqual(("ollama",), hard["candidate-models"])
+        self.assertEqual(("hermes", "ollama"), hard["base-profiles"])
         self.assertEqual(
-            ("alfworld-data", "candidate-models", "base-profiles"),
-            prerequisites["installation-verification"],
+            ("alfworld-data", "candidate-models"),
+            hard["installation-verification"],
+        )
+        self.assertEqual(("base-profiles",), soft["installation-verification"])
+        self.assertTrue(deferrable["base-profiles"])
+        self.assertTrue(
+            all(
+                not enabled
+                for name, enabled in deferrable.items()
+                if name != "base-profiles"
+            )
         )
 
     def test_redaction_removes_assignments_and_bearer_credentials(self) -> None:
@@ -434,6 +472,78 @@ class SetupModelsAndParsingTests(unittest.TestCase):
             self.assertEqual({}, metadata)
             self.assertIn("blocked", detail)
 
+    def test_profile_lifecycle_safe_refusal_is_a_structured_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = StageContext(
+                root,
+                SetupOptions(),
+                FakeCommandRunner(reject_unconfigured=True),
+            )
+            with mock.patch(
+                "rq1.setup.stages.real_profile_lifecycle",
+                side_effect=ProfileLifecycleError(
+                    "Real profile lifecycle is blocked: profile inspection JSON."
+                ),
+            ):
+                outcome = run_base_profiles(context)
+
+            self.assertEqual("blocked", outcome.status)
+            self.assertFalse(outcome.probes[0].available)
+            self.assertTrue(outcome.metadata["profile_lifecycle_blocked"])
+            self.assertIn("do not alter", outcome.remediation or "")
+
+    def test_installation_verification_passes_procedure_but_reports_profile_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = StageContext(
+                root,
+                SetupOptions(),
+                FakeCommandRunner(reject_unconfigured=True),
+            )
+            real_capability = mock.Mock(
+                available=False,
+                details="Real ALFWorld integration remains unverified.",
+            )
+            with (
+                mock.patch(
+                    "rq1.setup.stages._verify_fake_bridge",
+                    return_value={"healthy": True},
+                ),
+                mock.patch(
+                    "rq1.setup.stages.real_adapter_capability",
+                    return_value=real_capability,
+                ),
+                mock.patch("rq1.setup.stages._valid_alfworld_data", return_value=True),
+                mock.patch(
+                    "rq1.setup.stages._python_environment_available",
+                    return_value=(True, "3.11.9"),
+                ),
+                mock.patch(
+                    "rq1.setup.stages._alfworld_package_available",
+                    return_value=(True, "0.4.2"),
+                ),
+                mock.patch(
+                    "rq1.setup.stages._smoke_model",
+                    return_value=(True, {"digest": "test"}, "model verified"),
+                ),
+                mock.patch(
+                    "rq1.setup.stages._hermes_profiles_available",
+                    return_value=(False, {}, "profile inspection JSON is unavailable"),
+                ),
+            ):
+                outcome = run_installation_verification(context)
+
+            self.assertEqual("passed", outcome.status)
+            self.assertFalse(outcome.metadata["required_capabilities"]["hermes_profiles"])
+            self.assertEqual(
+                ["hermes_profiles"],
+                outcome.metadata["blocking_capabilities"],
+            )
+            self.assertFalse(outcome.metadata["installation_ready"])
+            self.assertFalse(outcome.metadata["pilot_ready"])
+            self.assertIn("hermes_profiles", outcome.warnings[0])
+
 
 class SetupRegistryTests(unittest.TestCase):
     def test_malformed_state_returns_a_clean_error(self) -> None:
@@ -480,6 +590,58 @@ class SetupOrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(SetupError, "requires --yes"):
                 command_setup_machine(Path(directory), SetupOptions())
+
+    def test_master_setup_exits_nonzero_when_verification_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            incomplete = {
+                "status": "blocked",
+                "installation_ready": False,
+                "attempts": [
+                    {
+                        "stage": "installation-verification",
+                        "status": "passed",
+                    }
+                ],
+            }
+            with (
+                mock.patch(
+                    "rq1.cli._project_venv_python",
+                    return_value=Path(sys.executable),
+                ),
+                mock.patch("rq1.cli.SetupOrchestrator") as orchestrator_type,
+            ):
+                orchestrator_type.return_value.run.return_value = incomplete
+                exit_code = command_setup_machine(
+                    Path(directory),
+                    SetupOptions(yes=True),
+                )
+
+            self.assertEqual(1, exit_code)
+
+    def test_standalone_verification_succeeds_when_procedure_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            incomplete = {
+                "status": "blocked",
+                "installation_ready": False,
+                "attempts": [
+                    {
+                        "stage": "installation-verification",
+                        "status": "passed",
+                    }
+                ],
+            }
+            with mock.patch("rq1.cli.SetupOrchestrator") as orchestrator_type:
+                orchestrator_type.return_value.run.return_value = incomplete
+                exit_code = command_setup_stage(
+                    Path(directory),
+                    "installation-verification",
+                    SetupOptions(yes=True),
+                )
+
+            self.assertEqual(0, exit_code)
+            orchestrator_type.return_value.run.assert_called_once_with(
+                only_stage="installation-verification"
+            )
 
     def make_orchestrator(
         self,
@@ -553,6 +715,191 @@ class SetupOrchestratorTests(unittest.TestCase):
                 ),
             )
 
+    def test_deferrable_profile_blocker_allows_verification_but_blocks_aggregate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                outcomes={
+                    "base-profiles": StageOutcome(
+                        status="blocked",
+                        remediation="Upgrade Hermes and resume.",
+                    ),
+                    "installation-verification": incomplete_installation_outcome(),
+                },
+            )
+
+            aggregate = orchestrator.run()
+
+            self.assertEqual(EXPECTED_STAGE_ORDER, calls)
+            self.assertEqual("blocked", aggregate["status"])
+            self.assertFalse(aggregate["installation_ready"])
+            self.assertFalse(aggregate["pilot_ready"])
+            self.assertFalse(aggregate["real_integration_tested"])
+            self.assertEqual("blocked", aggregate["stages"]["base-profiles"]["status"])
+            self.assertEqual(
+                "passed",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
+            final = aggregate["attempts"][-1]
+            self.assertEqual("installation-verification", final["stage"])
+            self.assertEqual("passed", final["status"])
+            self.assertFalse(
+                aggregate["readiness"]["required_capabilities"]["hermes_profiles"]
+            )
+            self.assertEqual(
+                ["hermes_profiles"],
+                aggregate["readiness"]["blocking_capabilities"],
+            )
+
+    def test_completed_verification_with_false_readiness_blocks_aggregate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                outcomes={
+                    "installation-verification": incomplete_installation_outcome(
+                        ("fake_bridge",)
+                    )
+                },
+            )
+
+            aggregate = orchestrator.run()
+
+            self.assertEqual(EXPECTED_STAGE_ORDER, calls)
+            self.assertEqual("passed", aggregate["stages"]["base-profiles"]["status"])
+            self.assertEqual(
+                "passed",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
+            self.assertEqual("blocked", aggregate["status"])
+            self.assertFalse(aggregate["installation_ready"])
+            self.assertEqual(
+                ["fake_bridge"],
+                aggregate["readiness"]["blocking_capabilities"],
+            )
+
+    def test_failed_profile_stage_stops_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                failures={
+                    "base-profiles": StageFailure(
+                        "profile creation failed",
+                        "Inspect the profile lifecycle evidence.",
+                    )
+                },
+            )
+
+            aggregate = orchestrator.run()
+
+            self.assertEqual(EXPECTED_STAGE_ORDER[:-1], calls)
+            self.assertEqual("failed", aggregate["status"])
+            self.assertEqual("failed", aggregate["stages"]["base-profiles"]["status"])
+            self.assertEqual(
+                "pending",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
+
+    def test_nondeferrable_blocker_stops_downstream_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                outcomes={"candidate-models": StageOutcome(status="blocked")},
+            )
+
+            aggregate = orchestrator.run()
+
+            self.assertEqual(EXPECTED_STAGE_ORDER[:8], calls)
+            self.assertEqual("blocked", aggregate["status"])
+            self.assertEqual("pending", aggregate["stages"]["base-profiles"]["status"])
+
+    def test_stop_after_profile_blocker_prevents_diagnostic_continuation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                outcomes={"base-profiles": StageOutcome(status="blocked")},
+            )
+
+            aggregate = orchestrator.run(stop_after="base-profiles")
+
+            self.assertEqual(EXPECTED_STAGE_ORDER[:-1], calls)
+            self.assertEqual("blocked", aggregate["status"])
+            self.assertEqual(
+                "pending",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
+
+    def test_verification_enforces_hard_but_not_soft_prerequisites(self) -> None:
+        for incomplete_status in ("pending", "failed", "blocked"):
+            with self.subTest(hard_prerequisite_status=incomplete_status):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    registry = SetupRegistry(root / "state" / "setup_status.json")
+                    states = {stage.name: SetupState() for stage in SETUP_STAGES}
+                    states["alfworld-data"] = SetupState(status="passed")
+                    states["candidate-models"] = SetupState(status=incomplete_status)
+                    states["base-profiles"] = SetupState(status="blocked")
+                    registry.save(states)
+                    calls: list[str] = []
+                    orchestrator = self.make_orchestrator(
+                        root,
+                        SetupOptions(),
+                        calls,
+                    )
+
+                    with self.assertRaisesRegex(
+                        SetupError,
+                        "prerequisites incomplete: candidate-models",
+                    ):
+                        orchestrator.run(only_stage="installation-verification")
+                    self.assertEqual([], calls)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = SetupRegistry(root / "state" / "setup_status.json")
+            states = {stage.name: SetupState() for stage in SETUP_STAGES}
+            states["alfworld-data"] = SetupState(status="passed")
+            states["candidate-models"] = SetupState(status="passed")
+            states["base-profiles"] = SetupState(status="blocked")
+            registry.save(states)
+            calls: list[str] = []
+            orchestrator = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                calls,
+                outcomes={
+                    "installation-verification": incomplete_installation_outcome()
+                },
+            )
+
+            aggregate = orchestrator.run(only_stage="installation-verification")
+
+            self.assertEqual(["installation-verification"], calls)
+            self.assertEqual("blocked", aggregate["status"])
+            self.assertEqual(
+                "passed",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
+
     def test_stage_failure_is_structured_and_stops_downstream_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -622,6 +969,49 @@ class SetupOrchestratorTests(unittest.TestCase):
             self.assertEqual([], aggregate["attempts"])
             self.assertEqual(len(EXPECTED_STAGE_ORDER), current.call_count)
             self.assertTrue(all(state["status"] == "passed" for state in resumed.status().values()))
+
+    def test_resume_retries_profile_blocker_and_reruns_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initial_calls: list[str] = []
+            initial = self.make_orchestrator(
+                root,
+                SetupOptions(),
+                initial_calls,
+                outcomes={
+                    "base-profiles": StageOutcome(status="blocked"),
+                    "installation-verification": incomplete_installation_outcome(),
+                },
+            )
+            initial_aggregate = initial.run()
+            self.assertEqual("blocked", initial_aggregate["status"])
+            self.assertFalse(initial_aggregate["installation_ready"])
+
+            resumed_calls: list[str] = []
+            resumed = self.make_orchestrator(
+                root,
+                SetupOptions(resume=True),
+                resumed_calls,
+                final_ready=True,
+            )
+            with mock.patch.object(
+                resumed,
+                "_current",
+                side_effect=lambda stage: stage != "installation-verification",
+            ):
+                aggregate = resumed.run()
+
+            self.assertEqual(
+                ["base-profiles", "installation-verification"],
+                resumed_calls,
+            )
+            self.assertEqual("passed", aggregate["status"])
+            self.assertTrue(aggregate["installation_ready"])
+            self.assertEqual("passed", aggregate["stages"]["base-profiles"]["status"])
+            self.assertEqual(
+                "passed",
+                aggregate["stages"]["installation-verification"]["status"],
+            )
 
     def test_force_stage_requires_yes_before_state_is_changed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

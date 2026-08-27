@@ -595,7 +595,16 @@ def run_base_profiles(ctx: StageContext) -> StageOutcome:
             lifecycle.write_manifest(manifest)
             manifests.append(manifest.to_dict())
     except ProfileLifecycleError as exc:
-        raise StageFailure(str(exc), "Review the Hermes profile capability report; do not alter a personal/default profile.") from exc
+        # ProfileLifecycleError is a capability-gated safe refusal. Preserve it
+        # as a blocker so later diagnostics may run without claiming that profile
+        # isolation succeeded. Unexpected exceptions still fail the stage.
+        return StageOutcome(
+            status="blocked",
+            probes=[ProbeResult("hermes-profiles", False, str(exc))],
+            warnings=["Isolated Hermes profile creation remains blocked."],
+            metadata={"profile_lifecycle_blocked": True},
+            remediation="Review the Hermes profile capability report; do not alter a personal/default profile.",
+        )
     path = _write_json_yaml(
         ctx.artifacts / "manifests" / "hermes_profiles.json",
         {"schema_version": 1, "generated_at": utc_now(), "profiles": manifests, "real_profiles_created": True},
@@ -673,9 +682,11 @@ def run_installation_verification(ctx: StageContext) -> StageOutcome:
         "alfworld_data": data_ok,
         "fake_bridge": bridge.get("healthy") is True,
     }
-    installation_ready = all(required.values())
+    blocking_capabilities = [name for name, available in required.items() if not available]
+    installation_ready = not blocking_capabilities
     metadata = {
         "required_capabilities": required,
+        "blocking_capabilities": blocking_capabilities,
         "installation_ready": installation_ready,
         "pilot_ready": False,
         "verification_levels": {
@@ -702,7 +713,15 @@ def run_installation_verification(ctx: StageContext) -> StageOutcome:
             "hermes_detail": hermes_detail,
         },
     }
-    warnings = [] if installation_ready else ["Installation is incomplete; inspect required_capabilities in installation.json."]
+    warnings = (
+        []
+        if installation_ready
+        else [
+            "Installation is incomplete; blocking capabilities: "
+            + ", ".join(blocking_capabilities)
+            + "."
+        ]
+    )
     probes = [
         ProbeResult("python-environment", python_ok, python_detail),
         ProbeResult("ollama-primary-model", model_ok, model_detail),
@@ -713,7 +732,9 @@ def run_installation_verification(ctx: StageContext) -> StageOutcome:
         ProbeResult("real-alfworld", False, real.details),
     ]
     return StageOutcome(
-        status="passed" if installation_ready else "blocked",
+        # Passing this stage means the diagnostic procedure completed. Machine
+        # readiness remains a separate, fail-closed aggregate decision.
+        status="passed",
         probes=probes,
         warnings=warnings,
         metadata=metadata,

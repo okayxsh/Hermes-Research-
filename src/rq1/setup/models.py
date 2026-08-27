@@ -75,7 +75,9 @@ class SetupStageResult:
 @dataclass(frozen=True)
 class SetupStage:
     name: str
-    prerequisites: tuple[str, ...] = ()
+    hard_prerequisites: tuple[str, ...] = ()
+    soft_prerequisites: tuple[str, ...] = ()
+    continue_if_blocked: bool = False
 
 
 SETUP_STAGES: tuple[SetupStage, ...] = (
@@ -87,10 +89,15 @@ SETUP_STAGES: tuple[SetupStage, ...] = (
     SetupStage("alfworld-package", ("python-environment",)),
     SetupStage("alfworld-data", ("alfworld-package",)),
     SetupStage("candidate-models", ("ollama",)),
-    SetupStage("base-profiles", ("hermes", "ollama")),
+    SetupStage(
+        "base-profiles",
+        ("hermes", "ollama"),
+        continue_if_blocked=True,
+    ),
     SetupStage(
         "installation-verification",
-        ("alfworld-data", "candidate-models", "base-profiles"),
+        ("alfworld-data", "candidate-models"),
+        ("base-profiles",),
     ),
 )
 SETUP_STAGE_MAP = {stage.name: stage for stage in SETUP_STAGES}

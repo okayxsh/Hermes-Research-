@@ -143,15 +143,24 @@ class SetupOrchestrator:
                 if not self.options.dry_run:
                     self.registry.invalidate_from(stage.name)
                     states = self.registry.load()
-            missing = [name for name in stage.prerequisites if states[name].status not in {"passed", "skipped"}]
+            missing = [
+                name
+                for name in stage.hard_prerequisites
+                if states[name].status not in {"passed", "skipped"}
+            ]
             if missing and not self.options.dry_run:
                 raise SetupError(f"Cannot start {stage.name}; prerequisites incomplete: {', '.join(missing)}")
             result = self._run_stage(stage.name)
             results.append(result)
             states = self.registry.load() if not self.options.dry_run else states
-            if result.status in {"failed", "blocked"}:
+            if result.status == "failed":
                 break
             if stop_after == stage.name:
+                break
+            # A blocked stage is fatal unless its declarative metadata explicitly
+            # permits later diagnostic stages to collect evidence. The blocker
+            # remains recorded and cannot satisfy readiness.
+            if result.status == "blocked" and not stage.continue_if_blocked:
                 break
         aggregate = self._write_aggregate(results, invalidated)
         return aggregate
@@ -222,13 +231,28 @@ class SetupOrchestrator:
         states = self.status() if not self.options.dry_run else {stage.name: {"status": "pending"} for stage in SETUP_STAGES}
         final = next((item for item in reversed(results) if item.stage == "installation-verification"), None)
         readiness = final.metadata if final else {}
+        state_statuses = {state["status"] for state in states.values()}
+        attempt_statuses = {result.status for result in results}
+        unresolved_failed = "failed" in state_statuses or "failed" in attempt_statuses
+        unresolved_blocked = "blocked" in state_statuses
         installation_ready = bool(readiness.get("installation_ready", False))
+        installation_ready = installation_ready and not unresolved_failed and not unresolved_blocked
+        if unresolved_failed:
+            aggregate_status = "failed"
+        elif self.options.dry_run:
+            aggregate_status = results[-1].status if results else "pending"
+        elif unresolved_blocked:
+            aggregate_status = "blocked"
+        elif final:
+            aggregate_status = "passed" if installation_ready else "blocked"
+        else:
+            aggregate_status = results[-1].status if results else "pending"
         payload = {
             "schema_version": 1,
             "run_id": self.run_id,
             "generated_at": utc_now(),
             "dry_run": self.options.dry_run,
-            "status": "passed" if installation_ready else (results[-1].status if results else "pending"),
+            "status": aggregate_status,
             "installation_ready": installation_ready,
             "pilot_ready": False,
             "real_integration_tested": False,
