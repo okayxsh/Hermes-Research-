@@ -540,7 +540,7 @@ def command_evaluation(root: Path, args: argparse.Namespace) -> int:
         print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "profile_pattern": "rq1-recovery-<snapshot-id>"}, indent=2)); return 0
     _final_gate(root)
     if not getattr(args, "yes", False): raise RuntimeError("Final evaluation mutation requires --yes")
-    if args.evaluation_command in {"run", "resume"}:
+    if args.evaluation_command in {"run", "resume", "retry-failed"}:
         from rq1.evaluation.runner import run_final_evaluation
         run_final_evaluation(root, Path(args.activation_manifest))
     raise RuntimeError("Final evaluation is capability-gated: validated snapshots, read-only profile materialization, and real recovery/perturbation evidence are required; no valid_unseen task was started.")
@@ -549,6 +549,94 @@ def command_evaluation(root: Path, args: argparse.Namespace) -> int:
 def command_final_derived(root: Path, command: str) -> int:
     _final_gate(root)
     raise RuntimeError(f"{command} is blocked until a validated final evaluation report exists; no derived scientific artifact was produced.")
+
+
+def command_experiment(root: Path, args: argparse.Namespace) -> int:
+    from rq1.experiment.models import ExperimentUnit, RunOutcome
+    from rq1.experiment.persistence import (
+        ExperimentStore,
+        atomic_write_json,
+        resolve_experiment_directory,
+    )
+    from rq1.experiment.runner import DurableExperimentRunner, RunnerOptions
+
+    action = args.experiment_command
+    if action in {"status", "backup"}:
+        directory = resolve_experiment_directory(root, args.run_id)
+        store = ExperimentStore(root, args.run_id, base=directory.parent)
+        if action == "backup":
+            destination = store.mirror(Path(args.backup_dir), required=True)
+            print(json.dumps({"status": "backed_up", "destination": str(destination)}, indent=2))
+            return 0
+        checkpoint, source = store.load_checkpoint()
+        results = store.terminal_results(repair_tail=False)
+        print(json.dumps({
+            "experiment_id": args.run_id,
+            "checkpoint_source": source,
+            "checkpoint": checkpoint,
+            "terminal_result_count": len(results),
+            "output_directory": str(directory),
+        }, indent=2, sort_keys=True))
+        return 0
+
+    total = args.total_runs
+    units = [
+        ExperimentUnit(
+            phase="checkpoint_test",
+            task_id=f"synthetic:{index:03d}",
+            task_index=index,
+            condition="synthetic-no-library",
+            seed=index,
+            identity={"phase": "checkpoint_test", "task_id": f"synthetic:{index:03d}", "seed": index},
+            payload={"simulated": True},
+            library_name="synthetic-empty",
+            library_size=0,
+            library_hash="0" * 64,
+        )
+        for index in range(1, total + 1)
+    ]
+
+    def execute(unit: ExperimentUnit, context: object) -> RunOutcome:
+        import time
+        if args.delay_ms:
+            time.sleep(args.delay_ms / 1000)
+        output_dir = getattr(context, "output_dir")
+        evidence = output_dir / "synthetic-evidence.json"
+        atomic_write_json(evidence, {
+            "simulated": True,
+            "task_id": unit.task_id,
+            "warning": "Checkpoint plumbing test only; not scientific evidence.",
+        })
+        relative = str(evidence.relative_to(store.directory))
+        return RunOutcome(
+            success=True, measurements={"simulated": True}, actions=1, steps=1,
+            invalid_actions=0, runtime_seconds=args.delay_ms / 1000,
+            log_paths=(relative,),
+        )
+
+    store = ExperimentStore(
+        root, args.run_id, base=root / "results" / "checkpoint-tests"
+    )
+    result = DurableExperimentRunner(store).run(
+        "checkpoint_test",
+        units,
+        {
+            "version": "checkpoint-test-v1",
+            "model_name": "synthetic-no-model",
+            "runtime_settings": {"delay_ms": args.delay_ms},
+            "scientific_evidence": False,
+        },
+        execute,
+        RunnerOptions(
+            resume=args.resume,
+            max_runs=args.max_runs,
+            backup_dir=Path(args.backup_dir) if args.backup_dir else None,
+            require_backup=args.require_backup,
+            fail_fast=args.fail_fast,
+        ),
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 130 if result["status"] == "interrupted" else 0
 
 
 def command_analysis(root: Path, args: argparse.Namespace) -> int:
@@ -756,8 +844,15 @@ def build_parser() -> argparse.ArgumentParser:
     acquisition = sub.add_parser("acquisition", help="Final train-only acquisition (strictly freeze-gated).")
     acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
     acquisition_sub.add_parser("plan")
-    for name in ("run", "resume"):
-        item = acquisition_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--yes", action="store_true")
+    def add_durable_run_options(item: argparse.ArgumentParser) -> None:
+        item.add_argument("--run-id", required=True)
+        item.add_argument("--max-runs", type=int)
+        item.add_argument("--backup-dir")
+        item.add_argument("--require-backup", action="store_true")
+        item.add_argument("--fail-fast", action="store_true")
+
+    for name in ("run", "resume", "retry-failed"):
+        item = acquisition_sub.add_parser(name); add_durable_run_options(item); item.add_argument("--yes", action="store_true")
     item = acquisition_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
     snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")
     snapshots_sub = snapshots.add_subparsers(dest="snapshots_command", required=True)
@@ -778,8 +873,8 @@ def build_parser() -> argparse.ArgumentParser:
     item = evaluation_profiles.add_parser("create"); item.add_argument("--yes", action="store_true")
     evaluation_queue = evaluation_sub.add_parser("queue").add_subparsers(dest="evaluation_queue_command", required=True)
     item = evaluation_queue.add_parser("generate"); item.add_argument("--yes", action="store_true")
-    for name in ("run", "resume"):
-        item = evaluation_sub.add_parser(name); item.add_argument("--run-id"); item.add_argument("--activation-manifest", required=True); item.add_argument("--yes", action="store_true")
+    for name in ("run", "resume", "retry-failed"):
+        item = evaluation_sub.add_parser(name); add_durable_run_options(item); item.add_argument("--activation-manifest", required=True); item.add_argument("--yes", action="store_true")
     item = evaluation_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
     analysis = sub.add_parser("analysis", help="Offline controlled-recovery analysis from validated final evidence only.")
     analysis_sub = analysis.add_subparsers(dest="analysis_command", required=True)
@@ -797,6 +892,22 @@ def build_parser() -> argparse.ArgumentParser:
         item=autopilot_sub.add_parser(name); item.add_argument("--run-id",required=True)
     autopilot_sub.add_parser("doctor")
     forecast_auto=autopilot_sub.add_parser("forecast"); forecast_auto.add_argument("--pilot-report",required=True)
+    experiment = sub.add_parser("experiment", help="Inspect, back up, or safely smoke-test durable experiment state.")
+    experiment_sub = experiment.add_subparsers(dest="experiment_command", required=True)
+    experiment_status = experiment_sub.add_parser("status")
+    experiment_status.add_argument("--run-id", required=True)
+    experiment_backup = experiment_sub.add_parser("backup")
+    experiment_backup.add_argument("--run-id", required=True)
+    experiment_backup.add_argument("--backup-dir", required=True)
+    checkpoint_test = experiment_sub.add_parser("checkpoint-test")
+    checkpoint_test.add_argument("--run-id", required=True)
+    checkpoint_test.add_argument("--resume", action="store_true")
+    checkpoint_test.add_argument("--max-runs", type=int)
+    checkpoint_test.add_argument("--total-runs", type=int, default=6)
+    checkpoint_test.add_argument("--delay-ms", type=int, default=0)
+    checkpoint_test.add_argument("--backup-dir")
+    checkpoint_test.add_argument("--require-backup", action="store_true")
+    checkpoint_test.add_argument("--fail-fast", action="store_true")
     stage = sub.add_parser("stage")
     stage.add_argument("name", choices=tuple(STAGE_MAP))
     stage.add_argument("--dry-run", action="store_true")
@@ -835,6 +946,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "autopilot":
             from rq1.autopilot.cli import command as autopilot_command
             return autopilot_command(root, args)
+        if args.command == "experiment": return command_experiment(root, args)
         if args.command in {"report-assets", "archive"}: return command_final_derived(root, args.command)
         if args.command == "stage": return _run_stage(root, args.name, args.dry_run)
         if args.command == "run-until": return command_run_until(root, args.stage, args.dry_run)

@@ -94,9 +94,19 @@ python3 -m rq1.cli autopilot resume --run-id <AUTOPILOT_RUN_ID>
 
 Uncertain mutations always create a new attempt; never retry them in place.
 
+For per-task acquisition/evaluation recovery, use the matching `run`/`resume`
+commands and inspect durable progress with:
+
+```bash
+python3 -m rq1.cli experiment status --run-id <EXPERIMENT_ID>
+```
+
+See `docs/EXPERIMENT_RECOVERY.md` for checkpoint testing, persistent backup,
+compatibility checks, and replacement-VM recovery.
+
 ## 10. Final outputs
 
-Setup evidence is under `artifacts/stage_reports/` and `artifacts/manifests/`; pilot evidence is under `artifacts/pilot_reports/<PILOT_RUN_ID>/`; autopilot state is under `artifacts/autopilot/<AUTOPILOT_RUN_ID>/`; final outputs are under `results/final/<RUN_ID>/` when a validated final run exists.
+Setup evidence is under `artifacts/stage_reports/` and `artifacts/manifests/`; pilot evidence is under `artifacts/pilot_reports/<PILOT_RUN_ID>/`; autopilot state is under `artifacts/autopilot/<AUTOPILOT_RUN_ID>/`; final outputs are under `results/final/<RUN_ID>/` when a validated final run exists. Copy the complete final run directory from the VM; it contains the portable manifest, journals, checkpoints, and logs needed for resume.
 
 ## 11. Common blockers
 

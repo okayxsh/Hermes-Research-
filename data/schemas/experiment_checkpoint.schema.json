@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "status",
+    "current_phase",
+    "completed_run_count",
+    "failed_run_count",
+    "total_planned_run_count",
+    "next_run",
+    "timestamp",
+    "config_hash"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["running", "stopping", "paused", "incomplete", "interrupted", "failed", "blocked", "completed"]},
+    "current_phase": {"type": "string"},
+    "completed_run_count": {"type": "integer", "minimum": 0},
+    "failed_run_count": {"type": "integer", "minimum": 0},
+    "terminal_run_count": {"type": "integer", "minimum": 0},
+    "total_planned_run_count": {"type": "integer", "minimum": 0},
+    "current_run": {"type": ["object", "null"]},
+    "next_run": {"type": ["object", "null"]},
+    "config_hash": {"type": "string"},
+    "skill_library_hash": {"type": ["string", "null"]},
+    "git_commit": {"type": ["string", "null"]},
+    "timestamp": {"type": "string"},
+    "blocking_error": {"type": ["object", "null"]}
+  }
+}

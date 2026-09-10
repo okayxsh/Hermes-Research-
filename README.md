@@ -38,6 +38,11 @@ Once a real final evaluation has been validated, its saved logs can be analysed 
 
 The local supervisor entry point is `bash scripts/rq1_autopilot.sh plan --mode bootstrap`. It is deliberately fail-closed: until real external adapters are observed and validated, bootstrap/final runs record a blocker rather than create final outputs or claim readiness.
 
+Crash-safe per-unit journalling, resume, checkpoint smoke testing, status, and
+persistent-disk backup are documented in
+[`docs/EXPERIMENT_RECOVERY.md`](docs/EXPERIMENT_RECOVERY.md). This support does
+not enable the currently unobserved real acquisition/evaluation adapters.
+
 ## Recovery-aware pilot runner
 
 ```bash

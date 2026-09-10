@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "error_id", "experiment_id", "run_key", "attempt_id", "phase", "task_id", "message", "timestamp"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "error_id": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "run_key": {"type": "string"},
+    "attempt_id": {"type": "string"},
+    "phase": {"type": "string"},
+    "task_id": {"type": "string"},
+    "traceback": {"type": "string"},
+    "message": {"type": "string"},
+    "timestamp": {"type": "string"}
+  }
+}

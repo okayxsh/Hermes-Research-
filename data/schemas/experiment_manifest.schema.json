@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "experiment_id", "experiment_start_time", "runtime", "phases"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "experiment_id": {"type": "string", "minLength": 1},
+    "experiment_start_time": {"type": "string"},
+    "runtime": {
+      "type": "object",
+      "required": ["python_version", "platform", "packages", "git_commit"]
+    },
+    "phases": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "sha256"]
+      }
+    }
+  }
+}

@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from uuid import uuid4
 from rq1.acquisition.models import AcquisitionAttempt, AcquisitionPlan, SkillOperation
+from rq1.experiment.models import ExperimentUnit, RunExecutor
+from rq1.experiment.persistence import ExperimentStore, bind_repository_configuration
+from rq1.experiment.runner import DurableExperimentRunner, RunnerOptions
 from rq1.freeze.validation import validate_final_gates
 from rq1.logging.run_registry import Run, RunRegistry
 
@@ -33,6 +36,64 @@ class AcquisitionRunner:
         if not gates.valid: raise AcquisitionError("final gate blocked: " + "; ".join(gates.reasons))
         # A real Hermes execution adapter must be observed before this method can drive it.
         raise AcquisitionError("real acquisition execution is blocked until a version-specific Hermes session/skill-write adapter is observed")
+
+    def run_resumable(
+        self,
+        plan: AcquisitionPlan,
+        executor: RunExecutor,
+        *,
+        configuration: dict[str, object],
+        options: RunnerOptions | None = None,
+        output_base: Path | None = None,
+        initial_library_hash: str,
+        initial_library_size: int = 0,
+    ) -> dict[str, object]:
+        """Run the frozen chronological queue through the durable boundary.
+
+        Supplying the executor is intentional: this method does not guess a
+        Hermes command or enable final acquisition by itself.
+        """
+        gates = validate_final_gates(self.root)
+        if not gates.valid:
+            raise AcquisitionError("final gate blocked: " + "; ".join(gates.reasons))
+        units = acquisition_units(
+            plan, initial_library_hash=initial_library_hash,
+            initial_library_size=initial_library_size,
+        )
+        store = ExperimentStore(self.root, plan.run_id, base=output_base)
+        return DurableExperimentRunner(store).run(
+            "acquisition", units,
+            bind_repository_configuration(self.root, configuration),
+            executor, options,
+        )
+
+
+def acquisition_units(
+    plan: AcquisitionPlan,
+    *,
+    initial_library_hash: str | None = None,
+    initial_library_size: int = 0,
+) -> list[ExperimentUnit]:
+    return [
+        ExperimentUnit(
+            phase="acquisition",
+            task_id=task_id,
+            task_index=index,
+            condition="acquisition",
+            seed=None,
+            identity={
+                "phase": "acquisition",
+                "task_id": task_id,
+                "task_index": index,
+                "profile": plan.profile,
+            },
+            payload={"split": plan.split, "profile": plan.profile},
+            library_name=plan.profile,
+            library_size=initial_library_size,
+            library_hash=initial_library_hash,
+        )
+        for index, task_id in enumerate(plan.task_ids, 1)
+    ]
 
 def validate_history(attempts: list[AcquisitionAttempt], operations: list[SkillOperation]) -> list[str]:
     errors: list[str] = []

@@ -28,3 +28,7 @@ class AutopilotTests(unittest.TestCase):
         archive,report=package(root); self.assertTrue(report["valid"]); self.assertTrue(archive.is_file())
     def test_cli_contract(self):
         args=build_parser().parse_args(["autopilot","plan","--mode","bootstrap"]); self.assertEqual("plan",args.autopilot_command)
+        args=build_parser().parse_args(["acquisition","resume","--run-id","run","--max-runs","3","--backup-dir","/backup","--require-backup","--yes"])
+        self.assertEqual("resume",args.acquisition_command); self.assertEqual(3,args.max_runs); self.assertTrue(args.require_backup)
+        args=build_parser().parse_args(["evaluation","retry-failed","--run-id","run","--activation-manifest","activation.json","--fail-fast","--yes"])
+        self.assertEqual("retry-failed",args.evaluation_command); self.assertTrue(args.fail_fast)
