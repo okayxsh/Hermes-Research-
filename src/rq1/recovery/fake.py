@@ -1,9 +1,8 @@
 """Deterministic fake recovery environment. This is not an ALFWorld implementation."""
 from __future__ import annotations
 
-from dataclasses import replace
-
 from rq1.recovery.models import RecoveryState, ReferenceTrajectory
+from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE
 from rq1.utils.time import utc_now
 
 
@@ -19,7 +18,7 @@ class FakeRecoveryEnvironment:
         if self.phase == 0:
             observation, actions = "You are in the room.", ("go to countertop 1",)
         elif self.phase == 1 and self.perturbed:
-            observation, actions = "The target is no longer at its expected location. Reassess the state and continue.", ("go to pantry 1",)
+            observation, actions = CANONICAL_FAILURE_MESSAGE, ("go to pantry 1",)
         elif self.phase == 1:
             observation, actions = "You are at countertop 1. The target is here.", ("take target",)
         elif self.phase == 2:

@@ -13,6 +13,7 @@ from rq1.tasks.selection import (
     FROZEN_REPETITIONS,
     FROZEN_SEEDS,
     FROZEN_TASKS_PER_FAMILY,
+    next_longest_replacement,
     select_longest_per_family,
 )
 from rq1.utils.config import load_json_yaml
@@ -81,6 +82,27 @@ class LongestPerFamilyTests(unittest.TestCase):
         selected, _ = select_longest_per_family(records, lengths, tasks_per_family=5)
         # Selection is not padded silently; the caller must fail closed.
         self.assertEqual(len(selected), 1)
+
+    def test_next_longest_replacement_is_deterministic(self) -> None:
+        records = [
+            _record("a-short", "pick_and_place"),
+            _record("a-mid", "pick_and_place"),
+            _record("a-long", "pick_and_place"),
+        ]
+        lengths = {"a-short": 3, "a-mid": 5, "a-long": 9}
+        # Excluding the longest returns the mid one, never based on performance.
+        replacement = next_longest_replacement(
+            records, lengths, family="pick_and_place", excluded_task_id="a-long"
+        )
+        self.assertEqual(replacement.task_id, "a-mid")
+
+    def test_next_longest_replacement_none_when_no_candidate(self) -> None:
+        records = [_record("a-long", "pick_and_place")]
+        lengths = {"a-long": 9}
+        replacement = next_longest_replacement(
+            records, lengths, family="pick_and_place", excluded_task_id="a-long"
+        )
+        self.assertIsNone(replacement)
 
 
 if __name__ == "__main__":

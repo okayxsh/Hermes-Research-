@@ -38,6 +38,19 @@ class RecoveryTests(unittest.TestCase):
     def test_real_capabilities_fail_closed(self):
         with self.assertRaises(RecoveryCapabilityUnavailable): real_target_relocation()
         self.assertEqual("unavailable", validate_real_solvability().status)
+
+    def test_fake_perturbation_emits_canonical_failure_message(self):
+        from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE
+        checkpoint = self.checkpoint()
+        _state, perturbation = fake_target_relocation(self.env, checkpoint.checkpoint_id, "pert-test")
+        self.assertEqual(perturbation.visible_message, CANONICAL_FAILURE_MESSAGE)
+
+    def test_real_relocation_error_carries_capability_and_remediation(self):
+        with self.assertRaises(RecoveryCapabilityUnavailable) as caught:
+            real_target_relocation()
+        self.assertEqual(caught.exception.capability, "alfworld_target_relocation")
+        self.assertTrue(caught.exception.remediation)
+
     def test_fake_verification_creates_ordered_jsonl_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); report = verify_fake_recovery(root)

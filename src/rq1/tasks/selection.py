@@ -71,6 +71,31 @@ def select_longest_per_family(
     )
 
 
+def next_longest_replacement(
+    records: Sequence[TaskRecord],
+    lengths: Mapping[str, int],
+    *,
+    family: str,
+    excluded_task_id: str,
+) -> TaskRecord | None:
+    """Deterministic replacement when a candidate task cannot support perturbation.
+
+    Returns the next-longest eligible task in the same family (tie-broken by
+    task ID), excluding the failing task and any already-frozen task IDs the
+    caller passes in ``lengths``/``records``. Returns ``None`` when no eligible
+    replacement exists. Replacement is never based on agent performance.
+    """
+    candidates = [
+        record
+        for record in records
+        if record.family == family and record.task_id != excluded_task_id
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (-int(lengths.get(item.task_id, 0)), item.task_id))
+    return candidates[0]
+
+
 def propose_manifest(kind: str, discovery: DiscoveryResult, policy: SelectionPolicy, *, alfworld_version: str | None, repository_commit: str | None) -> TaskManifest:
     selected, exclusions = select_tasks(discovery, policy)
     value = {
