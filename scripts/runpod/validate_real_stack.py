@@ -187,8 +187,20 @@ def main() -> int:
     real_hermes_ok, real_hermes_output = validator.cli("verify-hermes-integration", "--mode", "real", timeout=180)
     validator.check("hermes_real_integration", real_hermes_ok, "real Hermes integration evidence passed" if real_hermes_ok else "blocked: real Hermes dispatch/skill observation is not validated; " + real_hermes_output[-250:])
 
-    retrieval_ok, retrieval_output = validator.command("retrieval", [sys.executable, "-c", "import rq1.hermes, rq1.skills; print('native Hermes skill boundary available')"], timeout=30)
-    validator.check("retrieval_components", retrieval_ok, retrieval_output or "retrieval imports failed")
+    retrieval_ok, retrieval_output = validator.command(
+        "retrieval",
+        [
+            sys.executable,
+            "-c",
+            "from rq1.retrieval import probe_retrieval; i = probe_retrieval(); print(i.to_dict()); raise SystemExit(0 if i.available else 1)",
+        ],
+        timeout=30,
+    )
+    validator.check(
+        "retrieval_components",
+        retrieval_ok,
+        "Sentence-BERT top-3 retrieval boundary available" if retrieval_ok else ("Sentence-BERT retrieval unavailable: " + retrieval_output[-250:]),
+    )
 
     validation_id = f"runpod-validation-{int(time.time())}"
     env = {"RQ1_ALFWORLD_DATA_DIR": str(persistent / "alfworld_data")}

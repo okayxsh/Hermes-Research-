@@ -40,6 +40,8 @@ The client sends optional `X-RQ1-Run-ID`, `X-RQ1-Attempt-ID`, `X-RQ1-Profile`, `
 
 Skill events are versioned: `skill_index_available`, `skill_selected`, `skill_loaded`, `skill_managed`, and `unknown_native_skill_operation`. They record `simulated`/`observed` and `relevant`/`irrelevant`/`unknown`. Readers still accept legacy `skill_view` events.
 
+These native skill events are compatibility/diagnostic evidence only. They must never feed scientific Precision@3 or Retrieval Noise, which are computed from the Sentence-BERT top-3 retrieval boundary in `rq1.retrieval` against human relevance labels.
+
 ## Verification
 
 Run the fully local contract check:

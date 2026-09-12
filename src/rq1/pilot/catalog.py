@@ -22,7 +22,7 @@ _NAMES = (
     "Hermes plugin discovery",
     "Hermes tool dispatch",
     "Profile isolation",
-    "Native skill retrieval",
+    "Native skill observability (non-scientific)",
     "Skill persistence",
     "Evaluation write protection",
     "Standalone ALFWorld bridge",
