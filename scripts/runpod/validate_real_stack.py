@@ -160,11 +160,11 @@ def main() -> int:
 
     # The first probe imports ALFWorld and scans the persistent network volume;
     # allow enough time for a cold start on RunPod's mounted storage.
-    capability_ok, capability_output = validator.cli("alfworld", "capabilities", timeout=900)
+    capability_ok, capability_output = validator.cli("alfworld", "capabilities", timeout=1800)
     validator.check("alfworld_capabilities", capability_ok, capability_output[-300:] if capability_output else "real adapter capability probe failed")
-    index_ok, index_output = validator.cli("alfworld", "index", "--split", "valid_seen", timeout=900)
+    index_ok, index_output = validator.cli("alfworld", "index", "--split", "valid_seen", timeout=1800)
     validator.check("alfworld_valid_seen_index", index_ok, "valid_seen index constructed" if index_ok else index_output[-300:])
-    smoke_ok, smoke_output = validator.cli("alfworld", "smoke-test", "--split", "valid_seen", "--yes", timeout=900)
+    smoke_ok, smoke_output = validator.cli("alfworld", "smoke-test", "--split", "valid_seen", "--yes", timeout=1800)
     validator.check("alfworld_real_smoke", smoke_ok, "real start/step/status/reset/abort completed" if smoke_ok else smoke_output[-300:])
 
     model_smoke = (
