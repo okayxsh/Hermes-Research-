@@ -15,8 +15,10 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
+from rq1.analysis.labelling import RetrievalLabelSet
+from rq1.analysis.p3 import compute_retrieval_quality
 from rq1.evaluation.activation import ActivationManifest, EvidenceReference, validate_activation
 from rq1.utils.hashing import sha256_file
 
@@ -423,7 +425,14 @@ def _associations(records: list[AnalysisRecord], events: list[RetrievalEvent]) -
             "noise_with_recovery_success":measure(lambda item:int(item.recovery_success)),"noise_with_recovery_actions":measure(lambda item:item.post_failure_actions),"noise_with_recovery_latency_ms":measure(lambda item:item.recovery_latency_ms),"noise_with_invalid_actions":measure(lambda item:item.invalid_post_failure_actions)}
 
 
-def compute_metrics(validation: ValidationResult, seed: int = 20260806) -> dict[str, Any]:
+def compute_metrics(
+    validation: ValidationResult,
+    seed: int = 20260806,
+    *,
+    labels: Sequence[RetrievalLabelSet] = (),
+    rater_a: Sequence[str] = (),
+    rater_b: Sequence[str] = (),
+) -> dict[str, Any]:
     if not validation.valid: raise AnalysisInputError("analysis inputs are invalid: " + "; ".join(validation.errors))
     records=list(validation.records); events=list(validation.retrieval_events)
     summary=_snapshot_metrics(records,events); paired=_paired(records,events)
@@ -433,10 +442,11 @@ def compute_metrics(validation: ValidationResult, seed: int = 20260806) -> dict[
         by_family.append({"task_family":family,"episode_count":len(subset),"conditional_recovery_rate":_rate(item.recovery_success for item in subset if item.post_failure_budget_complete)})
     best=max(summary,key=lambda item:(item["conditional_recovery_rate"] if item["conditional_recovery_rate"] is not None else -1,-item["skill_count"])) if summary else None
     final=summary[-1] if summary else None
+    retrieval_quality=compute_retrieval_quality(labels,rater_a,rater_b,seed=seed) if labels else None
     return {"schema_version":SCHEMA_VERSION,"evaluation_run_id":validation.evaluation_run_id,"analysis_kind":"controlled_recovery_post_failure","simulated":False,
         "sample_counts":{"episodes":len(records),"paired_units":len({item.paired_unit for item in records}),"excluded":len(validation.exclusions)},"snapshot_summary":summary,"task_family_summary":by_family,"paired_comparisons":paired,
-        "uncertainty":_bootstrap(records,seed),"associations":_associations(records,events),"growth":{"best_observed_snapshot":best["snapshot_id"] if best else None,"final_minus_best_degradation":None if not best or not final or best["conditional_recovery_rate"] is None or final["conditional_recovery_rate"] is None else final["conditional_recovery_rate"]-best["conditional_recovery_rate"]},
-        "claims":{"association_is_causal":False,"manual_relevance_agreement_available":False}}
+        "uncertainty":_bootstrap(records,seed),"retrieval_quality":retrieval_quality,"associations":_associations(records,events),"growth":{"best_observed_snapshot":best["snapshot_id"] if best else None,"final_minus_best_degradation":None if not best or not final or best["conditional_recovery_rate"] is None or final["conditional_recovery_rate"] is None else final["conditional_recovery_rate"]-best["conditional_recovery_rate"]},
+        "claims":{"association_is_causal":False,"manual_relevance_agreement_available":bool(retrieval_quality and retrieval_quality["kappa_sample_size"])}}
 
 
 def _write_csv(path: Path, rows: Iterable[dict[str, Any]]) -> None:
