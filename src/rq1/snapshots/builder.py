@@ -1,3 +1,9 @@
+"""DEPRECATED — legacy chronological snapshot builder (L0/L25/L50/L75/L100).
+
+This module is retained for compatibility only and must not be used on the
+active scientific path. Authoritative library construction now lives in
+``rq1.skills.library`` (NoLib / Clean-24 / Accum-60 / Accum-96).
+"""
 from __future__ import annotations
 import hashlib, json
 from pathlib import Path

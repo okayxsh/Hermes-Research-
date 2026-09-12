@@ -1,3 +1,8 @@
+"""DEPRECATED — legacy chronological snapshot models (L0/L25/L50/L75/L100).
+
+Retained for compatibility only. Authoritative library construction lives in
+``rq1.skills.library``.
+"""
 from __future__ import annotations
 from dataclasses import asdict, dataclass
 @dataclass(frozen=True)
