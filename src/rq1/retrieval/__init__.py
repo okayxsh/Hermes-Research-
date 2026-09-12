@@ -13,6 +13,19 @@ from rq1.retrieval.embedder import (
     SentenceBERTEmbedder,
     probe_retrieval,
 )
+from rq1.retrieval.controller import (
+    RetrievalBoundaryError,
+    RetrievalContext,
+    RetrievalOutcome,
+    SingleRetrievalBoundary,
+    build_retrieval_boundary,
+)
+from rq1.retrieval.injection import (
+    RecoveryMemory,
+    RecoveryMemorySkill,
+    build_recovery_memory,
+)
+from rq1.retrieval.logging import RetrievalEvent, RetrievalEventLog
 from rq1.retrieval.models import (
     RetrievalCandidate,
     RetrievalQuery,
@@ -36,14 +49,24 @@ __all__ = [
     "QUERY_TEMPLATE_VERSION",
     "SKILL_TEXT_VERSION",
     "EmbedderIdentity",
+    "RecoveryMemory",
+    "RecoveryMemorySkill",
+    "RetrievalBoundaryError",
     "RetrievalCandidate",
+    "RetrievalContext",
+    "RetrievalEvent",
+    "RetrievalEventLog",
+    "RetrievalOutcome",
     "RetrievalQuery",
     "RetrievalResult",
     "RetrievalUnavailable",
     "SentenceBERTEmbedder",
+    "SingleRetrievalBoundary",
     "SkillDocument",
     "TopKRetriever",
     "build_query_text",
+    "build_recovery_memory",
+    "build_retrieval_boundary",
     "build_skill_text",
     "cosine_similarity",
     "probe_retrieval",
@@ -51,3 +74,4 @@ __all__ = [
     "rank_candidates",
     "skill_text_hash",
 ]
+

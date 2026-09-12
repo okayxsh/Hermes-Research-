@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "timestamp",
+    "run_id",
+    "attempt_id",
+    "task_id",
+    "condition",
+    "library_name",
+    "library_size",
+    "library_hash",
+    "query_version",
+    "query_text_hash",
+    "query_template_hash",
+    "embedding_model",
+    "retrieved",
+    "no_retrieval",
+    "top_k",
+    "ranking",
+    "top"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string"},
+    "timestamp": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "episode_id": {"type": ["string", "null"]},
+    "condition": {"type": "string"},
+    "library_name": {"type": "string"},
+    "library_size": {"type": "integer", "minimum": 0},
+    "library_hash": {"type": ["string", "null"]},
+    "query_version": {"type": "string"},
+    "query_text_hash": {"type": "string"},
+    "query_template_hash": {"type": "string"},
+    "embedding_model": {"type": "string"},
+    "embedding_model_revision": {"type": ["string", "null"]},
+    "embedding_model_file_hashes": {"type": "object"},
+    "retrieved": {"type": "boolean"},
+    "no_retrieval": {"type": "boolean"},
+    "top_k": {"type": "integer", "minimum": 1},
+    "ranking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["skill_id", "score"],
+        "properties": {
+          "skill_id": {"type": "string"},
+          "score": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        }
+      }
+    },
+    "top": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["skill_id", "score"],
+        "properties": {
+          "skill_id": {"type": "string"},
+          "score": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        }
+      }
+    }
+  }
+}
