@@ -628,13 +628,16 @@ def _verify_fake_bridge(ctx: StageContext) -> dict[str, Any]:
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
     try:
-        health = read_json_response(f"{base}/health", b"{}", 5)
-        started = read_json_response(f"{base}/episode/start", json.dumps({"task_id": "installation-smoke", "split": "valid_seen", "seed": 1, "action_limit": 6}).encode(), 5)
+        # The first health request can import the installed ALFWorld surface on a
+        # cold interpreter. Keep this diagnostic-only timeout generous enough for
+        # that one-time import without changing any episode semantics.
+        health = read_json_response(f"{base}/health", b"{}", 30)
+        started = read_json_response(f"{base}/episode/start", json.dumps({"task_id": "installation-smoke", "split": "valid_seen", "seed": 1, "action_limit": 6}).encode(), 30)
         episode_id = str(started["episode_id"])
-        stepped = read_json_response(f"{base}/episode/step", json.dumps({"episode_id": episode_id, "action": "go to countertop 1"}).encode(), 5)
-        status = read_json_response(f"{base}/episode/{episode_id}/status", None, 5)
-        reset = read_json_response(f"{base}/episode/{episode_id}/reset", b"{}", 5)
-        abort = read_json_response(f"{base}/episode/{episode_id}/abort", json.dumps({"reason": "installation verification"}).encode(), 5)
+        stepped = read_json_response(f"{base}/episode/step", json.dumps({"episode_id": episode_id, "action": "go to countertop 1"}).encode(), 30)
+        status = read_json_response(f"{base}/episode/{episode_id}/status", None, 30)
+        reset = read_json_response(f"{base}/episode/{episode_id}/reset", b"{}", 30)
+        abort = read_json_response(f"{base}/episode/{episode_id}/abort", json.dumps({"reason": "installation verification"}).encode(), 30)
         return {"healthy": health.get("bridge_available") is True, "episode_id": episode_id, "step_number": stepped.get("step_number"), "status_step_number": status.get("step_number"), "reset_count": reset.get("reset_count"), "aborted": abort.get("aborted"), "raw_event_log": ctx.portable(log_root / f"{episode_id}.jsonl")}
     finally:
         server.shutdown()
