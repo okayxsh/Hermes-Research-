@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from rq1.logging.run_registry import RunRegistry
 from rq1.pilot.catalog import PILOT_TESTS, PILOT_TEST_MAP, select_tests, validate_catalog
@@ -115,7 +116,10 @@ class PilotTests(unittest.TestCase):
 
     def test_real_runtime_fails_closed(self) -> None:
         runtime = RealPilotRuntime(self.root)
-        execution = runtime.execute(PILOT_TEST_MAP["pilot_03"], run_id="r", attempt_id="a", output_dir=self.root / "out")
+        # Hermetic: force the Ollama probe to be unavailable so the result is
+        # independent of whether a live local service exists on the host.
+        with patch("rq1.pilot.real_runtime.model._api", side_effect=OSError("no live Ollama")):
+            execution = runtime.execute(PILOT_TEST_MAP["pilot_03"], run_id="r", attempt_id="a", output_dir=self.root / "out")
         self.assertEqual(PilotStatus.BLOCKED, execution.status)
         self.assertFalse(execution.details["real_operation_executed"])
         final = runtime.execute(PILOT_TEST_MAP["pilot_36"], run_id="r", attempt_id="b", output_dir=self.root / "out2")

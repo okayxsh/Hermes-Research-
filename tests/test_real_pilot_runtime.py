@@ -27,10 +27,17 @@ class RealRuntimeTests(unittest.TestCase):
 
     def test_model_and_recovery_have_precise_capability_blocks(self) -> None:
         runtime = RealPilotRuntime(self.root)
-        model = runtime.execute(PILOT_TEST_MAP["pilot_03"], run_id="r", attempt_id="a", output_dir=self.root / "a")
+        # Hermetic: force Ollama unavailable regardless of live host services.
+        with patch("rq1.pilot.real_runtime.model._api", side_effect=OSError("no live Ollama")):
+            model = runtime.execute(PILOT_TEST_MAP["pilot_03"], run_id="r", attempt_id="a", output_dir=self.root / "a")
         self.assertEqual(PilotStatus.BLOCKED, model.status)
         self.assertEqual("ollama_unavailable", model.details["block_code"])
-        perturbation = runtime.execute(PILOT_TEST_MAP["pilot_18"], run_id="r", attempt_id="b", output_dir=self.root / "b")
+        # Hermetic: force the real replay capability to be unverified.
+        with patch(
+            "rq1.pilot.real_runtime.recovery.real_recovery_capabilities",
+            return_value={"reset_replay_supported": False, "perturbation_supported": False},
+        ):
+            perturbation = runtime.execute(PILOT_TEST_MAP["pilot_18"], run_id="r", attempt_id="b", output_dir=self.root / "b")
         self.assertEqual(PilotStatus.BLOCKED, perturbation.status)
         self.assertIn(perturbation.details["block_code"], {"real_replay_unverified", "canonical_perturbation_unsupported"})
 
