@@ -1,15 +1,17 @@
 """Harness-owned real ALFWorld episode control through the Hermes registry.
 
 The experiment harness owns the episode identifier and all environment state.
-The local Hermes model selects one already-admissible textual action at a time;
-each action is then dispatched through the *real* project plugin registry.  No
-``AIAgent.run_conversation`` loop is involved, which avoids allowing a model to
-invent an episode identifier or silently lose the active episode.
+The local Hermes model chooses the index of one currently admissible action;
+Python maps that index back to the exact action string and dispatches it
+through the *real* project plugin registry.  No ``AIAgent.run_conversation``
+loop is involved, so the model can never invent an episode identifier, tool
+arguments, or a free-text command, or silently lose the active episode.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import subprocess
 import sys
@@ -17,13 +19,26 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from rq1.bridge.app import create_bridge_server
 from rq1.bridge.adapters.capabilities import default_data_dir
+from rq1.retrieval.query import EMPTY_INVENTORY_MARKER
+
+# Canonical Ollama inference seed shared by every RQ1 condition.  It is
+# independent of the frozen experimental task seeds (11, 29, 47).
+INFERENCE_SEED = 42
+ACTION_SELECTION_PROTOCOL = "action-index-v1"
+MAX_SELECTION_ATTEMPTS = 3
+RETRY_CLARIFICATION = (
+    "Your previous response was invalid. Return only ACTION_INDEX: <integer> "
+    "where the integer is one of the listed indices."
+)
+_GOAL_PATTERN = re.compile(r"^Your task is to:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+_ACTION_INDEX_PATTERN = re.compile(r"ACTION_INDEX:[ \t]*([0-9]+)")
 
 
 class EpisodeDriverError(RuntimeError):
@@ -52,18 +67,125 @@ class ActionRecord:
         }
 
 
-def parse_model_action(response: str, admissible_actions: Sequence[str]) -> str | None:
-    """Accept only one exact, machine-parseable legal action.
+@dataclass(frozen=True)
+class ActionSelection:
+    action: str | None
+    index: int | None
+    attempts: tuple[dict[str, Any], ...]
 
-    This intentionally has no case-insensitive/sub-string matching and no
-    fallback action.  A malformed model response is a model-selection failure,
-    not permission for the controller to choose on the model's behalf.
+
+def extract_task_goal(initial_observation: str) -> str:
+    """Return the natural-language goal from the ALFWorld initial observation.
+
+    ALFWorld 0.4.2 exposes the goal only inside the reset observation.  This is
+    an exact-marker match; it never falls back to the indexed task ID and never
+    paraphrases the goal.
+    """
+    matches = _GOAL_PATTERN.findall(initial_observation)
+    if len(matches) != 1:
+        raise EpisodeDriverError("Initial ALFWorld observation does not contain exactly one task goal")
+    return matches[0]
+
+
+def render_action_prompt(
+    *,
+    task_goal: str,
+    observation: str,
+    inventory: Sequence[str],
+    admissible_actions: Sequence[str],
+    recovery_memory: Mapping[str, Any] | None = None,
+    attempt: int = 1,
+) -> str:
+    """Build the condition-identical action-selection prompt.
+
+    Only the injected recovery-memory block may differ between conditions.
+    Scores, library names, episode identifiers, and reference/oracle actions
+    are never part of the prompt.
+    """
+    sections = [
+        "TASK GOAL:\n" + task_goal,
+        "CURRENT OBSERVATION:\n" + observation,
+        "INVENTORY:\n" + (", ".join(inventory) if inventory else EMPTY_INVENTORY_MARKER),
+    ]
+    if recovery_memory is not None:
+        sections.append("RECOVERY MEMORY:\n" + json.dumps(recovery_memory, ensure_ascii=False, sort_keys=True))
+    sections.append(
+        "ADMISSIBLE ACTIONS:\n"
+        + "\n".join(f"{index}. {action}" for index, action in enumerate(admissible_actions))
+    )
+    instruction = "Return exactly:\nACTION_INDEX: <integer>"
+    if attempt > 1:
+        # Retries differ only by this format clarification; the attempt number
+        # keeps seeded retries from deterministically repeating the same output.
+        instruction = f"{RETRY_CLARIFICATION} (attempt {attempt} of {MAX_SELECTION_ATTEMPTS})\n" + instruction
+    sections.append(instruction)
+    return "\n\n".join(sections)
+
+
+def parse_action_index(response: str, admissible_actions: Sequence[str]) -> int | None:
+    """Accept only one ``ACTION_INDEX: <integer>`` line naming a listed index.
+
+    There is no string/fuzzy matching and no fallback: anything else is an
+    invalid selection, not permission to choose on the model's behalf.
     """
     lines = [line.strip() for line in response.splitlines() if line.strip()]
-    if len(lines) != 1 or not lines[0].startswith("ACTION:"):
+    if len(lines) != 1:
         return None
-    action = lines[0].removeprefix("ACTION:").strip()
-    return action if action in admissible_actions else None
+    match = _ACTION_INDEX_PATTERN.fullmatch(lines[0])
+    if match is None:
+        return None
+    index = int(match.group(1))
+    return index if index < len(admissible_actions) else None
+
+
+def select_admissible_action(
+    ask: Callable[[str], str],
+    *,
+    task_goal: str,
+    observation: str,
+    inventory: Sequence[str],
+    admissible_actions: Sequence[str],
+    recovery_memory: Mapping[str, Any] | None = None,
+    max_attempts: int = MAX_SELECTION_ATTEMPTS,
+) -> ActionSelection:
+    """Map a model-chosen index to one exact admissible action with bounded retry."""
+    if not admissible_actions:
+        raise EpisodeDriverError("Cannot select from an empty admissible-action list")
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(1, max_attempts + 1):
+        prompt = render_action_prompt(
+            task_goal=task_goal,
+            observation=observation,
+            inventory=inventory,
+            admissible_actions=admissible_actions,
+            recovery_memory=recovery_memory,
+            attempt=attempt,
+        )
+        response = ask(prompt)
+        index = parse_action_index(response, admissible_actions)
+        action = admissible_actions[index] if index is not None else None
+        attempts.append(
+            {
+                "attempt": attempt,
+                "prompt": prompt,
+                "response": response,
+                "parsed_index": index,
+                "selected_action": action,
+                "valid": action is not None,
+            }
+        )
+        if action is not None:
+            return ActionSelection(action, index, tuple(attempts))
+    return ActionSelection(None, None, tuple(attempts))
+
+
+def ollama_chat_payload(model: str, prompt: str, seed: int) -> dict[str, Any]:
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {"temperature": 0, "seed": seed},
+    }
 
 
 _REGISTRY_WORKER = r'''
@@ -260,8 +382,10 @@ class RealEpisodeSession:
         )
         self.episode_id: str | None = None
         self.state: dict[str, Any] | None = None
+        self.task_goal: str | None = None
         self.records: list[ActionRecord] = []
         self.invalid_model_actions = 0
+        self.selection_failures: list[dict[str, Any]] = []
         self._call_number = 0
         self._events = output_dir / "episode-events.jsonl"
 
@@ -305,6 +429,11 @@ class RealEpisodeSession:
             raise EpisodeDriverError("Real alfworld_start returned no valid episode_id")
         self.episode_id = episode_id
         self.state = result
+        self.task_goal = extract_task_goal(str(result.get("observation", "")))
+        self._event(
+            "task_goal_frozen",
+            {"task_id": task_id, "task_goal": self.task_goal, "source": "initial_observation"},
+        )
         return result
 
     def step(self, action: str, *, phase: str) -> dict[str, Any]:
@@ -347,12 +476,7 @@ class RealEpisodeSession:
         return self.state
 
     def _model_response(self, prompt: str) -> str:
-        payload = {
-            "model": self.driver.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "options": {"temperature": 0},
-        }
+        payload = ollama_chat_payload(self.driver.model_name, prompt, self.driver.inference_seed)
         request = Request(
             self.driver.ollama_url + "/api/chat",
             data=json.dumps(payload).encode("utf-8"),
@@ -369,7 +493,7 @@ class RealEpisodeSession:
         return content
 
     def choose_action(self, recovery_memory: Mapping[str, Any] | None = None) -> str | None:
-        if self.state is None:
+        if self.state is None or self.task_goal is None:
             raise EpisodeDriverError("Cannot select an action before start")
         admissible = self.state.get("admissible_actions")
         if not isinstance(admissible, list) or not all(isinstance(item, str) for item in admissible):
@@ -377,38 +501,29 @@ class RealEpisodeSession:
         memory = None
         if recovery_memory is not None:
             memory = recovery_memory.get("recovery_memory", recovery_memory)
-        context = {
-            "task_instruction": self.state.get("instruction"),
-            "observation": self.state.get("observation"),
-            "inventory": self.state.get("inventory") or [],
-            "admissible_actions": admissible,
-            "recovery_memory": memory,
-        }
-        base = (
-            "Choose exactly one legal ALFWorld action. Do not explain or reason aloud. "
-            "Return exactly one line in this format: ACTION: <exact action>.\n"
-            + json.dumps(context, ensure_ascii=False, sort_keys=True)
+        selection = select_admissible_action(
+            self._model_response,
+            task_goal=self.task_goal,
+            observation=str(self.state.get("observation", "")),
+            inventory=[str(item) for item in self.state.get("inventory") or []],
+            admissible_actions=admissible,
+            recovery_memory=memory,
         )
-        for selection_attempt in range(2):
-            prompt = base if selection_attempt == 0 else (
-                "Your prior response was not an exact legal ACTION line. Return only "
-                "ACTION: <exact action from admissible_actions>.\n" + json.dumps(context, ensure_ascii=False, sort_keys=True)
-            )
-            response = self._model_response(prompt)
-            action = parse_model_action(response, admissible)
+        for attempt in selection.attempts:
             self._event(
                 "model_selection",
                 {
-                    "selection_attempt": selection_attempt + 1,
-                    "context": context,
-                    "response_format_valid": action is not None,
-                    "selected_action": action,
+                    "protocol": ACTION_SELECTION_PROTOCOL,
+                    "inference_seed": self.driver.inference_seed,
+                    "max_attempts": MAX_SELECTION_ATTEMPTS,
+                    "step_number": self.state.get("step_number"),
+                    "task_goal": self.task_goal,
+                    **attempt,
                 },
             )
-            if action is not None:
-                return action
-        self.invalid_model_actions += 1
-        return None
+        if selection.action is None:
+            self.invalid_model_actions += 1
+        return selection.action
 
     def run_model_loop(
         self,
@@ -426,7 +541,15 @@ class RealEpisodeSession:
                 break
             action = self.choose_action(recovery_memory)
             if action is None:
-                self.abort("model returned no exact admissible action after bounded clarification")
+                self.selection_failures.append(
+                    {
+                        "phase": phase,
+                        "step_number": self.state.get("step_number"),
+                        "attempts": MAX_SELECTION_ATTEMPTS,
+                        "reason": "action_selection_invalid_after_bounded_retry",
+                    }
+                )
+                self.abort("model returned no valid ACTION_INDEX after bounded retry")
                 break
             self.step(action, phase=phase)
         return self.records[starting:]
@@ -444,10 +567,12 @@ class RealEpisodeDriver:
         ollama_url: str = "http://127.0.0.1:11434",
         bridge_timeout_seconds: float = 300,
         model_timeout_seconds: float = 180,
+        inference_seed: int = INFERENCE_SEED,
     ) -> None:
         self.root = root.resolve()
         self.data_dir = (data_dir or default_data_dir()).resolve()
         self.model_name = model_name
+        self.inference_seed = inference_seed
         self.ollama_url = ollama_url.rstrip("/")
         self.bridge_timeout_seconds = bridge_timeout_seconds
         self.model_timeout_seconds = model_timeout_seconds

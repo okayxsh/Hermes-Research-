@@ -22,12 +22,14 @@ from rq1.recovery.controlled_failure import (
 from rq1.recovery.models import RecoveryState
 
 
-def _recovery_state(state: Mapping[str, Any]) -> RecoveryState:
+def _recovery_state(state: Mapping[str, Any], *, task_goal: str) -> RecoveryState:
+    # The bridge's ``instruction`` field is the indexed task ID; the semantic
+    # instruction is the natural-language goal frozen at episode start.
     return RecoveryState(
         task_id=str(state["task_id"]),
         split=str(state["split"]),
         task_family=str(state["task_family"]),
-        instruction=str(state["instruction"]),
+        instruction=task_goal,
         observation=str(state["observation"]),
         inventory=tuple(str(item) for item in state.get("inventory") or ()),
         admissible_actions=tuple(str(item) for item in state.get("admissible_actions") or ()),
@@ -148,9 +150,9 @@ class RealRecoveryHarness:
         return self.current_state()
 
     def current_state(self) -> RecoveryState:
-        if self.session is None or self.session.state is None:
+        if self.session is None or self.session.state is None or self.session.task_goal is None:
             raise EpisodeDriverError("recovery session is not active")
-        return _recovery_state(self.session.state)
+        return _recovery_state(self.session.state, task_goal=self.session.task_goal)
 
     def failure_environment(self) -> object:
         raise ControlledFailureError(
@@ -225,12 +227,30 @@ class RealRecoveryHarness:
     def run_recovery(self, action_budget: int) -> Sequence[Mapping[str, Any]]:
         if self.session is None:
             raise EpisodeDriverError("cannot recover without an active episode")
-        return tuple(
+        failures_before = len(self.session.selection_failures)
+        steps: list[dict[str, Any]] = [
             record.to_dict()
             for record in self.session.run_model_loop(
                 action_budget, phase="recovery", recovery_memory=self._memory
             )
+        ]
+        # An exhausted selection dispatches nothing; record it as a non-action
+        # invalid step so the existing result schema counts it.
+        steps.extend(
+            {
+                "step": None,
+                "phase": failure["phase"],
+                "action": None,
+                "action_valid": False,
+                "done": False,
+                "success": None,
+                "observation": "",
+                "controller_failure": failure["reason"],
+                "selection_attempts": failure["attempts"],
+            }
+            for failure in self.session.selection_failures[failures_before:]
         )
+        return tuple(steps)
 
     def recovery_succeeded(self) -> bool:
         return bool(self.session and self.session.state and self.session.state.get("success") is True)

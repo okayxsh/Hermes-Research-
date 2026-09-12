@@ -13,8 +13,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from rq1.acquisition.real_executor import run_acquisition_episode
-from rq1.evaluation.recovery_executor import RecoveryEpisodeSpec, run_recovery_episode
-from rq1.hermes.episode_driver import RealEpisodeDriver
+from rq1.evaluation.recovery_executor import RecoveryEpisodeResult, RecoveryEpisodeSpec, run_recovery_episode
+from rq1.hermes.episode_driver import (
+    ACTION_SELECTION_PROTOCOL,
+    INFERENCE_SEED,
+    MAX_SELECTION_ATTEMPTS,
+    RealEpisodeDriver,
+)
 from rq1.pilot.real_runtime.harnesses import RealAcquisitionHarness, RealRecoveryHarness
 from rq1.recovery.reference_route import derive_handcoded_reference, midpoint_candidates
 from rq1.retrieval import SentenceBERTEmbedder, build_retrieval_boundary
@@ -50,6 +55,19 @@ def _pilot_skills() -> list[tuple[str, str]]:
 
 def _library_hash(skills: list[tuple[str, str]]) -> str:
     return hashlib.sha256(json.dumps(skills, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _recovery_summary(result: RecoveryEpisodeResult) -> dict[str, object]:
+    return {
+        "success": result.outcome.success,
+        "retrieval_count": result.retrieval_count,
+        "no_retrieval": result.no_retrieval,
+        "task_goal": result.failure_context["task_instruction"],
+        # Dispatched model actions only; exhausted selections are invalid steps.
+        "post_failure_actions": result.outcome.actions,
+        "invalid_action_selections": result.outcome.invalid_actions,
+        "log_paths": list(result.log_paths),
+    }
 
 
 def _select_checkpoint(
@@ -107,6 +125,13 @@ def run_prelaunch_pilot(
         "train_task_id": train_task_id,
         "valid_seen_task_id": valid_seen_task_id,
         "seed": seed,
+        "model_inference": {
+            "model": "hermes3:8b",
+            "temperature": 0,
+            "seed": INFERENCE_SEED,
+            "action_selection_protocol": ACTION_SELECTION_PROTOCOL,
+            "max_selection_attempts": MAX_SELECTION_ATTEMPTS,
+        },
     }
     _write(output / "run-manifest.json", report)
     route = derive_handcoded_reference(data_dir, valid_seen_task_id, "valid_seen")
@@ -189,13 +214,7 @@ def run_prelaunch_pilot(
             )
         finally:
             memory_harness.close()
-        report["memory_recovery"] = {
-            "success": memory.outcome.success,
-            "retrieval_count": memory.retrieval_count,
-            "no_retrieval": memory.no_retrieval,
-            "post_failure_actions": len(memory.recovery_steps),
-            "log_paths": list(memory.log_paths),
-        }
+        report["memory_recovery"] = _recovery_summary(memory)
 
         nolib_boundary = build_retrieval_boundary(
             [],
@@ -232,13 +251,7 @@ def run_prelaunch_pilot(
             )
         finally:
             nolib_harness.close()
-        report["nolib_recovery"] = {
-            "success": nolib.outcome.success,
-            "retrieval_count": nolib.retrieval_count,
-            "no_retrieval": nolib.no_retrieval,
-            "post_failure_actions": len(nolib.recovery_steps),
-            "log_paths": list(nolib.log_paths),
-        }
+        report["nolib_recovery"] = _recovery_summary(nolib)
     _write(output / "pilot-report.json", report)
     return {**report, "output_directory": str(output)}
 
