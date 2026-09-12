@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from rq1.bridge.environment import FakeALFWorldAdapter, RealALFWorldAdapter, real_adapter_capability
+from rq1.bridge.environment import FakeALFWorldAdapter, RealALFWorldAdapter
+from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
+from rq1.bridge.adapters.task_index import TaskIndexError, build_task_index
 from rq1.bridge.episode_manager import BridgeError, EpisodeManager
 from rq1.bridge.models import (
     CorrelationMetadata,
@@ -49,10 +51,18 @@ def create_bridge_server(
     if mode not in {"fake", "real"}:
         raise ValueError("mode must be fake or real")
     if mode == "real":
-        capability = real_adapter_capability()
+        data_root = (data_dir or default_data_dir()).expanduser()
+        try:
+            task_index = build_task_index(data_root)
+        except TaskIndexError as exc:
+            raise BridgeError(503, str(exc)) from exc
+        capability = probe_alfworld_capabilities(data_root, task_index=task_index)
         if not capability.real_adapter_ready:
             raise BridgeError(503, capability.details)
-        episode_manager = EpisodeManager(lambda: RealALFWorldAdapter(data_dir=data_dir), log_root)
+        episode_manager = EpisodeManager(
+            lambda: RealALFWorldAdapter(data_dir=data_root, task_index=task_index),
+            log_root,
+        )
     else:
         episode_manager = manager or EpisodeManager(FakeALFWorldAdapter, log_root)
 
@@ -69,11 +79,11 @@ def create_bridge_server(
                         raise BridgeError(422, "health does not accept request fields")
                     # Fake bridge health is a local diagnostic and must not
                     # trigger the expensive real ALFWorld capability/index
-                    # probe. Real-mode health still performs the capability
-                    # check, while fake mode reports it as unavailable.
-                    capability = real_adapter_capability() if mode == "real" else None
-                    real_available = capability.available if capability else False
-                    real_details = capability.details if capability else "Real adapter probe skipped for fake bridge mode."
+                    # probe. Real-mode health reports the retained capability
+                    # evidence from its one-time bridge initialization.
+                    health_capability = capability if mode == "real" else None
+                    real_available = health_capability.available if health_capability else False
+                    real_details = health_capability.details if health_capability else "Real adapter probe skipped for fake bridge mode."
                     response = HealthResponse(True, mode, episode_manager.active_episode_count, real_available, real_details).to_dict()
                 elif path == "/episode/start":
                     response = episode_manager.start(EpisodeStartRequest.from_payload(_decode_json(self)), correlation).to_dict()

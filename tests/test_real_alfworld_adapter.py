@@ -102,6 +102,21 @@ class RealALFWorldAdapterTests(unittest.TestCase):
             self.assertTrue(aborted.done)
             self.assertEqual("controller_side", aborted.field_sources["abort"])
 
+    def test_adapter_reuses_a_preloaded_immutable_index(self) -> None:
+        from rq1.bridge.adapters.alfworld_v042 import RealALFWorldAdapter
+        index = build_task_index(self.root)
+        with (
+            patch("rq1.bridge.adapters.alfworld_v042.probe_alfworld_capabilities", return_value=ready_report()),
+            patch("rq1.bridge.adapters.alfworld_v042.build_task_index") as rebuilt,
+        ):
+            started = RealALFWorldAdapter(
+                self.root,
+                environment_factory=lambda *_args: FixtureEnvironment(),
+                task_index=index,
+            ).start(EpisodeStartRequest(self.task_id, "valid_seen", 7, 8))
+        self.assertEqual(self.task_id, started.instruction)
+        rebuilt.assert_not_called()
+
     def test_invalid_action_and_reset_mismatch_are_reported(self) -> None:
         from rq1.bridge.adapters.alfworld_v042 import RealALFWorldAdapter
         environment = FixtureEnvironment()
@@ -130,7 +145,8 @@ class RealALFWorldAdapterTests(unittest.TestCase):
         self.assertTrue(parsed.yes)
 
     def test_capability_probe_reports_missing_and_injected_supported_surface(self) -> None:
-        missing = probe_alfworld_capabilities(self.root)
+        with patch("rq1.bridge.adapters.capabilities.importlib.util.find_spec", return_value=None):
+            missing = probe_alfworld_capabilities(self.root)
         self.assertFalse(missing.real_adapter_ready)
         fake_module = types.SimpleNamespace(AlfredTWEnv=type("AlfredTWEnv", (), {"init_env": lambda self, batch_size: None}))
         original_import = __import__

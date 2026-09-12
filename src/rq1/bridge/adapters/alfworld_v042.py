@@ -25,10 +25,15 @@ def _state_digest(state: AdapterState) -> str:
 class RealALFWorldAdapter:
     """One explicit indexed task per adapter instance, using ALFWorld 0.4.2 only."""
 
-    def __init__(self, data_dir: Path | None = None, environment_factory: Callable[[IndexedTask, int, int], Any] | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path | None = None,
+        environment_factory: Callable[[IndexedTask, int, int], Any] | None = None,
+        task_index: TaskIndex | None = None,
+    ) -> None:
         self.data_dir = (data_dir or default_data_dir()).expanduser()
         self._factory = environment_factory or self._create_environment
-        self._index: TaskIndex | None = None
+        self._index = task_index
         self._task: IndexedTask | None = None
         self._request: EpisodeStartRequest | None = None
         self._environment: Any = None
@@ -36,10 +41,18 @@ class RealALFWorldAdapter:
         self._initial_digest: str | None = None
 
     def start(self, request: EpisodeStartRequest) -> AdapterState:
-        report = probe_alfworld_capabilities(self.data_dir)
-        if not report.real_adapter_ready:
-            raise RealALFWorldUnavailable(report.details)
-        self._index = build_task_index(self.data_dir)
+        if self._index is None:
+            # Standalone adapters retain the original fail-closed capability
+            # check. Long-lived bridge runtimes inject the immutable index and
+            # avoid this second scan on every episode.
+            report = probe_alfworld_capabilities(self.data_dir)
+            if not report.real_adapter_ready:
+                raise RealALFWorldUnavailable(report.details)
+            self._index = build_task_index(self.data_dir)
+        else:
+            report = probe_alfworld_capabilities(self.data_dir, task_index=self._index)
+            if not report.real_adapter_ready:
+                raise RealALFWorldUnavailable(report.details)
         self._task = self._index.resolve(request.task_id, request.split)
         self._request = request
         self._environment = self._factory(self._task, request.seed, request.action_limit)

@@ -12,8 +12,6 @@ from typing import Any
 
 from rq1.bridge.app import create_bridge_server
 from rq1.bridge.adapters.capabilities import default_data_dir
-from rq1.bridge.adapters.alfworld_v042 import RealALFWorldAdapter
-from rq1.bridge.episode_manager import EpisodeManager
 from rq1.hermes.adapter import FakeHermesAdapter, LocalBridgeClient
 from rq1.hermes.capabilities import probe_hermes_capabilities
 from rq1.hermes.models import HermesContext, HermesEventLog, HermesIntegrationEvent
@@ -268,11 +266,15 @@ def _run_real_registry_integration(root: Path, executable: str | None) -> dict[s
     )
     try:
         task_id = _verified_real_task(root)
-        # The real adapter performs its own capability check and opens the
-        # selected indexed episode. Supplying it directly avoids an additional
-        # full index scan merely to choose this already-frozen smoke cell.
-        manager = EpisodeManager(lambda: RealALFWorldAdapter(data_dir=default_data_dir()), bridge_logs)
-        server = create_bridge_server(bridge_logs, port=0, manager=manager)
+        # Build and validate the immutable task index once for this long-lived
+        # diagnostic bridge. Each episode receives the same index; task
+        # selection and ALFWorld runtime construction remain unchanged.
+        server = create_bridge_server(
+            bridge_logs,
+            port=0,
+            mode="real",
+            data_dir=default_data_dir(),
+        )
     except Exception as exc:
         return {"status": "blocked", "reason": f"Real ALFWorld bridge preparation failed: {type(exc).__name__}: {exc}", "remediation": "Resolve the existing real ALFWorld capability gate without using valid_unseen."}
     thread = threading.Thread(target=server.serve_forever, daemon=True)

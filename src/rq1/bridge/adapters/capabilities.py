@@ -7,7 +7,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from rq1.bridge.adapters.task_index import TaskIndexError, build_task_index
+from rq1.bridge.adapters.task_index import TaskIndex, TaskIndexError, build_task_index
 
 
 def default_data_dir() -> Path:
@@ -44,7 +44,12 @@ class ALFWorldCapabilityReport:
         return asdict(self)
 
 
-def probe_alfworld_capabilities(data_dir: Path | None = None) -> ALFWorldCapabilityReport:
+def probe_alfworld_capabilities(
+    data_dir: Path | None = None,
+    *,
+    task_index: TaskIndex | None = None,
+) -> ALFWorldCapabilityReport:
+    """Return capability evidence, optionally reusing a validated immutable index."""
     root = data_dir or default_data_dir()
     detected = importlib.util.find_spec("alfworld") is not None
     try:
@@ -55,7 +60,12 @@ def probe_alfworld_capabilities(data_dir: Path | None = None) -> ALFWorldCapabil
     data_detected = (root / "json_2.1.1").is_dir() and (root / "logic").is_dir()
     index = None
     index_error = None
-    if data_detected:
+    if task_index is not None:
+        if task_index.data_root != root.expanduser().resolve():
+            index_error = "Preloaded ALFWorld task index does not belong to the configured data root."
+        else:
+            index = task_index
+    elif data_detected:
         try:
             index = build_task_index(root)
         except TaskIndexError as exc:
