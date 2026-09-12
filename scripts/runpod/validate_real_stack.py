@@ -158,11 +158,13 @@ def main() -> int:
     package_ok, package_output = validator.command("alfworld-package", [sys.executable, "-c", "import importlib.metadata as m; print(m.version('alfworld'))"], timeout=30)
     validator.check("alfworld_042", package_ok and package_output.strip() == "0.4.2", package_output or "alfworld package unavailable")
 
-    capability_ok, capability_output = validator.cli("alfworld", "capabilities")
+    # The first probe imports ALFWorld and scans the persistent network volume;
+    # allow enough time for a cold start on RunPod's mounted storage.
+    capability_ok, capability_output = validator.cli("alfworld", "capabilities", timeout=900)
     validator.check("alfworld_capabilities", capability_ok, capability_output[-300:] if capability_output else "real adapter capability probe failed")
-    index_ok, index_output = validator.cli("alfworld", "index", "--split", "valid_seen")
+    index_ok, index_output = validator.cli("alfworld", "index", "--split", "valid_seen", timeout=900)
     validator.check("alfworld_valid_seen_index", index_ok, "valid_seen index constructed" if index_ok else index_output[-300:])
-    smoke_ok, smoke_output = validator.cli("alfworld", "smoke-test", "--split", "valid_seen", "--yes", timeout=300)
+    smoke_ok, smoke_output = validator.cli("alfworld", "smoke-test", "--split", "valid_seen", "--yes", timeout=900)
     validator.check("alfworld_real_smoke", smoke_ok, "real start/step/status/reset/abort completed" if smoke_ok else smoke_output[-300:])
 
     model_smoke = (
@@ -208,7 +210,7 @@ def main() -> int:
         process.send_signal(signal.SIGINT)
         process.wait(timeout=30)
         interrupted_ok = process.returncode in {0, 130}
-        resume_interrupt_ok, resume_interrupt_output = validator.cli("experiment", "checkpoint-test", "--run-id", interrupt_id, "--resume", "--total-runs", "6", timeout=300, env=env)
+        resume_interrupt_ok, resume_interrupt_output = validator.cli("experiment", "checkpoint-test", "--run-id", interrupt_id, "--resume", "--total-runs", "6", "--delay-ms", "500", timeout=300, env=env)
         validator.check("interrupt_resume", interrupted_ok and resume_interrupt_ok, "SIGINT followed by resume completed" if interrupted_ok and resume_interrupt_ok else resume_interrupt_output[-300:])
     except (OSError, subprocess.SubprocessError) as exc:
         validator.check("interrupt_resume", False, f"{type(exc).__name__}: {exc}")
