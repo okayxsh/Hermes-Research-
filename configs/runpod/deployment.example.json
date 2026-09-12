@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "provider": "runpod",
+  "cloud": "SECURE",
+  "billing": "ON_DEMAND",
+  "pod_name": "rq1-hermes-alfworld",
+  "gpu": {
+    "count": 1,
+    "preferred": "NVIDIA RTX A6000",
+    "fallbacks": [
+      "NVIDIA A40",
+      "NVIDIA RTX A5000",
+      "NVIDIA GeForce RTX 4090"
+    ]
+  },
+  "image": "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04",
+  "python_requirement": "3.11 (installed by uv inside the project; the image Python is not used for the experiment)",
+  "container_disk_gb": 60,
+  "persistent_volume_gb": 120,
+  "volume_mount_path": "/workspace/persistent",
+  "minimum_vcpu": 8,
+  "minimum_ram_gb": 32,
+  "ports": [
+    "22/tcp"
+  ],
+  "interruptible": false,
+  "notes": [
+    "The documented image is a CUDA-capable base; bootstrap installs and locks Python 3.11.",
+    "Use a network volume in the same datacenter when the experiment must survive Pod replacement.",
+    "Do not pass an API key or create a Pod from this file automatically.",
+    "Confirm current GPU availability and price immediately before manual provisioning."
+  ]
+}

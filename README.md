@@ -76,6 +76,11 @@ bash scripts/setup_machine.sh --yes --resume --verbose
 
 Typed setup orchestration, the master script, thin stage wrappers, machine-readable schemas, and mocked setup tests are present. No real apt, Ollama, Hermes, model, ALFWorld, ALFWorld-data, profile, or GPU installation test was run during repository development. Do not run ad hoc upstream installers and then treat the repository as verified.
 
+For non-billable RunPod preparation, use the reviewed deployment specification
+and separate validation/launch gates in
+[`docs/RUNPOD_DEPLOYMENT.md`](docs/RUNPOD_DEPLOYMENT.md). The RunPod scripts
+never provision a Pod; `bootstrap.sh --dry-run` is safe to inspect locally.
+
 ## Readiness boundary
 
 - Installation verification may use the deterministic fake bridge to test health, start, step, status, reset, and abort.

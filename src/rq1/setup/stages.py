@@ -323,6 +323,7 @@ def _systemd_available(ctx: StageContext) -> bool:
 
 def run_ollama(ctx: StageContext) -> StageOutcome:
     installer_hash = None
+    models_dir = os.environ.get("OLLAMA_MODELS")
     if not ctx.runner.which("ollama"):
         installer, installer_hash = _installer(ctx, "ollama", OLLAMA_INSTALL_URL)
         sudo = () if hasattr(os, "geteuid") and os.geteuid() == 0 else ("sudo",)
@@ -333,21 +334,29 @@ def run_ollama(ctx: StageContext) -> StageOutcome:
         if systemd:
             dropin = ctx.artifacts / "service-config" / "ollama-rq1.conf"
             dropin.parent.mkdir(parents=True, exist_ok=True)
-            dropin.write_text(
-                "[Service]\n"
-                f"Environment=\"OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT}\"\n"
-                "Environment=\"OLLAMA_HOST=127.0.0.1:11434\"\n",
-                encoding="utf-8",
-            )
+            lines = [
+                "[Service]",
+                f"Environment=\"OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT}\"",
+                "Environment=\"OLLAMA_HOST=127.0.0.1:11434\"",
+            ]
+            if models_dir:
+                lines.append(f"Environment=\"OLLAMA_MODELS={models_dir}\"")
+            dropin.write_text("\n".join(lines) + "\n", encoding="utf-8")
             sudo = () if hasattr(os, "geteuid") and os.geteuid() == 0 else ("sudo",)
             ctx.runner.run((*sudo, "install", "-D", "-m", "0644", str(dropin), "/etc/systemd/system/ollama.service.d/rq1.conf"), check=True)
             ctx.runner.run((*sudo, "systemctl", "daemon-reload"), check=True)
             ctx.runner.run((*sudo, "systemctl", "enable", "--now", "ollama"), timeout=120, check=True)
         else:
             ollama = ctx.runner.which("ollama") or "ollama"
+            environment = {
+                "OLLAMA_CONTEXT_LENGTH": str(MINIMUM_CONTEXT),
+                "OLLAMA_HOST": "127.0.0.1:11434",
+            }
+            if models_dir:
+                environment["OLLAMA_MODELS"] = models_dir
             ctx.runner.start_background(
                 (ollama, "serve"), cwd=ctx.root,
-                env={"OLLAMA_CONTEXT_LENGTH": str(MINIMUM_CONTEXT), "OLLAMA_HOST": "127.0.0.1:11434"},
+                env=environment,
                 log_path=ctx.artifacts / "logs" / "ollama.log",
                 pid_path=ctx.root / "state" / "ollama.pid",
             )
@@ -359,7 +368,7 @@ def run_ollama(ctx: StageContext) -> StageOutcome:
     if not available:
         raise StageFailure("Ollama did not become healthy on 127.0.0.1:11434", "Inspect systemd status or artifacts/logs/ollama.log.")
     api_version = {} if ctx.options.dry_run else _ollama_api(ctx, "/api/version")
-    manifest = _software_manifest(ctx, {"ollama": {"cli": _version(ctx, "ollama"), "api": api_version, "installer_sha256": installer_hash, "context_length": MINIMUM_CONTEXT}})
+    manifest = _software_manifest(ctx, {"ollama": {"cli": _version(ctx, "ollama"), "api": api_version, "installer_sha256": installer_hash, "context_length": MINIMUM_CONTEXT, "models_dir": models_dir}})
     return StageOutcome(probes=[ProbeResult("ollama-api", available, "localhost API responsive")], artifacts=[manifest])
 
 
