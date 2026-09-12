@@ -4,15 +4,19 @@
 
 Build a reproducible controlled-recovery experiment: determine whether a persistent agent's naturally accumulated skill library improves recovery from controlled plan-invalidating failures in multi-step ALFWorld tasks, or increases post-failure retrieval noise and recovery degradation.
 
+## Authoritative RQ1 protocol
+
+The scientific retrieval mechanism is **Sentence-BERT embeddings + cosine similarity + deterministic top-3**, invoked exactly once immediately after the controlled failure. Retrieval noise is defined as **1 − Precision@3** against human relevance labels. The four memory conditions are **NoLib (0)**, **Clean-24 (24 core skills, 4 per family)**, **Accum-60 (Clean-24 + 36)**, and **Accum-96 (Clean-24 + 72)**. The legacy `L0/L25/L50/L75/L100` chronological-snapshot design and Hermes-native retrieval are deprecated from the active scientific path.
+
 ## Hard constraints
 
 - Do not use DeepSeek or DeepSeek-R1 derivatives.
 - Model candidates are Hermes 3 Llama 3.1 8B, then Llama 3.1 8B Instruct only if the pilot requires it.
-- Use Hermes native skills first. Do not add Sentence-BERT, vector databases, LangChain, LangGraph, or a custom semantic retriever without explicit approval.
+- Scientific retrieval is Sentence-BERT (`all-mpnet-base-v2`) → cosine → top-3. Hermes-native skill loading is compatibility/diagnostic evidence only and must never feed Precision@3 or Retrieval Noise. Do not add LangChain, LangGraph, or a vector database.
 - Use ALFWorld text tasks: `train` for acquisition, `valid_seen` for pilots, and untouched `valid_unseen` only for final evaluation.
 - Use one repository and isolated Hermes profiles. Experimental profiles contain no bundled skills.
 - Do not revert to ordinary task-success-only evaluation: paired conditions must share the checkpoint and controlled perturbation.
-- Evaluation snapshots are frozen/read-only; disable persistent memory, curator, unrelated tools, and skill writes during recovery evaluation.
+- Evaluation libraries are frozen/read-only; disable persistent memory, curator, unrelated tools, and skill writes during recovery evaluation.
 - Never invent Hermes commands, configuration keys, hook payloads, or plugin schemas. Probe capabilities and keep version-specific code in adapters.
 - Do not install Hermes, Ollama, models, or ALFWorld—or run GPU tests—unless a later task explicitly authorizes it.
 
