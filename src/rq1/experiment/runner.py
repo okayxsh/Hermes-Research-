@@ -22,6 +22,7 @@ from rq1.utils.time import utc_now
 
 
 FaultHook = Callable[[str, ExperimentUnit, Mapping[str, Any] | None], None]
+PhaseHook = Callable[[list[ExperimentUnit], Mapping[str, Mapping[str, Any]]], Any]
 
 
 @dataclass(frozen=True)
@@ -73,10 +74,16 @@ class DurableExperimentRunner:
         *,
         fault_hook: FaultHook | None = None,
         progress: Callable[[str], None] | None = print,
+        preflight: PhaseHook | None = None,
+        checkpoint_extension: PhaseHook | None = None,
     ) -> None:
         self.store = store
         self.fault_hook = fault_hook
         self.progress = progress
+        # Phase-specific consistency check run under the lock before any unit,
+        # and phase-specific state added to every checkpoint as ``phase_state``.
+        self.preflight = preflight
+        self.checkpoint_extension = checkpoint_extension
         self._stop_requested = False
         self._signal_number: int | None = None
 
@@ -118,6 +125,8 @@ class DurableExperimentRunner:
             self.store.terminal_results()
             latest = self.store.terminal_results(phase=phase)
             self._validate_result_keys(unit_list, latest)
+            if self.preflight is not None:
+                self.preflight(unit_list, latest)
             self._record_stale_attempt(checkpoint, latest, phase)
             candidates = self._candidates(phase, unit_list, latest, options)
             if options.max_runs is not None:
@@ -553,7 +562,7 @@ class DurableExperimentRunner:
         if last_library is not None:
             library_size = last_library.get("library_size_after", library_size)
             library_hash = last_library.get("skill_library_hash_after", library_hash)
-        return {
+        value: dict[str, Any] = {
             "status": status,
             "current_phase": phase,
             "completed_run_count": completed,
@@ -573,6 +582,9 @@ class DurableExperimentRunner:
             "git_commit": config.get("git_commit") or self.store.manifest_runtime().get("git_commit"),
             "blocking_error": dict(blocking_error) if blocking_error else None,
         }
+        if self.checkpoint_extension is not None:
+            value["phase_state"] = dict(self.checkpoint_extension(units, latest))
+        return value
 
     @staticmethod
     def _unit_pointer(unit: ExperimentUnit | None, attempt_id: str | None) -> dict[str, Any] | None:

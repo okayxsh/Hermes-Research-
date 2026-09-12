@@ -490,15 +490,24 @@ def command_freeze(root: Path, args: argparse.Namespace) -> int:
 
 
 def command_acquisition(root: Path, args: argparse.Namespace) -> int:
-    from rq1.acquisition.runner import AcquisitionRunner
-    if args.acquisition_command == "plan":
-        from rq1.freeze.validation import validate_final_gates
-        print(json.dumps({"dry_run": True, "gates": validate_final_gates(root).to_dict(), "split": "train", "profile": "rq1-acquisition"}, indent=2)); return 0
-    _final_gate(root)
-    if args.acquisition_command == "validate":
-        print(json.dumps({"ok": False, "status": "blocked", "reason": "No validated final acquisition report exists for the supplied run."}, indent=2)); return 1
-    if not args.yes: raise RuntimeError("Final acquisition requires --yes")
-    raise RuntimeError("Final acquisition execution requires a frozen queue and an observed real Hermes acquisition adapter; no final run was started.")
+    from rq1.acquisition import launch
+    command = args.acquisition_command
+    if command == "plan":
+        payload = launch.acquisition_plan(root, args)
+    elif command in {"run", "resume", "retry-failed"}:
+        payload = launch.scientific_run(root, args, resume=command != "run", retry_failed=command == "retry-failed")
+    elif command == "validate":
+        payload = launch.validate_run(root, args.run_id)
+    elif command == "check":
+        payload = launch.prelaunch_check(root, args)
+    elif command == "check-report":
+        payload = launch.check_report(root, args.run_id)
+    else:
+        payload = launch.prepare_approvals(root, Path(args.proposal), Path(args.evidence_report))
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if payload.get("status") == "interrupted":
+        return 130
+    return 0 if payload.get("ok") else 1
 
 
 def command_snapshots(root: Path, args: argparse.Namespace) -> int:
@@ -836,24 +845,30 @@ def build_parser() -> argparse.ArgumentParser:
     freeze = sub.add_parser("freeze", help="Plan or create immutable final-experiment freezes.")
     freeze_sub = freeze.add_subparsers(dest="freeze_command", required=True)
     freeze_sub.add_parser("plan")
-    for name in ("environment", "protocol"):
+    for name in ("environment", "protocol", "acquisition-environment", "acquisition-protocol"):
         item = freeze_sub.add_parser(name)
         item.add_argument("--approval-file", required=True)
         item.add_argument("--pilot-report", required=True)
         item.add_argument("--yes", action="store_true")
-    acquisition = sub.add_parser("acquisition", help="Final train-only acquisition (strictly freeze-gated).")
+    acquisition = sub.add_parser("acquisition", help="Train-only RQ1 acquisition: approval-gated scientific runs and non-scientific checks.")
     acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
-    acquisition_sub.add_parser("plan")
+    item = acquisition_sub.add_parser("plan"); item.add_argument("--task-manifest")
     def add_durable_run_options(item: argparse.ArgumentParser) -> None:
         item.add_argument("--run-id", required=True)
         item.add_argument("--max-runs", type=int)
         item.add_argument("--backup-dir")
         item.add_argument("--require-backup", action="store_true")
         item.add_argument("--fail-fast", action="store_true")
+        item.add_argument("--task-manifest")
 
     for name in ("run", "resume", "retry-failed"):
         item = acquisition_sub.add_parser(name); add_durable_run_options(item); item.add_argument("--yes", action="store_true")
     item = acquisition_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
+    item = acquisition_sub.add_parser("check", help="NON-SCIENTIFIC prelaunch check under artifacts/prelaunch/acquisition-check.")
+    item.add_argument("--run-id", required=True); item.add_argument("--task-id", action="append"); item.add_argument("--max-runs", type=int); item.add_argument("--resume", action="store_true")
+    item = acquisition_sub.add_parser("check-report"); item.add_argument("--run-id", required=True)
+    item = acquisition_sub.add_parser("prepare-approvals", help="Write UNAPPROVED acquisition approval requests; never approves.")
+    item.add_argument("--proposal", required=True); item.add_argument("--evidence-report", required=True)
     snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")
     snapshots_sub = snapshots.add_subparsers(dest="snapshots_command", required=True)
     snapshots_sub.add_parser("plan")

@@ -73,7 +73,7 @@ class FinalStageContractsTests(unittest.TestCase):
             registry.initialize(); states = registry.status(); states["acquisition"].status = "passed"; registry._save(states)
             self.assertEqual("invalidated", registry.status()["acquisition"].status)
 
-    def test_durable_acquisition_still_requires_final_gates(self) -> None:
+    def test_durable_acquisition_still_requires_approved_gates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runner = AcquisitionRunner(root)
@@ -85,7 +85,7 @@ class FinalStageContractsTests(unittest.TestCase):
                 called = True
 
             with patch(
-                "rq1.acquisition.runner.validate_final_gates",
+                "rq1.acquisition.runner.validate_acquisition_gates",
                 return_value=FreezeValidation(False, ("blocked",), None, None),
             ), self.assertRaises(Exception):
                 runner.run_resumable(

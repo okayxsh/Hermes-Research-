@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib, json
 from pathlib import Path
-from rq1.bridge.adapters.task_index import TASK_TYPES, _sha256
+from rq1.bridge.adapters.task_index import _resolve_task_family, _sha256
 from rq1.tasks.models import DiscoveryResult, TaskRecord
 
 CANONICAL_FAMILIES = {
@@ -27,7 +27,8 @@ def discover_tasks(data_root: Path, split: str, *, allow_unseen_metadata: bool =
         game = source.with_name("game.tw-pddl")
         if not game.is_file(): exclusions.append({"source": source.relative_to(root).as_posix(), "reason": "missing_game_file"}); continue
         try:
-            payload = json.loads(source.read_text(encoding="utf-8")); native = TASK_TYPES[payload["task_type"]]; family = CANONICAL_FAMILIES[native]
+            # Real ALFWorld 0.4.2 stores task_type as its string name; fixtures may use the numeric code.
+            payload = json.loads(source.read_text(encoding="utf-8")); native = _resolve_task_family(payload["task_type"]); family = CANONICAL_FAMILIES[native]
         except (OSError, ValueError, KeyError, TypeError): errors.append(source.relative_to(root).as_posix()); continue
         relative = source.parent.relative_to(split_root).as_posix()
         if not relative or relative.startswith("../"): errors.append(source.relative_to(root).as_posix()); continue

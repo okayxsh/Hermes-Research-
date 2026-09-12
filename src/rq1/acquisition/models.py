@@ -7,6 +7,8 @@ class AcquisitionPlan:
     task_ids: tuple[str, ...]
     split: str = "train"
     profile: str = "rq1-acquisition"
+    task_families: tuple[str, ...] = ()
+    queue_sha256: str | None = None
 
     def to_dict(self): return asdict(self)
 

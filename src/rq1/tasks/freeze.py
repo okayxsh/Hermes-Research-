@@ -13,14 +13,21 @@ def gate_kind(root: Path, kind: str) -> None:
         gates = validate_final_gates(root)
         if not gates.valid: raise TaskFreezeError("evaluation task manifest is blocked: " + "; ".join(gates.reasons))
 
+def _check_approval(proposed: TaskManifest, approval: dict) -> None:
+    if not approval.get("approved_by") or not approval.get("approved_at"): raise TaskFreezeError("approval metadata is required")
+    if approval.get("status", "APPROVED") != "APPROVED": raise TaskFreezeError(f"approval status is {approval.get('status')}, not APPROVED")
+    subject = approval.get("subject")
+    if subject is not None and (not isinstance(subject, dict) or subject.get("manifest_sha256") != proposed.manifest_sha256):
+        raise TaskFreezeError("approval does not reference this proposed manifest")
+
 def freeze_manifest(root: Path, proposed: TaskManifest, approval: dict, destination: Path) -> TaskManifest:
     if proposed.status != ManifestState.PROPOSED.value: raise TaskFreezeError("only proposed manifests can be frozen")
-    if not approval.get("approved_by") or not approval.get("approved_at"): raise TaskFreezeError("approval metadata is required")
+    _check_approval(proposed, approval)
     gate_kind(root, proposed.manifest_type)
     commit, clean, error = git_state(root)
     if error or not clean: raise TaskFreezeError("freezing requires a clean committed repository")
     if destination.exists(): raise FileExistsError("refusing to overwrite frozen manifest")
-    value = proposed.to_dict(); value.update({"status": ManifestState.FROZEN.value, "repository_commit": commit, "approved_at": str(approval["approved_at"]), "approval_reference": str(approval.get("reference", approval["approved_by"])), "generated_at": utc_now(), "manifest_sha256": ""})
+    value = proposed.to_dict(); value.update({"status": ManifestState.FROZEN.value, "repository_commit": commit, "approved_at": str(approval["approved_at"]), "approval_reference": str(approval.get("reference") or approval["approved_by"]), "generated_at": utc_now(), "manifest_sha256": ""})
     value["manifest_sha256"] = manifest_hash(value); frozen = TaskManifest(**{**value, "tasks": tuple(proposed.tasks), "exclusions": tuple(proposed.exclusions), "duplicate_resolution": tuple(proposed.duplicate_resolution)})
     errors = validate_manifest(frozen, require_frozen=True)
     if errors: raise TaskFreezeError("cannot freeze invalid manifest: " + "; ".join(errors))

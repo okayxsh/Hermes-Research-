@@ -492,6 +492,22 @@ class RealEpisodeSession:
             raise EpisodeDriverError("Ollama action selection returned no text response")
         return content
 
+    def complete_post_success_learning(self, prompt: str) -> str:
+        """Ask the same experimental model for its post-success candidate skill."""
+        if self.state is None or self.state.get("done") is not True or self.state.get("success") is not True:
+            raise EpisodeDriverError("Post-success learning requires a successful episode")
+        response = self._model_response(prompt)
+        self._event(
+            "post_success_learning",
+            {
+                "model": self.driver.model_name,
+                "inference_seed": self.driver.inference_seed,
+                "prompt": prompt,
+                "response": response,
+            },
+        )
+        return response
+
     def choose_action(self, recovery_memory: Mapping[str, Any] | None = None) -> str | None:
         if self.state is None or self.task_goal is None:
             raise EpisodeDriverError("Cannot select an action before start")
@@ -568,11 +584,13 @@ class RealEpisodeDriver:
         bridge_timeout_seconds: float = 300,
         model_timeout_seconds: float = 180,
         inference_seed: int = INFERENCE_SEED,
+        bridge_log_root: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         self.data_dir = (data_dir or default_data_dir()).resolve()
         self.model_name = model_name
         self.inference_seed = inference_seed
+        self.bridge_log_root = bridge_log_root
         self.ollama_url = ollama_url.rstrip("/")
         self.bridge_timeout_seconds = bridge_timeout_seconds
         self.model_timeout_seconds = model_timeout_seconds
@@ -587,7 +605,7 @@ class RealEpisodeDriver:
 
     def __enter__(self) -> "RealEpisodeDriver":
         self._server = create_bridge_server(
-            self.root / "artifacts" / "prelaunch" / "bridge",
+            self.bridge_log_root or (self.root / "artifacts" / "prelaunch" / "bridge"),
             port=0,
             mode="real",
             data_dir=self.data_dir,

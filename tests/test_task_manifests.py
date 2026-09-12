@@ -38,3 +38,10 @@ class TaskManifestTests(unittest.TestCase):
         # Deliberately relabeling confirms identity checks do not rely on split names alone.
         right=propose_manifest('pilot', type(discovery)(discovery.schema_version, discovery.data_root_identity, 'valid_seen', discovery.records, discovery.exclusions, discovery.parse_errors), policy, alfworld_version=None, repository_commit=None)
         self.assertTrue(overlap_errors([left, right]))
+    def test_discovery_accepts_real_string_task_types_and_rejects_unknown(self):
+        root=self.root/'string-types'
+        names=['pick_and_place_simple','pick_two_obj_and_place','look_at_obj_in_light','pick_clean_then_place_in_recep','pick_heat_then_place_in_recep','pick_cool_then_place_in_recep']
+        for index, name in enumerate(names): write_task(root, 'train', f'{name}-{index}', name)
+        self.assertEqual({'pick_and_place','pick_two_and_place','look_at_object','clean_and_place','heat_and_place','cool_and_place'}, {x.family for x in discover_tasks(root, 'train').records})
+        write_task(root, 'train', 'unknown-type', 'pick_and_place_with_movable_recep')
+        with self.assertRaises(TaskDiscoveryError): discover_tasks(root, 'train')

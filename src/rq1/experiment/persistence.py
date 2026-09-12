@@ -22,6 +22,7 @@ CRITICAL_FILES = (
     "results.jsonl",
     "errors.jsonl",
     "run_manifest.json",
+    "skill_pool.json",
 )
 
 

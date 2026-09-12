@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "policy_version": "acquisition-execution-v1",
+  "decision_record": "docs/decisions/007-acquisition-execution-policy.md",
+  "frozen_before_scientific_acquisition": true,
+  "split": "train",
+  "task_families": ["pick_and_place", "pick_two_and_place", "look_at_object", "clean_and_place", "heat_and_place", "cool_and_place"],
+  "initial_task_count": 180,
+  "tasks_per_family": 30,
+  "automatic_extension": false,
+  "later_hard_cap": {"total": 240, "per_family": 40},
+  "task_selection": {"version": "task-selection-v1", "seed": 1, "requested_count": 180, "balancing": "round_robin_families", "information": "train_metadata_only"},
+  "acquisition_action_budget": 50,
+  "action_budget_varies_by_task_or_family": false,
+  "environment_seed": 0,
+  "fresh_session_per_task": true,
+  "profile": "rq1-acquisition",
+  "model": "hermes3:8b",
+  "inference": {"temperature": 0, "seed": 42, "action_selection_protocol": "action-index-v1", "max_selection_attempts": 3},
+  "scientific_retrieval_during_acquisition": false,
+  "skill_creation": {
+    "author": "same_experimental_agent",
+    "separate_summariser": false,
+    "trigger": "successful_train_episode_only",
+    "mode": "create_only",
+    "patching": false,
+    "max_candidates_per_successful_episode": 1,
+    "failed_episode_candidates": 0,
+    "infrastructure_failure_candidates": 0,
+    "generation_protocol": "post-success-skill-v1",
+    "generation_attempts": 1,
+    "prompt": "hermes/prompts/post_success_learning.md",
+    "validation_prompt": "hermes/prompts/skill_validation.md",
+    "text_format": "skill-text-v1",
+    "validation_rules": ["format_title_body_or_no_skill", "no_task_id_pattern", "no_room_number", "no_object_instance_number", "no_source_task_identifier", "no_executed_instance_action_verbatim", "no_exact_normalized_duplicate"]
+  },
+  "duplicate_policy": {
+    "acquisition_rejection": "exact_normalized_duplicate_only",
+    "normalization": "skill-text-v1 whitespace normalization: trim and collapse whitespace runs, including line endings; case preserved",
+    "semantic_deduplication": false,
+    "embedding_deduplication": false,
+    "llm_duplicate_judge": false,
+    "near_duplicates": "preserved",
+    "retrospective_library_deduplication": false
+  },
+  "persistence": {
+    "completion_authority": "results.jsonl",
+    "skill_pool": "append-only; rebuilt from committed completed results in queue order; skill_pool.json is a derived atomic snapshot",
+    "checkpoint": "atomic after every unit",
+    "infrastructure_failure": "failed result without skill; run halts for chronological retry-failed",
+    "resume": "fail closed on commit, runtime, configuration, queue, or skill-pool drift"
+  }
+}

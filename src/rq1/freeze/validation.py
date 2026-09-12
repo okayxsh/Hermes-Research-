@@ -1,7 +1,9 @@
-"""Fail-closed validation for final-stage freezes.
+"""Fail-closed validation for experiment freezes.
 
-Freeze files are evidence, not configuration generators: all scientific choices
-must be supplied in the manual approval file after a real Phase 7 pilot.
+Freeze files are evidence, not configuration generators: every scientific choice
+comes from a human-approved approval file.  Final evaluation uses the
+``environment``/``protocol`` freezes after a real Phase 7 pilot; acquisition uses
+the acquisition-scoped freezes after a passed non-scientific acquisition check.
 """
 from __future__ import annotations
 
@@ -23,6 +25,24 @@ ENVIRONMENT_REQUIRED = {
     "seeds", "library_hashes", "retriever_model",
 }
 PROTOCOL_REQUIRED = {"checkpoint_policy_sha256", "perturbation_policy_sha256", "solvability_policy_sha256", "action_limits", "timeout_policy", "snapshot_policy", "repetition_count", "seeds", "retriever_model"}
+ACQUISITION_ENVIRONMENT_REQUIRED = {
+    "repository_commit", "branch", "hostname", "gpu", "gpu_driver", "python_version",
+    "python_executable", "python_environment", "dependency_lock_sha256", "packages",
+    "alfworld_version", "alfworld_data_identity", "hermes_version", "hermes_commit",
+    "ollama_version", "model_tag", "model_digest", "inference_seed", "sbert_model",
+    "sbert_revision", "sbert_snapshot_sha256", "task_queue_sha256", "prompt_hashes", "config_hashes",
+}
+ACQUISITION_PROTOCOL_REQUIRED = {
+    "repository_commit", "protocol", "protocol_sha256", "task_queue_sha256",
+    "acquisition_action_budget", "inference_seed", "prompt_hashes", "decision_record_sha256",
+}
+REQUIRED_INPUTS = {
+    "environment": ENVIRONMENT_REQUIRED,
+    "protocol": PROTOCOL_REQUIRED,
+    "acquisition-environment": ACQUISITION_ENVIRONMENT_REQUIRED,
+    "acquisition-protocol": ACQUISITION_PROTOCOL_REQUIRED,
+}
+ACQUISITION_EVIDENCE_MODE = "non_scientific_acquisition_check"
 
 
 def _sha(value: Any) -> str:
@@ -40,7 +60,7 @@ def git_state(root: Path) -> tuple[str | None, bool, str | None]:
     return commit, status.returncode == 0 and not status.stdout.strip(), None
 
 
-def _read_manifest(path: Path, kind: str) -> tuple[FreezeManifest | None, list[str]]:
+def read_freeze(path: Path, kind: str) -> tuple[FreezeManifest | None, list[str]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         manifest = FreezeManifest(**data)
@@ -53,25 +73,44 @@ def _read_manifest(path: Path, kind: str) -> tuple[FreezeManifest | None, list[s
     return manifest, []
 
 
+_read_manifest = read_freeze
+
+
 def build_freeze(root: Path, kind: str, approval: dict[str, Any], pilot_report: dict[str, Any]) -> FreezeManifest:
-    required = ENVIRONMENT_REQUIRED if kind == "environment" else PROTOCOL_REQUIRED
+    if kind not in REQUIRED_INPUTS:
+        raise ValueError(f"unsupported freeze kind: {kind}")
     inputs = approval.get("inputs")
     if not isinstance(inputs, dict):
         raise ValueError("approval file must contain an inputs object")
-    missing = sorted(required - set(inputs))
+    missing = sorted(REQUIRED_INPUTS[kind] - set(inputs))
     if missing:
         raise ValueError("approval file lacks frozen inputs: " + ", ".join(missing))
+    if approval.get("approval_kind") not in (None, kind):
+        raise ValueError("approval file kind does not match the requested freeze")
     commit, clean, error = git_state(root)
     if error or not clean or not commit:
         raise ValueError("freeze requires a clean repository with a resolved commit")
-    if pilot_report.get("mode") != "real" or pilot_report.get("experimental_ready") is not True or pilot_report.get("go_no_go", {}).get("decision") != "go":
-        raise ValueError("freeze requires an approved real Phase 7 go report with experimental_ready=true")
-    pilot_run_id = str(pilot_report.get("pilot_run_id", ""))
+    if kind.startswith("acquisition-"):
+        if (
+            pilot_report.get("mode") != ACQUISITION_EVIDENCE_MODE
+            or pilot_report.get("passed") is not True
+            or pilot_report.get("scientific_evidence") is not False
+        ):
+            raise ValueError("acquisition freeze requires a passed non-scientific acquisition check report")
+        if pilot_report.get("repository_commit") != commit or inputs.get("repository_commit") != commit:
+            raise ValueError("acquisition freeze evidence and inputs must match the current commit")
+        pilot_run_id = str(pilot_report.get("run_id", ""))
+    else:
+        if pilot_report.get("mode") != "real" or pilot_report.get("experimental_ready") is not True or pilot_report.get("go_no_go", {}).get("decision") != "go":
+            raise ValueError("freeze requires an approved real Phase 7 go report with experimental_ready=true")
+        pilot_run_id = str(pilot_report.get("pilot_run_id", ""))
     if not pilot_run_id:
-        raise ValueError("pilot report lacks pilot_run_id")
+        raise ValueError("pilot report lacks a run identifier")
     approval_meta = approval.get("approval")
     if not isinstance(approval_meta, dict) or not approval_meta.get("approved_by") or not approval_meta.get("approved_at"):
         raise ValueError("approval file requires approved_by and approved_at metadata")
+    if approval_meta.get("status", "APPROVED") != "APPROVED":
+        raise ValueError("approval status is not APPROVED")
     return FreezeManifest(1, kind, utc_now(), commit, pilot_run_id, _sha(pilot_report), inputs, _sha(inputs), approval_meta)
 
 
@@ -85,8 +124,8 @@ def write_freeze(root: Path, manifest: FreezeManifest) -> Path:
 
 
 def validate_final_gates(root: Path) -> FreezeValidation:
-    environment, errors = _read_manifest(root / "artifacts" / "freezes" / "environment-freeze.json", "environment")
-    protocol, protocol_errors = _read_manifest(root / "artifacts" / "freezes" / "protocol-freeze.json", "protocol")
+    environment, errors = read_freeze(root / "artifacts" / "freezes" / "environment-freeze.json", "environment")
+    protocol, protocol_errors = read_freeze(root / "artifacts" / "freezes" / "protocol-freeze.json", "protocol")
     errors.extend(protocol_errors)
     commit, clean, error = git_state(root)
     if error:
