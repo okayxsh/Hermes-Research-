@@ -127,6 +127,24 @@ class LibraryManifest:
         }
 
 
+def acquired_skill_from_candidate(
+    candidate: Mapping[str, Any], *, acquisition_index: int, validated: bool = False
+) -> AcquiredSkill:
+    """Convert an acquisition skill candidate into an ``AcquiredSkill``.
+
+    ``validated`` is set later by the frozen human quality rubric; acquisition
+    itself never marks a skill as validated.
+    """
+    return AcquiredSkill(
+        skill_id=str(candidate["skill_id"]),
+        title=str(candidate.get("title", "")),
+        body=str(candidate.get("body", "")),
+        task_family=str(candidate["task_family"]),
+        acquisition_index=int(acquisition_index),
+        validated=bool(validated),
+    )
+
+
 def _validate_input(skills: Sequence[AcquiredSkill]) -> list[AcquiredSkill]:
     ordered = sorted(skills, key=lambda item: (item.acquisition_index, item.skill_id))
     seen: set[str] = set()
