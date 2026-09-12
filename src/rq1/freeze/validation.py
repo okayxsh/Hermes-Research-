@@ -20,8 +20,9 @@ ENVIRONMENT_REQUIRED = {
     "prompt_hashes", "task_manifest_hashes", "checkpoint_policy_sha256",
     "perturbation_policy_sha256", "solvability_policy_sha256", "action_limits",
     "timeout_policy", "snapshot_policy", "repetition_count",
+    "seeds", "library_hashes", "retriever_model",
 }
-PROTOCOL_REQUIRED = {"checkpoint_policy_sha256", "perturbation_policy_sha256", "solvability_policy_sha256", "action_limits", "timeout_policy", "snapshot_policy", "repetition_count"}
+PROTOCOL_REQUIRED = {"checkpoint_policy_sha256", "perturbation_policy_sha256", "solvability_policy_sha256", "action_limits", "timeout_policy", "snapshot_policy", "repetition_count", "seeds", "retriever_model"}
 
 
 def _sha(value: Any) -> str:

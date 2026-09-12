@@ -1,1 +1,1 @@
-{"schema_version":1,"kind":"acquisition","split":"train","selection_policy_version":"task-selection-v1","requested_count":null,"seed":null,"balancing":"round_robin_families","status":"REQUIRES_FREEZE_APPROVAL"}
+{"schema_version":1,"kind":"acquisition","split":"train","selection_policy_version":"task-selection-v1","requested_count":180,"tasks_per_family":30,"hard_cap":240,"hard_cap_tasks_per_family":40,"balancing":"round_robin_families","status":"REQUIRES_FREEZE_APPROVAL"}
