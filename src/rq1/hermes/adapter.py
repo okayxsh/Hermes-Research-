@@ -56,7 +56,7 @@ def _default_transport(request: Request, timeout: float) -> tuple[int, bytes]:
 class LocalBridgeClient:
     """Dependency-free HTTP client that can only target the local bridge."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8000", transport: BridgeTransport | None = None) -> None:
+    def __init__(self, base_url: str = "http://127.0.0.1:8000", transport: BridgeTransport | None = None, timeout_seconds: float = 5.0) -> None:
         parsed = urlparse(base_url)
         if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"} or parsed.username or parsed.password:
             raise ValueError("bridge URL must be an http://127.0.0.1 or http://localhost address")
@@ -64,6 +64,9 @@ class LocalBridgeClient:
             raise ValueError("bridge URL must not contain a path, query, or fragment")
         self.base_url = base_url.rstrip("/")
         self.transport = transport or _default_transport
+        if not 1.0 <= timeout_seconds <= 300.0:
+            raise ValueError("bridge timeout must be between 1 and 300 seconds")
+        self.timeout_seconds = timeout_seconds
 
     def request(
         self,
@@ -72,7 +75,7 @@ class LocalBridgeClient:
         payload: Mapping[str, Any] | None,
         context: HermesContext,
         *,
-        timeout: float = 5.0,
+        timeout: float | None = None,
         retry_once: bool = False,
         outcome_unknown_on_timeout: bool = False,
     ) -> BridgeResponse:
@@ -87,7 +90,7 @@ class LocalBridgeClient:
             for header, value in correlation_headers(context).items():
                 request.add_header(header, value)
             try:
-                status, raw = self.transport(request, timeout)
+                status, raw = self.transport(request, self.timeout_seconds if timeout is None else timeout)
                 try:
                     body = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:

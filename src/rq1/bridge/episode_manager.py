@@ -90,7 +90,9 @@ class EpisodeManager:
         with self._lock:
             record = self._record(episode_id)
             self._check_correlation(record, correlation)
-            return self._response(episode_id, record)
+            response = self._response(episode_id, record)
+            record.logger.append("status", {"response": response.to_dict()}, correlation)
+            return response
 
     def step(self, episode_id: str, action: str, correlation: CorrelationMetadata | None = None) -> EpisodeResponse:
         with self._lock:

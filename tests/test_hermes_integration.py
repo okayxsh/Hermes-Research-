@@ -17,6 +17,7 @@ from rq1.hermes.adapter import BridgeTransportError, FakeHermesAdapter, HermesAd
 from rq1.hermes.capabilities import probe_hermes_capabilities
 from rq1.hermes.models import HermesContext, HermesEventLog
 from rq1.hermes.reconcile import read_jsonl, reconcile_evidence
+from rq1.hermes.plugin_runtime import on_skill_lifecycle
 from rq1.logging.run_registry import EpisodeBinding, RunRegistry
 from rq1.hermes.verification import verify_fake_hermes_integration
 
@@ -51,6 +52,7 @@ class HermesIntegrationTests(unittest.TestCase):
         bridge_log = self.root / "bridge" / f"{episode_id}.jsonl"
         bridge_events = read_jsonl(bridge_log)
         self.assertEqual("run-1", bridge_events[0]["correlation"]["run_id"])
+        self.assertIn("status", [event["event"] for event in bridge_events])
         registry = RunRegistry(self.root / "registry.sqlite")
         registry.bind_episode(EpisodeBinding("run-1", "attempt-1", episode_id, "session-1", "rq1-pilot", "hermes.jsonl", str(bridge_log)))
         report = reconcile_evidence(read_jsonl(self.log), [], bridge_events, [dict(row) for row in registry.episode_bindings("run-1")])
@@ -105,6 +107,8 @@ class HermesIntegrationTests(unittest.TestCase):
             LocalBridgeClient("http://203.0.113.10:8000")
         with self.assertRaises(ValueError):
             LocalBridgeClient("https://127.0.0.1:8000")
+        with self.assertRaises(ValueError):
+            LocalBridgeClient("http://127.0.0.1:8000", timeout_seconds=0.5)
 
     def test_fake_skill_events_are_versioned_and_metrics_remain_compatible(self) -> None:
         self.adapter.emit_skill_event("skill_index_available", "alpha", "relevant", self.context)
@@ -188,12 +192,28 @@ class HermesIntegrationTests(unittest.TestCase):
             module.register(registered)
             self.assertEqual(5, len(registered.tools))
             self.assertEqual("alfworld_experiment", registered.tools[0]["toolset"])
-            self.assertEqual(["pre_tool_call", "post_tool_call"], registered.hooks)
+            self.assertEqual(["pre_tool_call", "post_tool_call", "on_skill_lifecycle"], registered.hooks)
         finally:
             if previous is None:
                 os.environ.pop("HERMES_ENABLE_PROJECT_PLUGINS", None)
             else:
                 os.environ["HERMES_ENABLE_PROJECT_PLUGINS"] = previous
+
+    def test_native_skill_lifecycle_recorder_preserves_observed_fact(self) -> None:
+        previous = os.environ.get("RQ1_HERMES_EVENT_LOG")
+        os.environ["RQ1_HERMES_EVENT_LOG"] = str(self.root / "native-skill-events.jsonl")
+        try:
+            on_skill_lifecycle("loaded", "rq1-native-lifecycle", "local", task_id="native-task", session_id="native-session", use_count=1, reused=False)
+            event = read_jsonl(self.root / "native-skill-events.jsonl")[0]
+            self.assertEqual("native_skill_lifecycle", event["event"])
+            self.assertFalse(event["simulated"])
+            self.assertEqual("loaded", event["payload"]["action"])
+            self.assertEqual("rq1-native-lifecycle", event["payload"]["skill_name"])
+        finally:
+            if previous is None:
+                os.environ.pop("RQ1_HERMES_EVENT_LOG", None)
+            else:
+                os.environ["RQ1_HERMES_EVENT_LOG"] = previous
 
     def test_fake_verification_writes_a_machine_readable_report(self) -> None:
         report = verify_fake_hermes_integration(self.root)

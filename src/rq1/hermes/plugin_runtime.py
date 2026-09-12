@@ -65,7 +65,12 @@ def _event_log() -> HermesEventLog:
 
 
 def _adapter() -> HermesAdapter:
-    return HermesAdapter(LocalBridgeClient(os.environ.get("RQ1_BRIDGE_URL", "http://127.0.0.1:8000")), _event_log())
+    raw_timeout = os.environ.get("RQ1_BRIDGE_TIMEOUT_SECONDS", "5")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise RuntimeError("RQ1_BRIDGE_TIMEOUT_SECONDS must be numeric") from exc
+    return HermesAdapter(LocalBridgeClient(os.environ.get("RQ1_BRIDGE_URL", "http://127.0.0.1:8000"), timeout_seconds=timeout), _event_log())
 
 
 def dispatch(tool_name: str, params: Mapping[str, Any], **kwargs: Any) -> str:
@@ -89,6 +94,32 @@ def post_tool_call(tool_name: str, args: Mapping[str, Any] | None = None, result
     return None
 
 
+def on_skill_lifecycle(
+    action: str,
+    skill_name: str,
+    provenance: str | None = None,
+    **kwargs: Any,
+) -> None:
+    """Persist only native Hermes skill lifecycle facts emitted by its runtime."""
+    _event_log().append(
+        HermesIntegrationEvent(
+            "native_skill_lifecycle",
+            {
+                "action": str(action),
+                "skill_name": str(skill_name),
+                "provenance": str(provenance) if provenance is not None else None,
+                "task_id": str(kwargs["task_id"]) if kwargs.get("task_id") else None,
+                "use_count": kwargs.get("use_count"),
+                "reused": kwargs.get("reused"),
+                "reuse_after_patch": kwargs.get("reuse_after_patch"),
+            },
+            _context(kwargs).metadata(),
+            False,
+        )
+    )
+    return None
+
+
 def register_plugin(ctx: Any) -> None:
     """Register only on the documented current surface and explicit project trust."""
     if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS") != "1":
@@ -105,3 +136,4 @@ def register_plugin(ctx: Any) -> None:
         )
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("post_tool_call", post_tool_call)
+    ctx.register_hook("on_skill_lifecycle", on_skill_lifecycle)

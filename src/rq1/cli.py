@@ -197,7 +197,7 @@ def command_verify_hermes_integration(root: Path, mode: str) -> int:
 
     report = verify_fake_hermes_integration(root) if mode == "fake" else verify_real_hermes_integration(root)
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report.get("mock_integration") or report.get("real_plugin_loading") else 1
+    return 0 if report.get("mock_integration") or report.get("real_compatibility") else 1
 
 
 def _profile_manifest_from_path(path: Path):
