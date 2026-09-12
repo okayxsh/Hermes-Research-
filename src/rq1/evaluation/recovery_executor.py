@@ -93,10 +93,16 @@ def run_recovery_episode(
     # 1-2. Task start and frozen checkpoint replay.
     harness.start_and_replay(spec.task_id, spec.split, spec.seed, spec.prefix_actions)
 
-    # 3-4. Controlled failure + solvability validation (fail closed inside).
-    failure = apply_controlled_failure(
-        harness.failure_environment(), checkpoint_id=spec.checkpoint_id, failure_message=failure_message
-    )
+    # 3-4. The real harness performs a reversible action detour and proves it
+    # solvable before retrieval.  The legacy fake harness remains only for the
+    # hermetic controlled-relocation unit tests.
+    action_perturbation = getattr(harness, "apply_controlled_action_perturbation", None)
+    if callable(action_perturbation):
+        failure = action_perturbation(spec.checkpoint_id, failure_message)
+    else:
+        failure = apply_controlled_failure(
+            harness.failure_environment(), checkpoint_id=spec.checkpoint_id, failure_message=failure_message
+        )
     state = harness.current_state()
 
     # 5. Frozen failure context.

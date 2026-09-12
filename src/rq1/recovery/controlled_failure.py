@@ -21,6 +21,35 @@ class ControlledFailureError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ControlledActionPerturbation:
+    """A real, reversible action detour used instead of private state mutation.
+
+    The selected action is audit evidence only.  The agent receives solely the
+    canonical failure message and its observed post-action state.
+    """
+
+    checkpoint_id: str
+    action: str
+    expected_action: str
+    failure_message: str
+    post_state_digest: str
+    solvable: bool
+    selection_rule: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "checkpoint_id": self.checkpoint_id,
+            "type": "controlled_reversible_action_detour",
+            "action": self.action,
+            "expected_action": self.expected_action,
+            "failure_message": self.failure_message,
+            "post_state_digest": self.post_state_digest,
+            "solvable": self.solvable,
+            "selection_rule": self.selection_rule,
+        }
+
+
+@dataclass(frozen=True)
 class FailureContext:
     """The frozen post-failure state observed by the agent.
 
@@ -96,6 +125,33 @@ class FailureEnvironment(Protocol):
     def reachable_locations(self) -> Sequence[str]: ...
     def relocate_object(self, object_id: str, destination: str) -> str: ...
     def is_solvable(self) -> bool: ...
+
+
+def select_reversible_navigation_action(
+    admissible_actions: Sequence[str], expected_action: str
+) -> str:
+    """Choose a deterministic safe detour, never an object-manipulation action.
+
+    A navigation-only detour is accepted only when the frozen expected action
+    is itself navigation, so dispatching that expected action afterwards
+    deterministically rejoins the reference route for oracle validation.
+    """
+    if not expected_action.startswith("go to "):
+        raise ControlledFailureError(
+            "checkpoint is not eligible: the next frozen action is not navigation",
+            code="checkpoint_not_navigation_eligible",
+        )
+    candidates = sorted(
+        action
+        for action in set(admissible_actions)
+        if action.startswith("go to ") and action != expected_action
+    )
+    if not candidates:
+        raise ControlledFailureError(
+            "no reversible navigation detour is admissible at this checkpoint",
+            code="no_reversible_navigation_detour",
+        )
+    return candidates[0]
 
 
 def select_relocation_destination(original_location: str, reachable_locations: Sequence[str]) -> str:

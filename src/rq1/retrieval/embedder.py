@@ -8,6 +8,7 @@ extra is absent or the model cannot be constructed, construction raises
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 DEFAULT_MODEL_NAME = "all-mpnet-base-v2"
@@ -38,14 +39,26 @@ def probe_retrieval(model_name: str = DEFAULT_MODEL_NAME) -> EmbedderIdentity:
 class SentenceBERTEmbedder:
     """Thin wrapper exposing a deterministic, normalized ``encode``."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL_NAME) -> None:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL_NAME,
+        *,
+        cache_folder: Path | None = None,
+        revision: str | None = None,
+        local_files_only: bool = False,
+    ) -> None:
         identity = probe_retrieval(model_name)
         if not identity.available:
             raise RetrievalUnavailable(identity.details)
         try:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(model_name)
+            self._model = SentenceTransformer(
+                model_name,
+                cache_folder=str(cache_folder) if cache_folder is not None else None,
+                revision=revision,
+                local_files_only=local_files_only,
+            )
         except Exception as exc:
             raise RetrievalUnavailable(
                 f"could not load Sentence-BERT model {model_name}: {type(exc).__name__}"

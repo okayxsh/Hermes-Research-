@@ -9,7 +9,7 @@ EMPTY_INVENTORY_MARKER = "<empty>"
 # The perturbation layer must emit exactly this observable message so the
 # post-failure query is reproducible across every memory condition.
 CANONICAL_FAILURE_MESSAGE = (
-    "The required object is no longer where it was expected. "
+    "The environment state no longer matches the expected plan. "
     "Reassess the current state and continue."
 )
 
