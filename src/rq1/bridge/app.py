@@ -67,8 +67,14 @@ def create_bridge_server(
                     payload = _decode_json(self, required=False)
                     if payload:
                         raise BridgeError(422, "health does not accept request fields")
-                    capability = real_adapter_capability()
-                    response = HealthResponse(True, mode, episode_manager.active_episode_count, capability.available, capability.details).to_dict()
+                    # Fake bridge health is a local diagnostic and must not
+                    # trigger the expensive real ALFWorld capability/index
+                    # probe. Real-mode health still performs the capability
+                    # check, while fake mode reports it as unavailable.
+                    capability = real_adapter_capability() if mode == "real" else None
+                    real_available = capability.available if capability else False
+                    real_details = capability.details if capability else "Real adapter probe skipped for fake bridge mode."
+                    response = HealthResponse(True, mode, episode_manager.active_episode_count, real_available, real_details).to_dict()
                 elif path == "/episode/start":
                     response = episode_manager.start(EpisodeStartRequest.from_payload(_decode_json(self)), correlation).to_dict()
                 elif path == "/episode/step":
