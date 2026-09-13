@@ -6,7 +6,11 @@ and `configs/acquisition/protocol.yaml`: at most 50 environment actions per
 episode, no retrieval, and after a successful episode only the same `hermes3:8b`
 agent may write at most one create-only candidate skill. Candidates pass the
 deterministic Decision 003 validation; only exact normalized duplicates are
-rejected and near-duplicates are preserved.
+rejected and near-duplicates are preserved. Action selection follows
+[Decision 008](decisions/008-action-selection-episode-history.md) and
+[Decision 009](decisions/009-observation-interface-corrections.md): the full
+episode history, the verbatim initial observation, a fixed not-observed
+inventory marker, and exactly one `ACTION_INDEX` line per response.
 
 The frozen queue is generated only from deterministic installed-data discovery
 (180 TRAIN tasks, 30 per family, `task-selection-v1`, seed 1). It is rejected if

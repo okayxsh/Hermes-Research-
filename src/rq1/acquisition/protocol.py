@@ -12,8 +12,11 @@ from typing import Any
 from rq1.experiment.models import canonical_hash
 from rq1.hermes.episode_driver import (
     ACTION_HISTORY_POLICY,
+    ACTION_INDEX_PARSING_POLICY,
     ACTION_SELECTION_PROTOCOL,
     INFERENCE_SEED,
+    INITIAL_OBSERVATION_POLICY,
+    INVENTORY_POLICY,
     MAX_SELECTION_ATTEMPTS,
 )
 from rq1.retrieval.text import SKILL_TEXT_VERSION
@@ -28,6 +31,7 @@ from rq1.tasks.selection import (
 ACQUISITION_POLICY_VERSION = "acquisition-execution-v1"
 DECISION_RECORD = "docs/decisions/007-acquisition-execution-policy.md"
 ACTION_HISTORY_DECISION_RECORD = "docs/decisions/008-action-selection-episode-history.md"
+INTERFACE_DECISION_RECORD = "docs/decisions/009-observation-interface-corrections.md"
 PROTOCOL_CONFIG = "configs/acquisition/protocol.yaml"
 ACQUISITION_SPLIT = "train"
 ACQUISITION_PROFILE = "rq1-acquisition"
@@ -86,6 +90,10 @@ def protocol_definition() -> dict[str, Any]:
             "action_selection_protocol": ACTION_SELECTION_PROTOCOL,
             "action_history": ACTION_HISTORY_POLICY,
             "action_history_decision_record": ACTION_HISTORY_DECISION_RECORD,
+            "initial_observation": INITIAL_OBSERVATION_POLICY,
+            "inventory": INVENTORY_POLICY,
+            "action_index_parsing": ACTION_INDEX_PARSING_POLICY,
+            "interface_decision_record": INTERFACE_DECISION_RECORD,
             "max_selection_attempts": MAX_SELECTION_ATTEMPTS,
         },
         "scientific_retrieval_during_acquisition": False,

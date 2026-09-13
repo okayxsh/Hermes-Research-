@@ -161,6 +161,50 @@ class RealALFWorldAdapterTests(unittest.TestCase):
         self.assertFalse(report.inventory_observable)
         self.assertFalse(report.target_relocation_supported)
 
+    def test_world_facts_and_expert_plan_never_reach_state_prompt_or_query(self) -> None:
+        from rq1.bridge.adapters.alfworld_v042 import RealALFWorldAdapter
+        from rq1.hermes.episode_driver import render_action_prompt
+        from rq1.retrieval import RetrievalQuery
+
+        class FactsEnvironment(FixtureEnvironment):
+            # ALFWorld's train-split expert wrapper returns full PDDL facts and an expert plan.
+            hidden = {
+                "facts": [["holds(agent1 : agent, alarmclock 1: object)", "inReceptacle(keychain 1: object, drawer 2: receptacle)"]],
+                "extra.expert_plan": [["go to drawer 2"]],
+            }
+
+            def reset(self):
+                observations, infos = super().reset()
+                return observations, {**infos, **self.hidden}
+
+            def step(self, commands):
+                observations, scores, dones, infos = super().step(commands)
+                return observations, scores, dones, {**infos, **self.hidden}
+
+        train_task = write_task(self.root, "train", "pick_and_place-002")
+        markers = set()
+        with patch("rq1.bridge.adapters.alfworld_v042.probe_alfworld_capabilities", return_value=ready_report()):
+            for task_id, split in ((self.task_id, "valid_seen"), (train_task, "train")):
+                adapter = RealALFWorldAdapter(self.root, environment_factory=lambda *_args: FactsEnvironment())
+                for state in (adapter.start(EpisodeStartRequest(task_id, split, 7, 8)), adapter.step("look")):
+                    self.assertEqual((), state.inventory)
+                    self.assertEqual("unavailable_in_observed_alfworld_v042_surface", state.field_sources["inventory"])
+                    prompt = render_action_prompt(
+                        task_goal="put some alarmclock on desk.", initial_observation="initial observation",
+                        observation=state.observation, inventory=state.inventory, admissible_actions=state.admissible_actions,
+                    )
+                    query = RetrievalQuery(
+                        task_instruction="put some alarmclock on desk.", observation=state.observation, inventory=state.inventory,
+                    ).text()
+                    visible = json.dumps([state.instruction, state.observation, list(state.inventory), list(state.admissible_actions)])
+                    for hidden in ("holds", "inReceptacle", "drawer 2", "expert_plan", "facts"):
+                        self.assertNotIn(hidden, visible)
+                        self.assertNotIn(hidden, prompt)
+                        self.assertNotIn(hidden, query)
+                    self.assertIn("INVENTORY:\n<not observed — use the inventory action>\n", query)
+                    markers.add(prompt.split("CURRENT INVENTORY:\n", 1)[1].split("\n\n", 1)[0])
+        self.assertEqual({"<not observed — use the inventory action>"}, markers)
+
 
 @unittest.skipUnless(__import__("os").environ.get("RQ1_RUN_REAL_ALFWORLD_TESTS") == "1", "set RQ1_RUN_REAL_ALFWORLD_TESTS=1 after installing ALFWorld 0.4.2 data")
 class OptionalRealALFWorldTests(unittest.TestCase):

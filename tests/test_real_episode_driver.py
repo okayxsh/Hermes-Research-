@@ -15,6 +15,7 @@ from rq1.hermes.episode_driver import (
     RETRY_CLARIFICATION,
     EpisodeDriverError,
     RealEpisodeSession,
+    classify_action_index,
     extract_task_goal,
     ollama_chat_payload,
     parse_action_index,
@@ -24,7 +25,7 @@ from rq1.hermes.episode_driver import (
 from rq1.pilot.real_runtime.harnesses import RealRecoveryHarness
 from rq1.recovery.controlled_failure import ControlledFailureError, select_reversible_navigation_action
 from rq1.retrieval import RetrievalQuery, build_retrieval_boundary
-from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE, query_template_hash
+from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE, INVENTORY_NOT_OBSERVED_MARKER, query_template_hash
 from rq1.tasks.selection import FROZEN_SEEDS
 from rq1.utils.config import load_json_yaml
 
@@ -159,14 +160,18 @@ class ActionSelectionControllerTests(unittest.TestCase):
             extract_task_goal(TASK_ID)
 
     def test_numbered_prompt_is_deterministic_and_exact(self) -> None:
-        kwargs = dict(task_goal=GOAL, observation="You arrive at bed 1.", inventory=(), admissible_actions=ACTIONS)
+        kwargs = dict(
+            task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You arrive at bed 1.",
+            inventory=(), admissible_actions=ACTIONS,
+        )
         prompt = render_action_prompt(**kwargs)
         self.assertEqual(prompt, render_action_prompt(**kwargs))
         self.assertEqual(
             "TASK GOAL:\nlook at alarmclock under the desklamp.\n\n"
+            "INITIAL OBSERVATION:\n" + INITIAL_OBSERVATION + "\n\n"
             "EPISODE HISTORY:\n(no previous steps)\n\n"
             "CURRENT OBSERVATION:\nYou arrive at bed 1.\n\n"
-            "CURRENT INVENTORY:\n<empty>\n\n"
+            "CURRENT INVENTORY:\n<not observed — use the inventory action>\n\n"
             "ADMISSIBLE ACTIONS:\n0. go to bed 1\n1. go to desk 1\n2. go to sidetable 1\n3. look\n\n"
             "Return exactly:\nACTION_INDEX: <integer>",
             prompt,
@@ -175,7 +180,7 @@ class ActionSelectionControllerTests(unittest.TestCase):
     def test_prompt_contains_full_prior_history_in_chronological_order(self) -> None:
         history = [("go to bed 1", "You arrive at bed 1."), ("look", "You are facing the bed 1.")]
         prompt = render_action_prompt(
-            task_goal=GOAL, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
+            task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
             admissible_actions=ACTIONS, history=history,
         )
         self.assertIn(
@@ -185,7 +190,7 @@ class ActionSelectionControllerTests(unittest.TestCase):
             prompt,
         )
         self.assertEqual(prompt, render_action_prompt(
-            task_goal=GOAL, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
+            task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
             admissible_actions=ACTIONS, history=list(history),
         ))
 
@@ -206,9 +211,19 @@ class ActionSelectionControllerTests(unittest.TestCase):
             self.assertIn("EPISODE HISTORY:\n" + expected + "\n\nCURRENT OBSERVATION:\n", prompt)
             self.assertNotIn(f"Step {decision + 1}\n", prompt)
             self.assertNotIn(f"waypoint {decision + 1}.", prompt)
+            # The verbatim reset observation is present at every decision, before the history.
+            self.assertTrue(prompt.startswith(
+                "TASK GOAL:\n" + GOAL + "\n\nINITIAL OBSERVATION:\n" + INITIAL_OBSERVATION + "\n\nEPISODE HISTORY:\n"
+            ))
+            self.assertIn("CURRENT INVENTORY:\n<not observed — use the inventory action>\n\n", prompt)
+            self.assertNotIn("<empty>", prompt)
         selections = [event["payload"] for event in events if event["event"] == "model_selection"]
         self.assertEqual([0, 1, 2, 3], [payload["history_steps"] for payload in selections])
         self.assertEqual({"full_within_episode_actions_and_observations"}, {payload["action_history_policy"] for payload in selections})
+        self.assertEqual(
+            {("verbatim_reset_observation_at_every_decision", "not_observed_marker_inventory_only_via_inventory_action")},
+            {(payload["initial_observation_policy"], payload["inventory_policy"]) for payload in selections},
+        )
 
     def test_valid_index_maps_to_exact_admissible_action(self) -> None:
         self.assertEqual(2, parse_action_index("ACTION_INDEX: 2", ACTIONS))
@@ -216,6 +231,7 @@ class ActionSelectionControllerTests(unittest.TestCase):
         selection = select_admissible_action(
             lambda prompt: "ACTION_INDEX: 2",
             task_goal=GOAL,
+            initial_observation=INITIAL_OBSERVATION,
             observation="You arrive at bed 1.",
             inventory=(),
             admissible_actions=ACTIONS,
@@ -232,13 +248,43 @@ class ActionSelectionControllerTests(unittest.TestCase):
             "ACTION_INDEX: one",
             "action_index: 1",
             "ACTION_INDEX: 1 (go to desk 1)",
-            "ACTION_INDEX: 1\nextra",
+            "**ACTION_INDEX: 1**",
+            "ACTION_INDEX: <integer>",
+            "ACTION_INDEX: 1\nACTION_INDEX: 2",
+            "ACTION_INDEX: 2\nACTION_INDEX: 2",
+            "I would pick ACTION_INDEX: 1.\nACTION_INDEX: 2",
+            "Return exactly:\nACTION_INDEX: <integer>\nACTION_INDEX: 1",
+            "ACTION_INDEX: 99999999999999999999",
             "ACTION: go to desk 1",
             "go to desk 1",
             "",
         ):
             with self.subTest(response=response):
                 self.assertIsNone(parse_action_index(response, ACTIONS))
+
+    def test_one_valid_index_line_is_accepted_despite_surrounding_prose(self) -> None:
+        for response, expected in (
+            ("I should inspect the sidetable.\nACTION_INDEX: 2", 2),
+            ("ACTION_INDEX: 2\nThis seems appropriate.", 2),
+            ("The desk is wrong.\n\n  ACTION_INDEX:1  \n\nI will check it next.", 1),
+            ("ACTION_INDEX: 3", 3),
+        ):
+            with self.subTest(response=response):
+                self.assertEqual((expected, None), classify_action_index(response, ACTIONS))
+                self.assertEqual(expected, parse_action_index(response, ACTIONS))
+
+    def test_rejections_are_classified_and_never_inferred_from_prose(self) -> None:
+        for response, reason in (
+            ("I will go to desk 1.", "no_action_index"),
+            ("go to sidetable 1", "no_action_index"),
+            ("ACTION_INDEX: 1\nACTION_INDEX: 2", "multiple_action_index_mentions"),
+            ("ACTION_INDEX: 2 is best.\nACTION_INDEX: 2", "multiple_action_index_mentions"),
+            ("Thinking about it.\nACTION_INDEX: two", "malformed_action_index"),
+            ("ACTION_INDEX: -1", "malformed_action_index"),
+            ("Prose first.\nACTION_INDEX: 4", "index_out_of_range"),
+        ):
+            with self.subTest(response=response):
+                self.assertEqual((None, reason), classify_action_index(response, ACTIONS))
 
     def test_malformed_response_retries_with_same_state_and_format_clarification_only(self) -> None:
         responses = iter(["ACTION: go to desk 1", "ACTION_INDEX: 4", "ACTION_INDEX: 1"])
@@ -248,10 +294,14 @@ class ActionSelectionControllerTests(unittest.TestCase):
             prompts.append(prompt)
             return next(responses)
 
-        kwargs = dict(task_goal=GOAL, observation="You arrive at bed 1.", inventory=(), admissible_actions=ACTIONS)
+        kwargs = dict(
+            task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You arrive at bed 1.",
+            inventory=(), admissible_actions=ACTIONS,
+        )
         selection = select_admissible_action(ask, **kwargs)
         self.assertEqual("go to desk 1", selection.action)
         self.assertEqual([False, False, True], [attempt["valid"] for attempt in selection.attempts])
+        self.assertEqual(["no_action_index", "index_out_of_range", None], [attempt["rejection_reason"] for attempt in selection.attempts])
         self.assertNotIn(RETRY_CLARIFICATION, prompts[0])
         for prompt in prompts[1:]:
             self.assertIn(RETRY_CLARIFICATION, prompt)
@@ -266,11 +316,20 @@ class ActionSelectionControllerTests(unittest.TestCase):
             return "ACTION: go to alarmclock 3"
 
         selection = select_admissible_action(
-            ask, task_goal=GOAL, observation="You arrive at bed 1.", inventory=(), admissible_actions=ACTIONS
+            ask, task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You arrive at bed 1.",
+            inventory=(), admissible_actions=ACTIONS,
         )
         self.assertIsNone(selection.action)
         self.assertIsNone(selection.index)
         self.assertEqual(MAX_SELECTION_ATTEMPTS, len(calls))
+        # Naming an exact admissible action in prose is never mapped to an action.
+        prose_only = select_admissible_action(
+            lambda prompt: "I choose go to desk 1, which is listed as 1.",
+            task_goal=GOAL, initial_observation=INITIAL_OBSERVATION, observation="You arrive at bed 1.",
+            inventory=(), admissible_actions=ACTIONS,
+        )
+        self.assertIsNone(prose_only.action)
+        self.assertEqual(["no_action_index"] * MAX_SELECTION_ATTEMPTS, [attempt["rejection_reason"] for attempt in prose_only.attempts])
 
     def test_fixed_inference_seed_is_sent_and_logged(self) -> None:
         self.assertEqual(42, INFERENCE_SEED)
@@ -281,7 +340,10 @@ class ActionSelectionControllerTests(unittest.TestCase):
         self.assertEqual(INFERENCE_SEED, config["seed"])
         self.assertEqual(0, config["temperature"])
         self.assertEqual(ACTION_SELECTION_PROTOCOL, config["action_selection_protocol"])
-        self.assertEqual("action-index-history-v1", ACTION_SELECTION_PROTOCOL)
+        self.assertEqual("action-index-history-v2", ACTION_SELECTION_PROTOCOL)
+        self.assertEqual("verbatim_reset_observation_at_every_decision", config["initial_observation"])
+        self.assertEqual("not_observed_marker_inventory_only_via_inventory_action", config["inventory"])
+        self.assertEqual("exactly_one_action_index_line_surrounding_prose_ignored", config["action_index_parsing"])
         self.assertEqual("full_within_episode_actions_and_observations", config["action_history"])
         self.assertEqual(MAX_SELECTION_ATTEMPTS, config["max_selection_attempts"])
 
@@ -407,7 +469,7 @@ class ActionSelectionControllerTests(unittest.TestCase):
             self.assertIn("Step 3\nAction: look\nObservation: You arrive at waypoint 3.", prompts[condition][1])
             self.assertNotIn("go to desk 1", prompts[condition][0].split("ADMISSIBLE ACTIONS:")[0])
 
-        # The Sentence-BERT query stays the frozen four-field query-v1: no action history.
+        # The Sentence-BERT query keeps the frozen four-field template: no history, no initial observation.
         for result in (memory, nolib):
             context = result.failure_context
             query = RetrievalQuery(
@@ -419,11 +481,18 @@ class ActionSelectionControllerTests(unittest.TestCase):
             self.assertEqual(query_template_hash(), result.retrieval_event["query_template_hash"])
             text = query.text()
             self.assertEqual(["TASK:", "OBSERVATION:", "INVENTORY:", "FAILURE:"], [line for line in text.splitlines() if line.endswith(":")])
+            self.assertEqual("d519a394b6ba45ce88e427f5bedcd3f18f4fc1b6bc9bf576531f87d8dc4a1275", query_template_hash())
+            self.assertIn("INVENTORY:\n<not observed — use the inventory action>\nFAILURE:\n", text)
+            for absent in ("<empty>", "INITIAL OBSERVATION", "Welcome to TextWorld"):
+                self.assertNotIn(absent, text)
             for leaked in ("EPISODE HISTORY", "Action:", "Step 1", "go to bed 1", "waypoint 1"):
                 self.assertNotIn(leaked, text)
         for condition, condition_prompts in prompts.items():
             for prompt in condition_prompts:
                 self.assertIn("TASK GOAL:\n" + GOAL, prompt)
+                self.assertIn("INITIAL OBSERVATION:\n" + INITIAL_OBSERVATION + "\n\nEPISODE HISTORY:\n", prompt)
+                self.assertIn("CURRENT INVENTORY:\n" + INVENTORY_NOT_OBSERVED_MARKER + "\n\n", prompt)
+                self.assertNotIn("<empty>", prompt)
                 for hidden in (EPISODE_ID, TASK_ID, "score", "Pilot-Memory", "NoLib"):
                     self.assertNotIn(hidden, prompt)
             for tool, args in dispatched[condition]:

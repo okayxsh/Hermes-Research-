@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from rq1.retrieval import (
     CANONICAL_FAILURE_MESSAGE,
-    EMPTY_INVENTORY_MARKER,
+    INVENTORY_NOT_OBSERVED_MARKER,
     QUERY_TEMPLATE_VERSION,
     RetrievalCandidate,
     RetrievalQuery,
@@ -92,13 +93,29 @@ class QueryTextTests(unittest.TestCase):
             f"INVENTORY:\nmug\nFAILURE:\n{CANONICAL_FAILURE_MESSAGE}",
         )
 
-    def test_empty_inventory_uses_marker(self) -> None:
+    def test_unobserved_inventory_uses_honest_marker_not_empty(self) -> None:
         text = build_query_text(
             task_instruction="heat the mug",
             observation="kitchen",
             inventory=(),
         )
-        self.assertIn(f"INVENTORY:\n{EMPTY_INVENTORY_MARKER}", text)
+        self.assertEqual("<not observed — use the inventory action>", INVENTORY_NOT_OBSERVED_MARKER)
+        self.assertEqual(
+            "TASK:\nheat the mug\nOBSERVATION:\nkitchen\n"
+            f"INVENTORY:\n{INVENTORY_NOT_OBSERVED_MARKER}\nFAILURE:\n{CANONICAL_FAILURE_MESSAGE}",
+            text,
+        )
+        self.assertNotIn("<empty>", text)
+
+    def test_query_template_is_unchanged_by_the_inventory_marker(self) -> None:
+        # query-v2 changed only the unobserved-inventory text (Decision 009), not the template.
+        self.assertEqual("query-v2", QUERY_TEMPLATE_VERSION)
+        self.assertEqual("d519a394b6ba45ce88e427f5bedcd3f18f4fc1b6bc9bf576531f87d8dc4a1275", query_template_hash())
+
+    def test_no_source_module_emits_the_false_empty_inventory_marker(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "src" / "rq1"
+        offenders = [str(path) for path in source.rglob("*.py") if "<empty>" in path.read_text(encoding="utf-8")]
+        self.assertEqual([], offenders)
 
     def test_query_text_normalizes_whitespace(self) -> None:
         text = build_query_text(

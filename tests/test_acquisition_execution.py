@@ -147,9 +147,19 @@ class ProtocolFreezeTests(unittest.TestCase):
         self.assertFalse(definition["scientific_retrieval_during_acquisition"])
         self.assertEqual(INFERENCE_SEED, definition["inference"]["seed"])
         self.assertEqual(
-            ("action-index-history-v1", "full_within_episode_actions_and_observations"),
+            ("action-index-history-v2", "full_within_episode_actions_and_observations"),
             (definition["inference"]["action_selection_protocol"], definition["inference"]["action_history"]),
         )
+        self.assertEqual(
+            ("verbatim_reset_observation_at_every_decision", "not_observed_marker_inventory_only_via_inventory_action",
+             "exactly_one_action_index_line_surrounding_prose_ignored"),
+            (definition["inference"]["initial_observation"], definition["inference"]["inventory"],
+             definition["inference"]["action_index_parsing"]),
+        )
+        interface = (REPO / definition["inference"]["interface_decision_record"]).read_text(encoding="utf-8").lower()
+        for phrase in ("2026-09-13", "no scientific acquisition data", "<not observed — use the inventory action>",
+                       "consumes one", "initial observation", "exactly one", "world facts"):
+            self.assertIn(phrase, interface)
         amendment = (REPO / definition["inference"]["action_history_decision_record"]).read_text(encoding="utf-8").lower()
         for phrase in ("2026-09-13", "before the scientific acquisition", "retrieval query unchanged", "never contains future actions"):
             self.assertIn(phrase, amendment)

@@ -26,15 +26,19 @@ from uuid import uuid4
 
 from rq1.bridge.app import create_bridge_server
 from rq1.bridge.adapters.capabilities import default_data_dir
-from rq1.retrieval.query import EMPTY_INVENTORY_MARKER
+from rq1.retrieval.query import INVENTORY_NOT_OBSERVED_MARKER
 
 # Canonical Ollama inference seed shared by every RQ1 condition.  It is
 # independent of the frozen experimental task seeds (11, 29, 47).
 INFERENCE_SEED = 42
-ACTION_SELECTION_PROTOCOL = "action-index-history-v1"
+ACTION_SELECTION_PROTOCOL = "action-index-history-v2"
 # Decision 008: every decision sees the complete observable history of the
 # current episode (prior actions and their resulting observations only).
 ACTION_HISTORY_POLICY = "full_within_episode_actions_and_observations"
+# Decision 009: interface corrections found in non-scientific prelaunch checks.
+INITIAL_OBSERVATION_POLICY = "verbatim_reset_observation_at_every_decision"
+INVENTORY_POLICY = "not_observed_marker_inventory_only_via_inventory_action"
+ACTION_INDEX_PARSING_POLICY = "exactly_one_action_index_line_surrounding_prose_ignored"
 EMPTY_HISTORY_MARKER = "(no previous steps)"
 MAX_SELECTION_ATTEMPTS = 3
 RETRY_CLARIFICATION = (
@@ -42,6 +46,7 @@ RETRY_CLARIFICATION = (
     "where the integer is one of the listed indices."
 )
 _GOAL_PATTERN = re.compile(r"^Your task is to:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+ACTION_INDEX_TOKEN = "ACTION_INDEX"
 _ACTION_INDEX_PATTERN = re.compile(r"ACTION_INDEX:[ \t]*([0-9]+)")
 
 
@@ -104,6 +109,7 @@ def render_episode_history(history: Sequence[tuple[str, str]]) -> str:
 def render_action_prompt(
     *,
     task_goal: str,
+    initial_observation: str,
     observation: str,
     inventory: Sequence[str],
     admissible_actions: Sequence[str],
@@ -114,15 +120,19 @@ def render_action_prompt(
     """Build the condition-identical action-selection prompt.
 
     Only the injected recovery-memory block may differ between conditions.
+    The initial observation is this episode's verbatim ALFWorld reset text.
     The history holds only already-executed actions and their observations;
-    scores, library names, episode identifiers, and reference/oracle actions
-    are never part of the prompt.
+    scores, library names, episode identifiers, world facts, and
+    reference/oracle actions are never part of the prompt.  Inventory is never
+    inferred: it is observed only when the agent chooses the ``inventory``
+    action, and then only as that step's observation.
     """
     sections = [
         "TASK GOAL:\n" + task_goal,
+        "INITIAL OBSERVATION:\n" + initial_observation,
         "EPISODE HISTORY:\n" + render_episode_history(history),
         "CURRENT OBSERVATION:\n" + observation,
-        "CURRENT INVENTORY:\n" + (", ".join(inventory) if inventory else EMPTY_INVENTORY_MARKER),
+        "CURRENT INVENTORY:\n" + (", ".join(inventory) if inventory else INVENTORY_NOT_OBSERVED_MARKER),
     ]
     if recovery_memory is not None:
         sections.append("RECOVERY MEMORY:\n" + json.dumps(recovery_memory, ensure_ascii=False, sort_keys=True))
@@ -139,26 +149,40 @@ def render_action_prompt(
     return "\n\n".join(sections)
 
 
-def parse_action_index(response: str, admissible_actions: Sequence[str]) -> int | None:
-    """Accept only one ``ACTION_INDEX: <integer>`` line naming a listed index.
+def classify_action_index(response: str, admissible_actions: Sequence[str]) -> tuple[int | None, str | None]:
+    """Return ``(index, None)`` or ``(None, rejection_reason)`` for one response.
 
-    There is no string/fuzzy matching and no fallback: anything else is an
-    invalid selection, not permission to choose on the model's behalf.
+    The token ``ACTION_INDEX`` must occur exactly once in the whole response,
+    on a line that is exactly ``ACTION_INDEX: <integer>`` naming a listed
+    index; prose on other lines is ignored (Decision 009).  A second mention,
+    even of the same index, is ambiguous.  There is no string/fuzzy matching
+    of action names and no fallback: anything else is an invalid selection,
+    not permission to choose on the model's behalf.
     """
-    lines = [line.strip() for line in response.splitlines() if line.strip()]
-    if len(lines) != 1:
-        return None
-    match = _ACTION_INDEX_PATTERN.fullmatch(lines[0])
+    mentions = response.count(ACTION_INDEX_TOKEN)
+    if mentions == 0:
+        return None, "no_action_index"
+    if mentions > 1:
+        return None, "multiple_action_index_mentions"
+    line = next(line.strip() for line in response.splitlines() if ACTION_INDEX_TOKEN in line)
+    match = _ACTION_INDEX_PATTERN.fullmatch(line)
     if match is None:
-        return None
+        return None, "malformed_action_index"
     index = int(match.group(1))
-    return index if index < len(admissible_actions) else None
+    if index >= len(admissible_actions):
+        return None, "index_out_of_range"
+    return index, None
+
+
+def parse_action_index(response: str, admissible_actions: Sequence[str]) -> int | None:
+    return classify_action_index(response, admissible_actions)[0]
 
 
 def select_admissible_action(
     ask: Callable[[str], str],
     *,
     task_goal: str,
+    initial_observation: str,
     observation: str,
     inventory: Sequence[str],
     admissible_actions: Sequence[str],
@@ -173,6 +197,7 @@ def select_admissible_action(
     for attempt in range(1, max_attempts + 1):
         prompt = render_action_prompt(
             task_goal=task_goal,
+            initial_observation=initial_observation,
             observation=observation,
             inventory=inventory,
             admissible_actions=admissible_actions,
@@ -181,7 +206,7 @@ def select_admissible_action(
             history=history,
         )
         response = ask(prompt)
-        index = parse_action_index(response, admissible_actions)
+        index, rejection = classify_action_index(response, admissible_actions)
         action = admissible_actions[index] if index is not None else None
         attempts.append(
             {
@@ -189,6 +214,7 @@ def select_admissible_action(
                 "prompt": prompt,
                 "response": response,
                 "parsed_index": index,
+                "rejection_reason": rejection,
                 "selected_action": action,
                 "valid": action is not None,
             }
@@ -405,6 +431,7 @@ class RealEpisodeSession:
         self.episode_id: str | None = None
         self.state: dict[str, Any] | None = None
         self.task_goal: str | None = None
+        self.initial_observation: str | None = None
         self.records: list[ActionRecord] = []
         self.invalid_model_actions = 0
         self.selection_failures: list[dict[str, Any]] = []
@@ -451,7 +478,8 @@ class RealEpisodeSession:
             raise EpisodeDriverError("Real alfworld_start returned no valid episode_id")
         self.episode_id = episode_id
         self.state = result
-        self.task_goal = extract_task_goal(str(result.get("observation", "")))
+        self.initial_observation = str(result.get("observation", ""))
+        self.task_goal = extract_task_goal(self.initial_observation)
         self._event(
             "task_goal_frozen",
             {"task_id": task_id, "task_goal": self.task_goal, "source": "initial_observation"},
@@ -531,7 +559,7 @@ class RealEpisodeSession:
         return response
 
     def choose_action(self, recovery_memory: Mapping[str, Any] | None = None) -> str | None:
-        if self.state is None or self.task_goal is None:
+        if self.state is None or self.task_goal is None or self.initial_observation is None:
             raise EpisodeDriverError("Cannot select an action before start")
         admissible = self.state.get("admissible_actions")
         if not isinstance(admissible, list) or not all(isinstance(item, str) for item in admissible):
@@ -545,6 +573,7 @@ class RealEpisodeSession:
         selection = select_admissible_action(
             self._model_response,
             task_goal=self.task_goal,
+            initial_observation=self.initial_observation,
             observation=str(self.state.get("observation", "")),
             inventory=[str(item) for item in self.state.get("inventory") or []],
             admissible_actions=admissible,
@@ -557,6 +586,9 @@ class RealEpisodeSession:
                 {
                     "protocol": ACTION_SELECTION_PROTOCOL,
                     "action_history_policy": ACTION_HISTORY_POLICY,
+                    "initial_observation_policy": INITIAL_OBSERVATION_POLICY,
+                    "inventory_policy": INVENTORY_POLICY,
+                    "action_index_parsing": ACTION_INDEX_PARSING_POLICY,
                     "history_steps": len(history),
                     "inference_seed": self.driver.inference_seed,
                     "max_attempts": MAX_SELECTION_ATTEMPTS,

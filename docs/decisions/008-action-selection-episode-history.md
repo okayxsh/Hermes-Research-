@@ -5,6 +5,7 @@
 - Timing: frozen before the scientific acquisition run; no scientific acquisition data existed when it was made
 - Amends: the Hermes action-selection prompt (`action-index-v1` becomes `action-index-history-v1`)
 - Applies identically to: acquisition and every recovery condition (NoLib, Clean-24, Accum-60, Accum-96)
+- Amended by: [Decision 009](009-observation-interface-corrections.md) (initial observation, inventory marker, ACTION_INDEX parsing)
 
 No scientific result motivated this change. Multi-step ALFWorld control
 requires the agent to retain its own observable interaction history rather than

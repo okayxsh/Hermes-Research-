@@ -16,7 +16,7 @@
   "fresh_session_per_task": true,
   "profile": "rq1-acquisition",
   "model": "hermes3:8b",
-  "inference": {"temperature": 0, "seed": 42, "action_selection_protocol": "action-index-history-v1", "action_history": "full_within_episode_actions_and_observations", "action_history_decision_record": "docs/decisions/008-action-selection-episode-history.md", "max_selection_attempts": 3},
+  "inference": {"temperature": 0, "seed": 42, "action_selection_protocol": "action-index-history-v2", "action_history": "full_within_episode_actions_and_observations", "action_history_decision_record": "docs/decisions/008-action-selection-episode-history.md", "initial_observation": "verbatim_reset_observation_at_every_decision", "inventory": "not_observed_marker_inventory_only_via_inventory_action", "action_index_parsing": "exactly_one_action_index_line_surrounding_prose_ignored", "interface_decision_record": "docs/decisions/009-observation-interface-corrections.md", "max_selection_attempts": 3},
   "scientific_retrieval_during_acquisition": false,
   "skill_creation": {
     "author": "same_experimental_agent",

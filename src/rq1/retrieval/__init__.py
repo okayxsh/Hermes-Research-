@@ -34,7 +34,7 @@ from rq1.retrieval.models import (
 )
 from rq1.retrieval.query import (
     CANONICAL_FAILURE_MESSAGE,
-    EMPTY_INVENTORY_MARKER,
+    INVENTORY_NOT_OBSERVED_MARKER,
     QUERY_TEMPLATE_VERSION,
     build_query_text,
     query_template_hash,
@@ -45,7 +45,7 @@ from rq1.retrieval.text import SKILL_TEXT_VERSION, build_skill_text, skill_text_
 __all__ = [
     "CANONICAL_FAILURE_MESSAGE",
     "DEFAULT_MODEL_NAME",
-    "EMPTY_INVENTORY_MARKER",
+    "INVENTORY_NOT_OBSERVED_MARKER",
     "QUERY_TEMPLATE_VERSION",
     "SKILL_TEXT_VERSION",
     "EmbedderIdentity",
