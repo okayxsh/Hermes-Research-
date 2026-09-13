@@ -23,7 +23,8 @@ from rq1.hermes.episode_driver import (
 )
 from rq1.pilot.real_runtime.harnesses import RealRecoveryHarness
 from rq1.recovery.controlled_failure import ControlledFailureError, select_reversible_navigation_action
-from rq1.retrieval import build_retrieval_boundary
+from rq1.retrieval import RetrievalQuery, build_retrieval_boundary
+from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE, query_template_hash
 from rq1.tasks.selection import FROZEN_SEEDS
 from rq1.utils.config import load_json_yaml
 
@@ -163,12 +164,51 @@ class ActionSelectionControllerTests(unittest.TestCase):
         self.assertEqual(prompt, render_action_prompt(**kwargs))
         self.assertEqual(
             "TASK GOAL:\nlook at alarmclock under the desklamp.\n\n"
+            "EPISODE HISTORY:\n(no previous steps)\n\n"
             "CURRENT OBSERVATION:\nYou arrive at bed 1.\n\n"
-            "INVENTORY:\n<empty>\n\n"
+            "CURRENT INVENTORY:\n<empty>\n\n"
             "ADMISSIBLE ACTIONS:\n0. go to bed 1\n1. go to desk 1\n2. go to sidetable 1\n3. look\n\n"
             "Return exactly:\nACTION_INDEX: <integer>",
             prompt,
         )
+
+    def test_prompt_contains_full_prior_history_in_chronological_order(self) -> None:
+        history = [("go to bed 1", "You arrive at bed 1."), ("look", "You are facing the bed 1.")]
+        prompt = render_action_prompt(
+            task_goal=GOAL, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
+            admissible_actions=ACTIONS, history=history,
+        )
+        self.assertIn(
+            "EPISODE HISTORY:\nStep 1\nAction: go to bed 1\nObservation: You arrive at bed 1.\n\n"
+            "Step 2\nAction: look\nObservation: You are facing the bed 1.\n\n"
+            "CURRENT OBSERVATION:\nYou are facing the bed 1.\n\nCURRENT INVENTORY:\nalarmclock 1\n\n",
+            prompt,
+        )
+        self.assertEqual(prompt, render_action_prompt(
+            task_goal=GOAL, observation="You are facing the bed 1.", inventory=("alarmclock 1",),
+            admissible_actions=ACTIONS, history=list(history),
+        ))
+
+    def test_session_history_is_complete_chronological_and_never_future(self) -> None:
+        driver = FakeDriver(lambda prompt: "ACTION_INDEX: 1")
+        with tempfile.TemporaryDirectory() as tmp:
+            with driver.session(output_dir=Path(tmp) / "episode", run_id="run") as session:
+                session.start(TASK_ID, "valid_seen", 11, 10)
+                records = session.run_model_loop(4, phase="acquisition")
+            events = [json.loads(line) for line in (Path(tmp) / "episode" / "episode-events.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(4, len(records))
+        self.assertEqual(4, len(driver.prompts))
+        for decision, prompt in enumerate(driver.prompts):
+            expected = "\n\n".join(
+                f"Step {step}\nAction: go to desk 1\nObservation: You arrive at waypoint {step}."
+                for step in range(1, decision + 1)
+            ) or "(no previous steps)"
+            self.assertIn("EPISODE HISTORY:\n" + expected + "\n\nCURRENT OBSERVATION:\n", prompt)
+            self.assertNotIn(f"Step {decision + 1}\n", prompt)
+            self.assertNotIn(f"waypoint {decision + 1}.", prompt)
+        selections = [event["payload"] for event in events if event["event"] == "model_selection"]
+        self.assertEqual([0, 1, 2, 3], [payload["history_steps"] for payload in selections])
+        self.assertEqual({"full_within_episode_actions_and_observations"}, {payload["action_history_policy"] for payload in selections})
 
     def test_valid_index_maps_to_exact_admissible_action(self) -> None:
         self.assertEqual(2, parse_action_index("ACTION_INDEX: 2", ACTIONS))
@@ -240,6 +280,8 @@ class ActionSelectionControllerTests(unittest.TestCase):
         self.assertEqual(INFERENCE_SEED, config["seed"])
         self.assertEqual(0, config["temperature"])
         self.assertEqual(ACTION_SELECTION_PROTOCOL, config["action_selection_protocol"])
+        self.assertEqual("action-index-history-v1", ACTION_SELECTION_PROTOCOL)
+        self.assertEqual("full_within_episode_actions_and_observations", config["action_history"])
         self.assertEqual(MAX_SELECTION_ATTEMPTS, config["max_selection_attempts"])
 
         captured: list[dict] = []
@@ -355,6 +397,29 @@ class ActionSelectionControllerTests(unittest.TestCase):
         )
         self.assertIn("Use the light source.", prompts["Pilot-Memory"][0])
         self.assertIn('"no_retrieved_skills_available": true', prompts["NoLib"][0])
+        replay_and_detour = (
+            "EPISODE HISTORY:\nStep 1\nAction: look\nObservation: You arrive at waypoint 1.\n\n"
+            "Step 2\nAction: go to bed 1\nObservation: You arrive at waypoint 2.\n\n"
+        )
+        for condition in ("Pilot-Memory", "NoLib"):
+            self.assertIn(replay_and_detour, prompts[condition][0])
+            self.assertIn("Step 3\nAction: look\nObservation: You arrive at waypoint 3.", prompts[condition][1])
+            self.assertNotIn("go to desk 1", prompts[condition][0].split("ADMISSIBLE ACTIONS:")[0])
+
+        # The Sentence-BERT query stays the frozen four-field query-v1: no action history.
+        for result in (memory, nolib):
+            context = result.failure_context
+            query = RetrievalQuery(
+                task_instruction=GOAL, observation="You arrive at waypoint 2.", inventory=(),
+                failure_message=CANONICAL_FAILURE_MESSAGE,
+            )
+            self.assertEqual((GOAL, "You arrive at waypoint 2."), (context["task_instruction"], context["observation"]))
+            self.assertEqual(query.text_hash(), result.retrieval_event["query_text_hash"])
+            self.assertEqual(query_template_hash(), result.retrieval_event["query_template_hash"])
+            text = query.text()
+            self.assertEqual(["TASK:", "OBSERVATION:", "INVENTORY:", "FAILURE:"], [line for line in text.splitlines() if line.endswith(":")])
+            for leaked in ("EPISODE HISTORY", "Action:", "Step 1", "go to bed 1", "waypoint 1"):
+                self.assertNotIn(leaked, text)
         for condition, condition_prompts in prompts.items():
             for prompt in condition_prompts:
                 self.assertIn("TASK GOAL:\n" + GOAL, prompt)

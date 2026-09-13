@@ -146,6 +146,13 @@ class ProtocolFreezeTests(unittest.TestCase):
         self.assertFalse(any(duplicates[key] for key in ("semantic_deduplication", "embedding_deduplication", "llm_duplicate_judge", "retrospective_library_deduplication")))
         self.assertFalse(definition["scientific_retrieval_during_acquisition"])
         self.assertEqual(INFERENCE_SEED, definition["inference"]["seed"])
+        self.assertEqual(
+            ("action-index-history-v1", "full_within_episode_actions_and_observations"),
+            (definition["inference"]["action_selection_protocol"], definition["inference"]["action_history"]),
+        )
+        amendment = (REPO / definition["inference"]["action_history_decision_record"]).read_text(encoding="utf-8").lower()
+        for phrase in ("2026-09-13", "before the scientific acquisition", "retrieval query unchanged", "never contains future actions"):
+            self.assertIn(phrase, amendment)
         self.assertEqual((180, 30, False), (definition["initial_task_count"], definition["tasks_per_family"], definition["automatic_extension"]))
         self.assertEqual(definition, load_json_yaml(REPO / PROTOCOL_CONFIG))
         self.assertTrue(load_json_yaml(REPO / "configs" / "libraries.yaml")["do_not_deduplicate"])

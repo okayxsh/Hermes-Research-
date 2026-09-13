@@ -31,7 +31,11 @@ from rq1.retrieval.query import EMPTY_INVENTORY_MARKER
 # Canonical Ollama inference seed shared by every RQ1 condition.  It is
 # independent of the frozen experimental task seeds (11, 29, 47).
 INFERENCE_SEED = 42
-ACTION_SELECTION_PROTOCOL = "action-index-v1"
+ACTION_SELECTION_PROTOCOL = "action-index-history-v1"
+# Decision 008: every decision sees the complete observable history of the
+# current episode (prior actions and their resulting observations only).
+ACTION_HISTORY_POLICY = "full_within_episode_actions_and_observations"
+EMPTY_HISTORY_MARKER = "(no previous steps)"
 MAX_SELECTION_ATTEMPTS = 3
 RETRY_CLARIFICATION = (
     "Your previous response was invalid. Return only ACTION_INDEX: <integer> "
@@ -87,6 +91,16 @@ def extract_task_goal(initial_observation: str) -> str:
     return matches[0]
 
 
+def render_episode_history(history: Sequence[tuple[str, str]]) -> str:
+    """Every executed step of this episode, oldest first: action, then its observation."""
+    if not history:
+        return EMPTY_HISTORY_MARKER
+    return "\n\n".join(
+        f"Step {number}\nAction: {action}\nObservation: {observation}"
+        for number, (action, observation) in enumerate(history, 1)
+    )
+
+
 def render_action_prompt(
     *,
     task_goal: str,
@@ -95,17 +109,20 @@ def render_action_prompt(
     admissible_actions: Sequence[str],
     recovery_memory: Mapping[str, Any] | None = None,
     attempt: int = 1,
+    history: Sequence[tuple[str, str]] = (),
 ) -> str:
     """Build the condition-identical action-selection prompt.
 
     Only the injected recovery-memory block may differ between conditions.
-    Scores, library names, episode identifiers, and reference/oracle actions
+    The history holds only already-executed actions and their observations;
+    scores, library names, episode identifiers, and reference/oracle actions
     are never part of the prompt.
     """
     sections = [
         "TASK GOAL:\n" + task_goal,
+        "EPISODE HISTORY:\n" + render_episode_history(history),
         "CURRENT OBSERVATION:\n" + observation,
-        "INVENTORY:\n" + (", ".join(inventory) if inventory else EMPTY_INVENTORY_MARKER),
+        "CURRENT INVENTORY:\n" + (", ".join(inventory) if inventory else EMPTY_INVENTORY_MARKER),
     ]
     if recovery_memory is not None:
         sections.append("RECOVERY MEMORY:\n" + json.dumps(recovery_memory, ensure_ascii=False, sort_keys=True))
@@ -147,6 +164,7 @@ def select_admissible_action(
     admissible_actions: Sequence[str],
     recovery_memory: Mapping[str, Any] | None = None,
     max_attempts: int = MAX_SELECTION_ATTEMPTS,
+    history: Sequence[tuple[str, str]] = (),
 ) -> ActionSelection:
     """Map a model-chosen index to one exact admissible action with bounded retry."""
     if not admissible_actions:
@@ -160,6 +178,7 @@ def select_admissible_action(
             admissible_actions=admissible_actions,
             recovery_memory=recovery_memory,
             attempt=attempt,
+            history=history,
         )
         response = ask(prompt)
         index = parse_action_index(response, admissible_actions)
@@ -517,6 +536,9 @@ class RealEpisodeSession:
         memory = None
         if recovery_memory is not None:
             memory = recovery_memory.get("recovery_memory", recovery_memory)
+        # Every step already executed in this session, including any frozen
+        # checkpoint replay and controlled detour; never oracle or future steps.
+        history = [(record.action, record.observation) for record in self.records]
         selection = select_admissible_action(
             self._model_response,
             task_goal=self.task_goal,
@@ -524,12 +546,15 @@ class RealEpisodeSession:
             inventory=[str(item) for item in self.state.get("inventory") or []],
             admissible_actions=admissible,
             recovery_memory=memory,
+            history=history,
         )
         for attempt in selection.attempts:
             self._event(
                 "model_selection",
                 {
                     "protocol": ACTION_SELECTION_PROTOCOL,
+                    "action_history_policy": ACTION_HISTORY_POLICY,
+                    "history_steps": len(history),
                     "inference_seed": self.driver.inference_seed,
                     "max_attempts": MAX_SELECTION_ATTEMPTS,
                     "step_number": self.state.get("step_number"),
