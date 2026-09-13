@@ -23,7 +23,7 @@ from rq1.experiment import persistence
 from rq1.experiment.persistence import CompatibilityError, ExperimentStore
 from rq1.experiment.runner import RunnerOptions
 from rq1.freeze.validation import ACQUISITION_ENVIRONMENT_REQUIRED, build_freeze, write_freeze
-from rq1.hermes.episode_driver import INFERENCE_SEED, EpisodeDriverError, RealEpisodeSession
+from rq1.hermes.episode_driver import INFERENCE_SEED, EpisodeDriverError, ProviderText, RealEpisodeSession
 from rq1.pilot import prelaunch
 from rq1.retrieval.text import build_skill_text
 from rq1.skills.library import TASK_FAMILIES
@@ -90,7 +90,7 @@ class FakeDriver:
     root = Path(".")
     bridge_url = "http://127.0.0.1:9"
     bridge_timeout_seconds = 5.0
-    model_name = "hermes3:8b"
+    model_name = "gemma4:12b"
     ollama_url = "http://127.0.0.1:11434"
     model_timeout_seconds = 5.0
     inference_seed = INFERENCE_SEED
@@ -147,7 +147,7 @@ class ProtocolFreezeTests(unittest.TestCase):
         self.assertFalse(definition["scientific_retrieval_during_acquisition"])
         self.assertEqual(INFERENCE_SEED, definition["inference"]["seed"])
         self.assertEqual(
-            ("action-index-history-v2", "full_within_episode_actions_and_observations"),
+            ("action-index-history-v3", "full_within_episode_actions_and_observations"),
             (definition["inference"]["action_selection_protocol"], definition["inference"]["action_history"]),
         )
         self.assertEqual(
@@ -160,6 +160,19 @@ class ProtocolFreezeTests(unittest.TestCase):
         for phrase in ("2026-09-13", "no scientific acquisition data", "<not observed — use the inventory action>",
                        "consumes one", "initial observation", "exactly one", "world facts"):
             self.assertIn(phrase, interface)
+        inference = definition["inference"]
+        self.assertEqual(
+            ("gemma4:12b", "Q4_K_M", 2048, "options.num_predict", 32768, False, 180, "acquisition-execution-v2"),
+            (definition["model"], definition["model_quantization"], inference["output_token_cap"], inference["output_cap_parameter"],
+             inference["model_context_length"], inference["think"], inference["model_timeout_seconds"], definition["policy_version"]),
+        )
+        self.assertIn("not_claimed_deterministic", inference["determinism"])
+        selection = " ".join((REPO / definition["model_decision_record"]).read_text(encoding="utf-8").lower().split())
+        for phrase in ("2026-09-13", "no scientific acquisition data", "3/6", "num_predict", "2048",
+                       "not claimed to be deterministic", "infrastructure failure", "pre-existing retry"):
+            self.assertIn(phrase, selection)
+        base = load_json_yaml(REPO / "configs" / "base.yaml")["model_inference"]
+        self.assertEqual(("gemma4:12b", 2048, 32768), (base["model"], base["output_token_cap"], base["model_context_length"]))
         amendment = (REPO / definition["inference"]["action_history_decision_record"]).read_text(encoding="utf-8").lower()
         for phrase in ("2026-09-13", "before the scientific acquisition", "retrieval query unchanged", "never contains future actions"):
             self.assertIn(phrase, amendment)
@@ -221,7 +234,7 @@ class QueueAndGateTests(unittest.TestCase):
         prompts = {"hermes/prompts/post_success_learning.md": "a", "hermes/prompts/skill_validation.md": "b"}
         environment_inputs = {key: "recorded" for key in ACQUISITION_ENVIRONMENT_REQUIRED}
         environment_inputs.update({
-            "repository_commit": COMMIT, "model_tag": "hermes3:8b", "inference_seed": INFERENCE_SEED,
+            "repository_commit": COMMIT, "model_tag": "gemma4:12b", "model_quantization": "Q4_K_M", "inference_seed": INFERENCE_SEED,
             "task_queue_sha256": queue, "prompt_hashes": prompts, "alfworld_data_identity": frozen.data_root_identity,
         })
         protocol_inputs = {
@@ -250,6 +263,16 @@ class QueueAndGateTests(unittest.TestCase):
             self.assertFalse(validate_acquisition_gates(self.root).valid)
         with patch("rq1.acquisition.gates.git_state", return_value=(COMMIT, False, None)):
             self.assertFalse(validate_acquisition_gates(self.root).valid)
+
+    def test_missing_freezes_are_the_only_pending_approval_gate_reasons(self) -> None:
+        reasons = validate_acquisition_gates(self.root).reasons
+        missing = [reason for reason in reasons if "freeze" in reason or "manifest" in reason]
+        self.assertEqual(3, len(missing))
+        self.assertTrue(set(missing) <= launch.APPROVAL_PENDING_REASONS)
+        self.assertEqual(
+            "python -m rq1.cli acquisition run --run-id rq1-acquisition-gemma4-12b --yes --backup-dir /workspace/persistent/backups --require-backup",
+            launch.production_commands()["run"],
+        )
 
 
 class AcquisitionExecutionTests(unittest.TestCase):
@@ -305,7 +328,7 @@ class AcquisitionExecutionTests(unittest.TestCase):
             (TASKS[0][0], "clean_and_place", 1, 1, rows[0]["run_key"], rows[0]["attempt_id"]),
             (skill.source_task_id, skill.task_family, skill.pool_index, skill.source_task_index, skill.source_run_key, skill.source_attempt_id),
         )
-        self.assertEqual(("hermes3:8b", INFERENCE_SEED, 0, "create"), (skill.provenance["model"], skill.provenance["inference_seed"], skill.provenance["temperature"], skill.provenance["operation"]))
+        self.assertEqual(("gemma4:12b", INFERENCE_SEED, 0, "create"), (skill.provenance["model"], skill.provenance["inference_seed"], skill.provenance["temperature"], skill.provenance["operation"]))
         self.assertEqual(build_skill_text(title="Clean before placing", body="Find the target object, rinse it at a sink basin, then put it in the requested receptacle."), skill.text)
         self.assertFalse(any(character.isdigit() for character in skill.text))
         self.assertTrue(all(row["scientific_retrieval_count"] == 0 and row["retrieved_skill_ids"] == [] for row in rows))
@@ -340,6 +363,47 @@ class AcquisitionExecutionTests(unittest.TestCase):
         _, resumed = self.run_units(retry_driver, TASKS[:2], resume=True)
         self.assertEqual("completed", resumed["status"])
         self.assertEqual(2, len(rebuild_pool(self.rows(store))))
+
+    def test_capped_model_output_is_a_scientific_selection_failure_not_infrastructure(self) -> None:
+        class CappedDriver(FakeDriver):
+            def session(self, **kwargs):
+                session = super().session(**kwargs)
+                session._model_response = lambda prompt: ProviderText("reasoning " * 20, done_reason="length", eval_count=2048)
+                return session
+
+        store, result = self.run_units(CappedDriver({TASKS[0][0]: {"success": True}}), TASKS[:1])
+        self.assertEqual("completed", result["status"])
+        row = self.rows(store)[0]
+        self.assertEqual(("completed", False, "action_selection_exhausted"), (row["status"], row["success"], row["termination_reason"]))
+        self.assertEqual({"output_token_cap_reached": 3}, row["selection_rejections"])
+        self.assertEqual([], store.read_errors())
+
+    def test_capped_skill_generation_is_rejected_not_infrastructure(self) -> None:
+        capped_skill = ProviderText("TITLE: Partial\nBODY: Find the", done_reason="length", eval_count=2048)
+        store, result = self.run_units(FakeDriver({TASKS[0][0]: {"success": True}}, [capped_skill]), TASKS[:1])
+        row = self.rows(store)[0]
+        self.assertEqual(
+            ("completed", True, "rejected", ["output_token_cap_reached"]),
+            (row["status"], row["success"], row["skill_candidate"]["status"], row["skill_candidate"]["rejection_reasons"]),
+        )
+        self.assertEqual((), rebuild_pool(self.rows(store)))
+        self.assertEqual([], store.read_errors())
+
+    def test_attempt_lineage_separates_authorized_retries_from_duplicate_completed_units(self) -> None:
+        world = {TASKS[0][0]: {"success": True, "infrastructure_failure": True}, TASKS[1][0]: {"success": True}}
+        store, _ = self.run_units(FakeDriver(world, [GOOD_SKILL]), TASKS[:2])
+        world[TASKS[0][0]]["infrastructure_failure"] = False
+        self.run_units(FakeDriver(world, [GOOD_SKILL, NEAR_SKILL]), TASKS[:2], resume=True, retry_failed=True)
+        rows = store.read_results(repair_tail=False)
+        lineage = launch.attempt_lineage(rows)
+        self.assertEqual((True, 0, 1), (lineage["authorized"], lineage["duplicate_completed_units"], len(lineage["retried_units"])))
+        attempts = lineage["retried_units"][0]["attempts"]
+        self.assertEqual(["failed", "completed"], [attempt["status"] for attempt in attempts])
+        self.assertEqual((attempts[0]["attempt_id"], "retry_failed"), (attempts[1]["supersedes_attempt_id"], attempts[1]["retry_reason"]))
+        self.assertTrue(attempts[0]["errors"])
+        rerun = {**rows[-1], "attempt_id": "duplicate", "supersedes_attempt_id": rows[-1]["attempt_id"], "retry_reason": "retry_failed"}
+        duplicate = launch.attempt_lineage([*rows, rerun])
+        self.assertEqual((False, 1), (duplicate["authorized"], duplicate["duplicate_completed_units"]))
 
     def test_resume_restores_pool_and_never_reruns_completed_units(self) -> None:
         world = {task: {"success": True} for task, _ in TASKS[:2]}
@@ -461,13 +525,15 @@ class AcquisitionExecutionTests(unittest.TestCase):
             ["acquisition", "run", "--run-id", "rq1-acquisition", "--yes", "--backup-dir", "/backup", "--require-backup"],
             ["acquisition", "check", "--run-id", "prelaunch-acquisition-check-x", "--task-id", "train:a", "--max-runs", "2", "--model", "gemma4:12b"],
             ["acquisition", "check-report", "--run-id", "prelaunch-acquisition-check-x"],
+            ["acquisition", "preflight", "--run-id", "rq1-acquisition-gemma4-12b", "--backup-dir", "/backup"],
             ["acquisition", "prepare-approvals", "--proposal", "proposal.json", "--evidence-report", "report.json"],
             ["freeze", "acquisition-protocol", "--approval-file", "approval.json", "--pilot-report", "report.json", "--yes"],
         ):
             parser.parse_args(argv)
         self.assertNotIn("no final run was started", (REPO / "src" / "rq1" / "cli.py").read_text(encoding="utf-8"))
         self.assertEqual("gemma4:12b", launch.run_configuration(self.root, queue_sha256=QUEUE, scientific=False, model_name="gemma4:12b")["model_name"])
-        self.assertEqual("hermes3:8b", launch.run_configuration(self.root, queue_sha256=QUEUE, scientific=False)["model_name"])
+        configuration = launch.run_configuration(self.root, queue_sha256=QUEUE, scientific=False)
+        self.assertEqual(("gemma4:12b", 2048, 32768), (configuration["model_name"], configuration["runtime_settings"]["output_token_cap"], configuration["runtime_settings"]["model_context_length"]))
 
 
 if __name__ == "__main__":

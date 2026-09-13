@@ -106,7 +106,7 @@ def main() -> int:
     if args.dry_run:
         print(json.dumps({"dry_run": True, "checks": [
             "GPU visibility and resources", "Python 3.11 and locked environment", "Git commit",
-            "ALFWorld 0.4.2/data/valid_seen real smoke", "Ollama hermes3:8b READY smoke",
+            "ALFWorld 0.4.2/data/valid_seen real smoke", "Ollama gemma4:12b READY smoke",
             "Hermes CLI and real integration capability", "checkpoint and interruption resume",
             "persistent output and backup paths",
         ]}, indent=2))
@@ -169,12 +169,12 @@ def main() -> int:
 
     model_smoke = (
         "import json,urllib.request; "
-        "p=json.dumps({'model':'hermes3:8b','prompt':'Reply with READY only.','stream':False}).encode(); "
+        "p=json.dumps({'model':'gemma4:12b','prompt':'Reply with READY only.','stream':False,'think':False}).encode(); "
         "r=json.load(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:11434/api/generate',data=p,headers={'Content-Type':'application/json'}),timeout=60)); "
         "assert r.get('response','').strip()=='READY', repr(r.get('response'))"
     )
     ollama_ok, ollama_output = validator.command("ollama-ready", [sys.executable, "-c", model_smoke], timeout=180)
-    validator.check("ollama_hermes3_ready", ollama_ok, "hermes3:8b returned READY" if ollama_ok else ollama_output[-300:])
+    validator.check("ollama_gemma4_ready", ollama_ok, "gemma4:12b returned READY" if ollama_ok else ollama_output[-300:])
     hermes = shutil.which("hermes")
     validator.check("hermes_cli", hermes is not None, hermes or "hermes executable unavailable")
     if hermes:

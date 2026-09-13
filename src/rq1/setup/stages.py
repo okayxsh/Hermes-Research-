@@ -41,9 +41,11 @@ OLLAMA_INSTALL_URL = "https://ollama.com/install.sh"
 HERMES_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
 UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 OLLAMA_HOST = "http://127.0.0.1:11434"
-PRIMARY_MODEL = "hermes3:8b"
+# Decision 010: the frozen RQ1 backbone and its explicit provider context window.
+# The fallback pull is a setup diagnostic only; it is never an RQ1 model.
+PRIMARY_MODEL = "gemma4:12b"
 FALLBACK_MODEL = "llama3.1:8b"
-MINIMUM_CONTEXT = 65536
+MINIMUM_CONTEXT = 32768
 SYSTEM_PACKAGES = (
     "ca-certificates",
     "curl",

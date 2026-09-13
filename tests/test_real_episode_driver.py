@@ -10,14 +10,20 @@ from rq1.evaluation.recovery_executor import RecoveryEpisodeSpec, run_recovery_e
 from rq1.hermes import episode_driver
 from rq1.hermes.episode_driver import (
     ACTION_SELECTION_PROTOCOL,
+    EXPERIMENT_MODEL,
     INFERENCE_SEED,
     MAX_SELECTION_ATTEMPTS,
+    OUTPUT_CAP_REJECTION,
+    OUTPUT_TOKEN_CAP,
     RETRY_CLARIFICATION,
     EpisodeDriverError,
+    ProviderText,
     RealEpisodeSession,
     classify_action_index,
     extract_task_goal,
     ollama_chat_payload,
+    provider_settings,
+    reached_output_cap,
     parse_action_index,
     render_action_prompt,
     select_admissible_action,
@@ -106,7 +112,7 @@ class FakeDriver:
     root = Path(".")
     bridge_url = "http://127.0.0.1:9"
     bridge_timeout_seconds = 5.0
-    model_name = "hermes3:8b"
+    model_name = "gemma4:12b"
     ollama_url = "http://127.0.0.1:11434"
     model_timeout_seconds = 5.0
     inference_seed = INFERENCE_SEED
@@ -334,13 +340,17 @@ class ActionSelectionControllerTests(unittest.TestCase):
     def test_fixed_inference_seed_is_sent_and_logged(self) -> None:
         self.assertEqual(42, INFERENCE_SEED)
         self.assertNotIn(INFERENCE_SEED, FROZEN_SEEDS)
-        self.assertEqual({"temperature": 0, "seed": INFERENCE_SEED}, ollama_chat_payload("hermes3:8b", "p", INFERENCE_SEED)["options"])
+        self.assertEqual(
+            {"temperature": 0, "seed": INFERENCE_SEED, "num_predict": 2048, "num_ctx": 32768},
+            ollama_chat_payload(EXPERIMENT_MODEL, "p", INFERENCE_SEED)["options"],
+        )
         self.assertIs(False, ollama_chat_payload("gemma4:12b", "p", INFERENCE_SEED)["think"])
         config = load_json_yaml(ROOT / "configs" / "base.yaml")["model_inference"]
         self.assertEqual(INFERENCE_SEED, config["seed"])
         self.assertEqual(0, config["temperature"])
         self.assertEqual(ACTION_SELECTION_PROTOCOL, config["action_selection_protocol"])
-        self.assertEqual("action-index-history-v2", ACTION_SELECTION_PROTOCOL)
+        self.assertEqual("action-index-history-v3", ACTION_SELECTION_PROTOCOL)
+        self.assertEqual(("gemma4:12b", 2048, 32768), (config["model"], config["output_token_cap"], config["model_context_length"]))
         self.assertEqual("verbatim_reset_observation_at_every_decision", config["initial_observation"])
         self.assertEqual("not_observed_marker_inventory_only_via_inventory_action", config["inventory"])
         self.assertEqual("exactly_one_action_index_line_surrounding_prose_ignored", config["action_index_parsing"])
@@ -499,6 +509,69 @@ class ActionSelectionControllerTests(unittest.TestCase):
                 if tool == "alfworld_step":
                     self.assertEqual(EPISODE_ID, args["episode_id"])
                     self.assertIn(args["action"], ACTIONS)
+
+    def test_output_cap_hit_consumes_one_attempt_and_is_never_parsed(self) -> None:
+        capped = ProviderText("ACTION_INDEX: 2\n" + "more " * 50, done_reason="length", eval_count=OUTPUT_TOKEN_CAP)
+        responses = iter([capped, ProviderText("I choose.\nACTION_INDEX: 1", done_reason="stop", eval_count=9)])
+        selection = select_admissible_action(
+            lambda prompt: next(responses), task_goal=GOAL, initial_observation=INITIAL_OBSERVATION,
+            observation="You arrive at bed 1.", inventory=(), admissible_actions=ACTIONS,
+        )
+        self.assertEqual(("go to desk 1", 1), (selection.action, selection.index))
+        self.assertEqual([OUTPUT_CAP_REJECTION, None], [attempt["rejection_reason"] for attempt in selection.attempts])
+        self.assertEqual(["length", "stop"], [attempt["done_reason"] for attempt in selection.attempts])
+
+    def test_three_capped_responses_exhaust_selection_without_infrastructure_failure(self) -> None:
+        capped = ProviderText("thinking " * 100, done_reason="length", eval_count=OUTPUT_TOKEN_CAP)
+        driver = FakeDriver(lambda prompt: capped)
+        with tempfile.TemporaryDirectory() as tmp:
+            with driver.session(output_dir=Path(tmp) / "episode", run_id="run") as session:
+                session.start(TASK_ID, "valid_seen", 11, 10)
+                records = session.run_model_loop(5, phase="acquisition")
+        self.assertEqual([], records)
+        self.assertEqual(MAX_SELECTION_ATTEMPTS, len(driver.prompts))
+        self.assertEqual("action_selection_invalid_after_bounded_retry", session.selection_failures[0]["reason"])
+        self.assertEqual({OUTPUT_CAP_REJECTION: MAX_SELECTION_ATTEMPTS}, session.rejection_counts)
+        self.assertEqual(["alfworld_start", "alfworld_abort"], [tool for tool, _ in driver.workers[0].calls])
+
+    def test_provider_reply_keeps_stop_evidence_and_provider_errors_stay_infrastructure(self) -> None:
+        settings = provider_settings()
+        self.assertEqual(
+            ("gemma4:12b", "options.num_predict", 2048, 180, 3),
+            (EXPERIMENT_MODEL, settings["output_cap_parameter"], settings["options"]["num_predict"],
+             settings["model_timeout_seconds"], settings["max_selection_attempts"]),
+        )
+        self.assertIn("not_claimed_deterministic", settings["determinism"])
+
+        class Reply:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return json.dumps(self.body).encode("utf-8")
+
+        body = {"message": {"content": "partial"}, "done_reason": "length", "eval_count": 2048, "prompt_eval_count": 900}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(episode_driver, "urlopen", lambda request, timeout: Reply(body)):
+            with FakeDriver().session(output_dir=Path(tmp) / "episode", run_id="run") as session:
+                reply = session._model_response("p")
+        self.assertEqual(
+            ("partial", "length", 2048, 900, True),
+            (reply, reply.done_reason, reply.eval_count, reply.prompt_eval_count, reached_output_cap(reply)),
+        )
+
+        def unavailable(request, timeout):
+            raise TimeoutError("timed out")
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(episode_driver, "urlopen", unavailable):
+            with FakeDriver().session(output_dir=Path(tmp) / "episode", run_id="run") as session:
+                with self.assertRaises(EpisodeDriverError):
+                    session._model_response("p")
 
     def test_navigation_detour_is_sorted_and_never_the_expected_action(self) -> None:
         action = select_reversible_navigation_action(

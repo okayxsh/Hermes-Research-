@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -58,6 +59,11 @@ class BridgeUnitTests(unittest.TestCase):
     def test_validation_and_real_capability_fail_closed(self) -> None:
         with self.assertRaises(RequestValidationError):
             EpisodeStartRequest.from_payload({"task_id": "x", "split": "test", "seed": 1, "action_limit": 1})
-        capability = real_adapter_capability()
+        # Hermetic: the fail-closed contract must hold on hosts where real
+        # ALFWorld is installed, so the package and data are made absent here.
+        missing = Path(self.temp.name) / "no-alfworld-data"
+        with patch("rq1.bridge.adapters.capabilities.importlib.util.find_spec", return_value=None), \
+             patch("rq1.bridge.adapters.capabilities.default_data_dir", return_value=missing):
+            capability = real_adapter_capability()
         self.assertFalse(capability.available)
         self.assertIn("unverified", capability.details.lower())

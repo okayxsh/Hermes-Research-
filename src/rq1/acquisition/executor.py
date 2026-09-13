@@ -43,6 +43,7 @@ from rq1.acquisition.skill_pool import (
 )
 from rq1.experiment.models import ExperimentUnit, RunExecutionContext, RunFailure, RunOutcome
 from rq1.experiment.persistence import ExperimentStore
+from rq1.hermes.episode_driver import OUTPUT_CAP_REJECTION, reached_output_cap
 from rq1.retrieval.text import build_skill_text
 from rq1.skills.library import TASK_FAMILIES
 from rq1.utils.hashing import sha256_text
@@ -106,6 +107,7 @@ class AcquisitionEpisodeHarness:
                 "termination_reason": termination,
                 "episode_actions": actions,
                 "invalid_action_selections": session.invalid_model_actions,
+                "selection_rejections": dict(session.rejection_counts),
                 "skill_candidate": candidate,
                 "episode_events_log": str(output / "episode-events.jsonl"),
             }
@@ -144,6 +146,12 @@ class AcquisitionEpisodeHarness:
             "response_sha256": sha256_text(response),
         }
         base = {**generation, "response": response, "rejection_reasons": []}
+        if getattr(response, "done_reason", None) is not None:
+            base["done_reason"] = response.done_reason
+        if reached_output_cap(response):
+            # Decision 010: a candidate cut off at the output cap is an incomplete
+            # model answer, rejected without parsing; never an infrastructure failure.
+            return {**base, "status": "rejected", "rejection_reasons": [OUTPUT_CAP_REJECTION]}, None
         parsed = parse_skill_response(response)
         if parsed is None:
             return {**base, "status": "rejected", "rejection_reasons": ["format_invalid"]}, None
@@ -293,13 +301,15 @@ class RealAcquisitionExecutor:
                 action_limit=self.action_budget,
             )
         except Exception as exc:
-            # The pool changes only through committed results, so the mutation
-            # state is known and no skill can come from this failed attempt.
+            # Only genuine execution failures reach this point: invalid or capped
+            # model output is handled inside the episode (Decision 010).  The pool
+            # changes only through committed results, so the mutation state is
+            # known and no skill can come from this failed attempt.
             raise RunFailure(
                 f"acquisition infrastructure failure during {harness.stage}: {type(exc).__name__}: {exc}",
                 safe_to_continue=True,
                 mutation_state_known=True,
-                details={"stage": harness.stage, "error_type": type(exc).__name__, "skill_candidates": 0},
+                details={"stage": harness.stage, "error_type": type(exc).__name__, "skill_candidates": 0, "failure_class": "infrastructure"},
             ) from exc
         evidence = dict(harness.evidence)
         events_log = evidence.pop("episode_events_log")

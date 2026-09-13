@@ -37,7 +37,7 @@ The repository contains `scripts/setup_machine.sh`, the thin 00–09 stage wrapp
 No real apt packages, Ollama service, Hermes Agent installation, model pull, ALFWorld package, ALFWorld data, profile materialization, or GPU inference test was run while implementing the repository foundation. No live compatibility claim is made for:
 
 - Ubuntu 22.04 or 24.04 setup execution
-- Ollama serving or `hermes3:8b` inference
+- Ollama serving or `gemma4:12b` inference
 - Hermes installation, configuration, profiles, real tools, hooks, plugin discovery, or plugin behavior
 - ALFWorld 0.4.2 imports, downloader output, task data, or runtime API
 - live real bridge execution or real controlled recovery

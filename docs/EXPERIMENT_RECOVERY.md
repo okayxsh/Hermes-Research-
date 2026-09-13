@@ -80,9 +80,10 @@ RQ1_RUN_FINAL_EVALUATION=1 python3 -m rq1.cli evaluation resume \
   --backup-dir /workspace/persistent --require-backup
 ```
 
-These commands still refuse execution until the repository has an observed,
-approved real executor. This is intentional and must not be replaced by a fake
-fallback.
+Acquisition commands run the real executor but refuse until the task, environment,
+and protocol freezes are human-approved (see ACQUISITION_RUNBOOK.md). Evaluation
+commands remain capability-gated until acquisition outputs, snapshots, and
+activation evidence exist. Neither is ever replaced by a fake fallback.
 
 ## Status and backup
 

@@ -6,6 +6,7 @@
 - Amends: the Hermes action-selection prompt (`action-index-v1` becomes `action-index-history-v1`)
 - Applies identically to: acquisition and every recovery condition (NoLib, Clean-24, Accum-60, Accum-96)
 - Amended by: [Decision 009](009-observation-interface-corrections.md) (initial observation, inventory marker, ACTION_INDEX parsing)
+- Amended by: [Decision 010](010-gemma-backbone-and-model-output-failures.md) (output-token cap and model-output failure classification)
 
 No scientific result motivated this change. Multi-step ALFWorld control
 requires the agent to retain its own observable interaction history rather than

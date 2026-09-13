@@ -3,7 +3,7 @@
 Use only frozen `train` tasks. Start a fresh Hermes session for each task. The
 execution policy is frozen in [Decision 007](decisions/007-acquisition-execution-policy.md)
 and `configs/acquisition/protocol.yaml`: at most 50 environment actions per
-episode, no retrieval, and after a successful episode only the same `hermes3:8b`
+episode, no retrieval, and after a successful episode only the same `gemma4:12b`
 agent may write at most one create-only candidate skill. Candidates pass the
 deterministic Decision 003 validation; only exact normalized duplicates are
 rejected and near-duplicates are preserved. Action selection follows
@@ -11,6 +11,11 @@ rejected and near-duplicates are preserved. Action selection follows
 [Decision 009](decisions/009-observation-interface-corrections.md): the full
 episode history, the verbatim initial observation, a fixed not-observed
 inventory marker, and exactly one `ACTION_INDEX` line per response.
+[Decision 010](decisions/010-gemma-backbone-and-model-output-failures.md) freezes
+`gemma4:12b` (Q4_K_M), caps every model response at 2048 output tokens
+(`num_predict`), counts invalid or capped responses as action-selection attempt
+failures rather than infrastructure failures, and does not claim deterministic
+provider inference. Operational commands are in [ACQUISITION_RUNBOOK.md](ACQUISITION_RUNBOOK.md).
 
 The frozen queue is generated only from deterministic installed-data discovery
 (180 TRAIN tasks, 30 per family, `task-selection-v1`, seed 1). It is rejected if
@@ -34,6 +39,7 @@ chronological order. See `EXPERIMENT_RECOVERY.md`.
    then `--resume`, then `python -m rq1.cli acquisition check-report --run-id <id>`.
 3. `python -m rq1.cli acquisition prepare-approvals --proposal <proposal> --evidence-report <report>`
    writes three UNAPPROVED approval requests under `artifacts/approvals/acquisition/<commit>/`.
+   `python -m rq1.cli acquisition preflight` then verifies every technical launch gate except human approval.
 4. A human reviewer approves each request and runs its recorded command
    (`tasks freeze`, `freeze acquisition-environment`, `freeze acquisition-protocol`).
 5. `python -m rq1.cli acquisition plan` must report `launch_permitted: true`.

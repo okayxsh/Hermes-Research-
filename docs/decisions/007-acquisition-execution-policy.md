@@ -52,3 +52,11 @@ Skill generation is one deterministic inference with no retries. Raw responses,
 prompt hashes, validation outcomes, and provenance are recorded for every
 candidate. The machine-readable form is `configs/acquisition/protocol.yaml`,
 which must equal `rq1.acquisition.protocol.protocol_definition()`.
+
+## Amendment (2026-09-13, before scientific acquisition)
+
+[Decision 010](010-gemma-backbone-and-model-output-failures.md) makes `gemma4:12b` the
+same experimental agent referred to above (in place of `hermes3:8b`), caps every model
+response at 2048 output tokens, and classifies invalid or capped model responses as
+action-selection attempt failures rather than infrastructure failures. The historical
+text above is not rewritten.

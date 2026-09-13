@@ -16,8 +16,8 @@ This repository intentionally separates an implemented contract from evidence th
 | Real ALFWorld bridge | Version-specific 0.4.2 adapter code and injected-fixture tests; no live execution | Capability report plus immutable `valid_seen` start → step → status → reset → abort evidence on the target machine. |
 | Real controlled recovery | Deterministic fake recovery contract only | Observed real checkpoint replay equality, supported perturbation, validated solvability, and reconciled recovery evidence. |
 | Phase 6 full pilot | Deterministic 37-test runner and fake evidence only | Phase 7 real-mode reports showing all blocking installed, real-component, and real-integrated gates passed. |
-| `hermes3:8b` | Candidate identifier only | Ollama pull metadata/digest and a successful raw inference smoke test. |
-| `llama3.1:8b` fallback | Optional candidate identifier only | Explicit fallback installation flag, recorded digest, and separate smoke-test evidence. |
+| `gemma4:12b` | Frozen RQ1 backbone (Decision 010) | Installed digest, quantization, and provider settings recorded and enforced by the acquisition environment freeze. |
+| `llama3.1:8b` fallback | Withdrawn for RQ1 (Decision 010) | Setup diagnostics only; never used by the experiment. |
 
 ## Clean missing-capability behavior
 

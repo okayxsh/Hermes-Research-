@@ -14,10 +14,19 @@ from rq1.hermes.episode_driver import (
     ACTION_HISTORY_POLICY,
     ACTION_INDEX_PARSING_POLICY,
     ACTION_SELECTION_PROTOCOL,
+    BRIDGE_TIMEOUT_SECONDS,
+    DETERMINISM_POLICY,
+    EXPERIMENT_MODEL,
     INFERENCE_SEED,
+    INFRASTRUCTURE_FAILURE_POLICY,
     INITIAL_OBSERVATION_POLICY,
     INVENTORY_POLICY,
     MAX_SELECTION_ATTEMPTS,
+    MODEL_CONTEXT_LENGTH,
+    MODEL_OUTPUT_FAILURE_POLICY,
+    MODEL_QUANTIZATION,
+    MODEL_TIMEOUT_SECONDS,
+    OUTPUT_TOKEN_CAP,
 )
 from rq1.retrieval.text import SKILL_TEXT_VERSION
 from rq1.skills.library import TASK_FAMILIES
@@ -28,14 +37,17 @@ from rq1.tasks.selection import (
     ACQUISITION_TASKS_PER_FAMILY,
 )
 
-ACQUISITION_POLICY_VERSION = "acquisition-execution-v1"
+ACQUISITION_POLICY_VERSION = "acquisition-execution-v2"
 DECISION_RECORD = "docs/decisions/007-acquisition-execution-policy.md"
 ACTION_HISTORY_DECISION_RECORD = "docs/decisions/008-action-selection-episode-history.md"
 INTERFACE_DECISION_RECORD = "docs/decisions/009-observation-interface-corrections.md"
+MODEL_DECISION_RECORD = "docs/decisions/010-gemma-backbone-and-model-output-failures.md"
+DECISION_RECORDS = (DECISION_RECORD, ACTION_HISTORY_DECISION_RECORD, INTERFACE_DECISION_RECORD, MODEL_DECISION_RECORD)
 PROTOCOL_CONFIG = "configs/acquisition/protocol.yaml"
 ACQUISITION_SPLIT = "train"
 ACQUISITION_PROFILE = "rq1-acquisition"
-ACQUISITION_MODEL = "hermes3:8b"
+# Decision 010: selected after prelaunch capability validation, before acquisition.
+ACQUISITION_MODEL = EXPERIMENT_MODEL
 ACQUISITION_TEMPERATURE = 0
 ACQUISITION_ACTION_BUDGET = 50
 TASK_SELECTION_VERSION = "task-selection-v1"
@@ -84,6 +96,8 @@ def protocol_definition() -> dict[str, Any]:
         "fresh_session_per_task": True,
         "profile": ACQUISITION_PROFILE,
         "model": ACQUISITION_MODEL,
+        "model_quantization": MODEL_QUANTIZATION,
+        "model_decision_record": MODEL_DECISION_RECORD,
         "inference": {
             "temperature": ACQUISITION_TEMPERATURE,
             "seed": INFERENCE_SEED,
@@ -95,6 +109,16 @@ def protocol_definition() -> dict[str, Any]:
             "action_index_parsing": ACTION_INDEX_PARSING_POLICY,
             "interface_decision_record": INTERFACE_DECISION_RECORD,
             "max_selection_attempts": MAX_SELECTION_ATTEMPTS,
+            "think": False,
+            "output_token_cap": OUTPUT_TOKEN_CAP,
+            "output_cap_parameter": "options.num_predict",
+            "model_context_length": MODEL_CONTEXT_LENGTH,
+            "model_timeout_seconds": MODEL_TIMEOUT_SECONDS,
+            "bridge_timeout_seconds": BRIDGE_TIMEOUT_SECONDS,
+            "model_output_failure_policy": MODEL_OUTPUT_FAILURE_POLICY,
+            "infrastructure_failure_policy": INFRASTRUCTURE_FAILURE_POLICY,
+            "determinism": DETERMINISM_POLICY,
+            "model_decision_record": MODEL_DECISION_RECORD,
         },
         "scientific_retrieval_during_acquisition": False,
         "skill_creation": {
@@ -126,7 +150,8 @@ def protocol_definition() -> dict[str, Any]:
             "completion_authority": "results.jsonl",
             "skill_pool": "append-only; rebuilt from committed completed results in queue order; skill_pool.json is a derived atomic snapshot",
             "checkpoint": "atomic after every unit",
-            "infrastructure_failure": "failed result without skill; run halts for chronological retry-failed",
+            "infrastructure_failure": "genuine execution failures only (provider, bridge, environment, device, OS); failed result without skill; run halts for chronological retry-failed",
+            "model_output_failure": "invalid or output-capped responses consume action-selection attempts inside the episode and are never infrastructure failures",
             "resume": "fail closed on commit, runtime, configuration, queue, or skill-pool drift",
         },
     }

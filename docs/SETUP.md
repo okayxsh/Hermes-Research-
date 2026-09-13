@@ -11,7 +11,7 @@ This repository is for a reproducible agent-environment experiment. The machine 
 - The project environment uses Python 3.11, `uv`, `.venv`, and a committed `uv.lock`. The installation flow must use `uv sync --locked` rather than silently updating dependency resolutions.
 - ALFWorld is pinned to `alfworld==0.4.2` and installed without visual/THOR extras. Package installation and data availability are independent capabilities.
 - Ollama and Hermes are installed only through capability-gated stages based on their official Linux installation guidance. The resolved versions and installer hashes must be recorded rather than treated as permanently compatible.
-- The primary model is `hermes3:8b`. `llama3.1:8b` is an explicit fallback and must never be substituted silently.
+- The RQ1 backbone is `gemma4:12b` (Q4_K_M, [Decision 010](decisions/010-gemma-backbone-and-model-output-failures.md)). `llama3.1:8b` can be pulled explicitly for setup diagnostics only; it is not an RQ1 fallback and must never be substituted.
 - Hermes profiles are named `rq1-pilot` and `rq1-acquisition`. They must be isolated, created without bundled skills, and must not become the user's default profile.
 
 Official references used to define this setup contract:
@@ -36,7 +36,7 @@ The master entry point is `scripts/setup_machine.sh`. It executes these stages i
 | 04 | `04_install_hermes.sh` | Reuse or perform a per-user Hermes CLI installation with browser setup skipped, then capture help and capability probes. Bundled skills are disabled later when the isolated experiment profiles are created. Never modify an existing personal/default profile. |
 | 05 | `05_install_alfworld.sh` | Install and import-test pinned text-only ALFWorld, then verify that `alfworld-download` is discoverable. Do not download data in this stage. |
 | 06 | `06_download_alfworld_data.sh` | Reuse valid existing data or explicitly invoke the official downloader. Use `RQ1_ALFWORLD_DATA_DIR` when set; otherwise use an isolated experiment cache. |
-| 07 | `07_pull_candidate_models.sh` | Pull and inspect `hermes3:8b`, then run a deterministic raw-inference smoke test. Pull `llama3.1:8b` only when explicitly requested. |
+| 07 | `07_pull_candidate_models.sh` | Pull and inspect `gemma4:12b`, then run a raw-inference smoke test. Pull `llama3.1:8b` only when explicitly requested. |
 | 08 | `08_create_base_profiles.sh` | Delegate to the Phase 4 lifecycle for isolated `rq1-pilot` and `rq1-acquisition` profiles. Creation requires capability-confirmed no-skills, JSON inspection/location discovery, and project-plugin activation; it never assumes a profile path or config key. An installed Hermes version that does not advertise every required safe profile capability produces a preserved `blocked` result. |
 | 09 | `09_verify_installation.sh` | Re-probe dependencies, validate the profiles, and exercise the deterministic fake bridge over local HTTP. This diagnostic stage may run after a blocked Stage 08 to collect all other available evidence, while keeping real ALFWorld compatibility and installation readiness unverified. |
 
@@ -60,7 +60,7 @@ The exact command-line contract is:
 | `--skip-system-packages` | Do not run apt. The stage passes only if the required packages are already detected; otherwise setup remains incomplete. |
 | `--skip-model` | Do not pull a model. Existing model capability may be reused; otherwise installation readiness remains false. |
 | `--skip-alfworld-data` | Do not download ALFWorld data. Existing validated data may be reused; otherwise installation readiness and pilot readiness remain false. |
-| `--install-fallback-model` | Also pull `llama3.1:8b`. This never changes the primary model automatically. |
+| `--install-fallback-model` | Also pull `llama3.1:8b` for diagnostics only. It is not an RQ1 model and never changes the frozen backbone. |
 | `--force-stage <stage>` | Rerun the named stage and invalidate its downstream setup results. It must not delete installed software, models, data, profiles, or historical reports. |
 | `--verbose` | Print expanded progress and redacted command diagnostics. Secrets must remain redacted. |
 

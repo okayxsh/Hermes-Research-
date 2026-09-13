@@ -225,7 +225,7 @@ model/runtime, configuration, activation, or library-hash drift.
 The prior dry-run report states that Kaggle successfully demonstrated Python
 3.11, repository config/checkpoint tests, ALFWorld 0.4.2 and a real
 `valid_seen` start → step → reset/abort smoke, Ollama after installing `zstd`,
-`hermes3:8b` returning `READY`, and Hermes Agent 0.21.1 installation. The
+`gemma4:12b` returning `READY`, and Hermes Agent 0.21.1 installation. The
 Hermes installer may open an interactive wizard, so the bootstrap captures the
 installer and uses the repository's non-browser/no-skills flags. These are
 portable preparation findings, not evidence that the current RunPod machine has

@@ -2,7 +2,7 @@
 
 This repository provides a reproducible foundation for a controlled-recovery experiment: whether a persistent agent's naturally accumulated skill library helps it recover from plan-invalidating ALFWorld failures or creates post-failure retrieval noise. The public documentation intentionally describes implementation boundaries without claiming untested integrations.
 
-The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, a capability-gated ALFWorld 0.4.2 text-adapter implementation, a capability-gated project-local Hermes plugin boundary, and the typed Phase 6 pilot runner. Hermes, Ollama, models, ALFWorld data/runtime, real bridge execution, and real Hermes plugin dispatch remain unverified.
+The currently tested local layer includes configuration loading, stage state and reports, SQLite run claiming, synthetic episodes, snapshot validation, leakage checks, metrics, schemas, CI, a deterministic fake ALFWorld HTTP bridge, a capability-gated ALFWorld 0.4.2 text-adapter implementation, a capability-gated project-local Hermes plugin boundary, and the typed Phase 6 pilot runner. Hermes, Ollama, models, ALFWorld data/runtime, real bridge execution, and real Hermes plugin dispatch remain unverified. (Update 2026-09-13: on the RunPod deployment the real ALFWorld bridge, Hermes plugin dispatch, Ollama `gemma4:12b`, and the acquisition executor have since been exercised in non-scientific prelaunch checks; see [docs/ACQUISITION_RUNBOOK.md](docs/ACQUISITION_RUNBOOK.md) and Decisions 007–010.)
 
 ## Local development quick start
 

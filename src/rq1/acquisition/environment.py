@@ -16,7 +16,7 @@ from urllib.request import urlopen
 from rq1.acquisition.protocol import ACQUISITION_MODEL
 from rq1.acquisition.skill_creation import prompt_hashes
 from rq1.experiment.persistence import bind_repository_configuration, runtime_manifest
-from rq1.hermes.episode_driver import INFERENCE_SEED
+from rq1.hermes.episode_driver import INFERENCE_SEED, provider_settings
 from rq1.utils.hashing import sha256_file
 
 HERMES_INSTALL_DIR = Path("/usr/local/lib/hermes-agent")
@@ -36,6 +36,8 @@ ENFORCED_AT_LAUNCH = (
     "ollama_version",
     "model_tag",
     "model_digest",
+    "model_quantization",
+    "provider_settings",
     "inference_seed",
     "prompt_hashes",
     "config_hashes",
@@ -65,6 +67,14 @@ def model_digest(tag: str) -> str | None:
         if isinstance(item, dict) and item.get("name") in {tag, f"{tag}:latest"}:
             return item.get("digest")
     return None
+
+
+def model_details(tag: str) -> dict[str, Any]:
+    for item in _ollama("/api/tags").get("models", []):
+        if isinstance(item, dict) and item.get("name") in {tag, f"{tag}:latest"}:
+            details = item.get("details")
+            return dict(details) if isinstance(details, dict) else {}
+    return {}
 
 
 def hermes_version() -> str | None:
@@ -111,6 +121,9 @@ def observed_environment(
         "ollama_version": _ollama("/api/version").get("version"),
         "model_tag": ACQUISITION_MODEL,
         "model_digest": model_digest(ACQUISITION_MODEL),
+        "model_quantization": model_details(ACQUISITION_MODEL).get("quantization_level"),
+        "model_parameter_size": model_details(ACQUISITION_MODEL).get("parameter_size"),
+        "provider_settings": provider_settings(),
         "inference_seed": INFERENCE_SEED,
         "sbert_model": SBERT_MODEL,
         "sbert_revision": SBERT_REVISION,

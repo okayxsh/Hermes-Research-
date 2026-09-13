@@ -16,6 +16,8 @@ from rq1.acquisition.real_executor import run_acquisition_episode
 from rq1.evaluation.recovery_executor import RecoveryEpisodeResult, RecoveryEpisodeSpec, run_recovery_episode
 from rq1.hermes.episode_driver import (
     ACTION_SELECTION_PROTOCOL,
+    EXPERIMENT_MODEL,
+    OUTPUT_TOKEN_CAP,
     INFERENCE_SEED,
     MAX_SELECTION_ATTEMPTS,
     RealEpisodeDriver,
@@ -126,7 +128,8 @@ def run_prelaunch_pilot(
         "valid_seen_task_id": valid_seen_task_id,
         "seed": seed,
         "model_inference": {
-            "model": "hermes3:8b",
+            "model": EXPERIMENT_MODEL,
+            "output_token_cap": OUTPUT_TOKEN_CAP,
             "temperature": 0,
             "seed": INFERENCE_SEED,
             "action_selection_protocol": ACTION_SELECTION_PROTOCOL,

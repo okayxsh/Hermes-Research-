@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from rq1.pilot.models import EvidenceLevel
 from rq1.pilot.real_runtime.base import RealExecutionContext, blocked, failed, passed
 
-APPROVED = {"hermes3:8b", "llama3.1:8b"}
+APPROVED = {"gemma4:12b"}  # Decision 010: the frozen RQ1 backbone only.
 
 def _api(path: str, payload: dict | None = None) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
@@ -21,7 +21,7 @@ def _api(path: str, payload: dict | None = None) -> dict:
 
 def probe(context: RealExecutionContext):
     if context.candidate_model not in APPROVED:
-        return blocked("unapproved_model", "Only approved candidate models may be used.", "Use hermes3:8b or explicitly selected llama3.1:8b.")
+        return blocked("unapproved_model", "Only approved candidate models may be used.", "Use the frozen RQ1 backbone gemma4:12b (Decision 010).")
     try:
         version = _api("/api/version")
         tags = _api("/api/tags")

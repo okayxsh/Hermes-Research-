@@ -82,7 +82,7 @@ class FakePilotRuntime:
         if index == 2:
             return {"installation_ready": True, "components": ["python", "ollama", "hermes", "alfworld", "model"], "installed": False}
         if index == 3:
-            return {"model": "hermes3:8b", "digest": _sha("fake-hermes3:8b"), "responses": ["ready", "ready", "ready"], "latency_ms": [10, 10, 10]}
+            return {"model": "gemma4:12b", "digest": _sha("fake-gemma4:12b"), "responses": ["ready", "ready", "ready"], "latency_ms": [10, 10, 10]}
         if index == 4:
             return {"tool": "echo_test", "expected": {"message": "phase6"}, "observed": {"message": "phase6"}, "repetitions": 3, "malformed": 0}
         if index == 5:
@@ -176,7 +176,7 @@ class FakePilotRuntime:
         if index == 33:
             return {"labels": {"relevant": 2, "irrelevant": 1, "no_retrieval": 1, "ambiguous": 1}, "audit_sample_size": 5, "used_valid_unseen": False}
         if index == 34:
-            return {"candidate": "hermes3:8b", "decision": "simulated_accept", "fallback_tested": False, "deepseek_tested": False, "final_model_frozen": False}
+            return {"candidate": "gemma4:12b", "decision": "simulated_accept", "fallback_tested": False, "deepseek_tested": False, "final_model_frozen": False}
         if index == 35:
             return {"checkpoint_source": "deterministic_valid_prefix", "checkpoint_policy": "trajectory_fraction_provisional", "perturbation_type": "target_object_relocation_provisional", "solvability_method": "known_route_provisional", "recovery_context": "phase5_versioned_context", "action_limit": 12, "timeout_seconds": 900, "exclusion_policy": "invalid_checkpoint_or_perturbation_excluded_separately", "approval_state": "unapproved"}
         return {"report_generated": True, "real_evidence_promoted": False, "phase7_required": True}

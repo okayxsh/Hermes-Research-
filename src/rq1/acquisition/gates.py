@@ -23,7 +23,7 @@ from rq1.acquisition.protocol import (
 from rq1.experiment.models import canonical_hash
 from rq1.freeze.models import FreezeManifest
 from rq1.freeze.validation import git_state, read_freeze
-from rq1.hermes.episode_driver import INFERENCE_SEED
+from rq1.hermes.episode_driver import INFERENCE_SEED, MODEL_QUANTIZATION
 from rq1.skills.library import TASK_FAMILIES
 from rq1.tasks.models import TaskManifest, TaskRecord
 from rq1.tasks.selection import ACQUISITION_INITIAL_TASKS, ACQUISITION_TASKS_PER_FAMILY
@@ -155,6 +155,8 @@ def validate_acquisition_gates(root: Path, *, task_manifest_path: Path | None = 
             reasons.append("acquisition protocol freeze action budget differs from the frozen budget")
     if environment is not None and environment.inputs.get("model_tag") != ACQUISITION_MODEL:
         reasons.append("acquisition environment freeze model differs from the frozen model")
+    if environment is not None and environment.inputs.get("model_quantization") != MODEL_QUANTIZATION:
+        reasons.append("acquisition environment freeze model quantization differs from the frozen quantization")
     if environment is not None and protocol is not None and environment.inputs.get("prompt_hashes") != protocol.inputs.get("prompt_hashes"):
         reasons.append("environment/protocol freeze prompt hashes differ")
     if environment is not None and manifest is not None and environment.inputs.get("alfworld_data_identity") != manifest.data_root_identity:

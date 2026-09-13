@@ -136,8 +136,10 @@ class RealALFWorldAdapterTests(unittest.TestCase):
         self.assertIsInstance(FakeALFWorldAdapter(), FakeALFWorldAdapter)
 
     def test_real_http_mode_and_cli_are_explicitly_gated(self) -> None:
+        # Hermetic: real mode must refuse without indexed ALFWorld data even on
+        # hosts where the real dataset is installed.
         with self.assertRaises(BridgeError) as raised:
-            create_bridge_server(self.root / "logs", port=0, mode="real")
+            create_bridge_server(self.root / "logs", port=0, mode="real", data_dir=self.root / "no-alfworld-data")
         self.assertEqual(503, raised.exception.status_code)
         from rq1.cli import build_parser
         parsed = build_parser().parse_args(["alfworld", "smoke-test", "--split", "valid_seen", "--yes"])

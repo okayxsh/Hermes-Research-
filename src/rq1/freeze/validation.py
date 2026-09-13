@@ -29,7 +29,7 @@ ACQUISITION_ENVIRONMENT_REQUIRED = {
     "repository_commit", "branch", "hostname", "gpu", "gpu_driver", "python_version",
     "python_executable", "python_environment", "dependency_lock_sha256", "packages",
     "alfworld_version", "alfworld_data_identity", "hermes_version", "hermes_commit",
-    "ollama_version", "model_tag", "model_digest", "inference_seed", "sbert_model",
+    "ollama_version", "model_tag", "model_digest", "model_quantization", "provider_settings", "inference_seed", "sbert_model",
     "sbert_revision", "sbert_snapshot_sha256", "task_queue_sha256", "prompt_hashes", "config_hashes",
 }
 ACQUISITION_PROTOCOL_REQUIRED = {

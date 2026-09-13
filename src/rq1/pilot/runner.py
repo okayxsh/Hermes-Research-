@@ -21,8 +21,8 @@ from rq1.utils.ids import new_attempt_id
 from rq1.utils.time import utc_now
 
 
-PRIMARY_MODEL = "hermes3:8b"
-FALLBACK_MODEL = "llama3.1:8b"
+# Decision 010: the only RQ1 backbone; the Llama 3.1 fallback is withdrawn.
+PRIMARY_MODEL = "gemma4:12b"
 
 
 def _hash_bytes(value: bytes) -> str:
@@ -178,8 +178,8 @@ class PilotRunner:
 
     @staticmethod
     def _validate_model(candidate_model: str) -> None:
-        if candidate_model not in {PRIMARY_MODEL, FALLBACK_MODEL}:
-            raise ValueError("candidate model must be hermes3:8b or llama3.1:8b; DeepSeek is out of scope")
+        if candidate_model != PRIMARY_MODEL:
+            raise ValueError(f"candidate model must be the frozen RQ1 backbone {PRIMARY_MODEL} (Decision 010)")
 
 
 def add_manual_evidence(root: Path, run_id: str, test_id: str, source: Path, level: EvidenceLevel) -> dict[str, Any]:

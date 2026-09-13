@@ -5,6 +5,7 @@
 - Timing: frozen before the scientific acquisition run; no scientific acquisition data existed when it was made
 - Amends: the Decision 008 action-selection prompt (`action-index-history-v1` becomes `action-index-history-v2`) and the unobserved-inventory text of the retrieval query (`query-v1` becomes `query-v2`)
 - Applies identically to: acquisition and every recovery condition (NoLib, Clean-24, Accum-60, Accum-96)
+- Amended by: [Decision 010](010-gemma-backbone-and-model-output-failures.md) (`action-index-history-v2` becomes `action-index-history-v3`: output-token cap and model-output failure classification)
 
 ## Why
 

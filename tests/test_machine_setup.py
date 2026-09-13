@@ -436,19 +436,19 @@ class SetupModelsAndParsingTests(unittest.TestCase):
             def fake_http(url: str, payload: bytes | None, timeout: int) -> dict[str, object]:
                 del payload, timeout
                 if url.endswith("/api/tags"):
-                    return {"models": [{"name": "hermes3:8b", "digest": "sha256:test"}]}
+                    return {"models": [{"name": "gemma4:12b", "digest": "sha256:test"}]}
                 if url.endswith("/api/show"):
                     return {"details": {"family": "llama"}}
                 if url.endswith("/api/generate"):
                     return {"response": "READY"}
                 if url.endswith("/api/ps"):
-                    return {"models": [{"name": "hermes3:8b", "context_length": 65536}]}
+                    return {"models": [{"name": "gemma4:12b", "context_length": 65536}]}
                 raise AssertionError(url)
 
             ctx = StageContext(root, SetupOptions(), runner, http_json=fake_http)
             outcome = run_candidate_models(ctx)
             self.assertEqual("passed", outcome.status)
-            self.assertIn(("ollama", "pull", "hermes3:8b"), runner.commands)
+            self.assertIn(("ollama", "pull", "gemma4:12b"), runner.commands)
             self.assertNotIn(("ollama", "pull", "llama3.1:8b"), runner.commands)
 
     def test_profile_verification_fails_closed_without_observed_json_inspection(self) -> None:

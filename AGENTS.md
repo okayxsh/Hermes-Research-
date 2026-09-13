@@ -11,7 +11,7 @@ The scientific retrieval mechanism is **Sentence-BERT embeddings + cosine simila
 ## Hard constraints
 
 - Do not use DeepSeek or DeepSeek-R1 derivatives.
-- Model candidates are Hermes 3 Llama 3.1 8B, then Llama 3.1 8B Instruct only if the pilot requires it.
+- The RQ1 backbone is `gemma4:12b` (Decision 010). Do not substitute, add, or fall back to another model.
 - Scientific retrieval is Sentence-BERT (`all-mpnet-base-v2`) → cosine → top-3. Hermes-native skill loading is compatibility/diagnostic evidence only and must never feed Precision@3 or Retrieval Noise. Do not add LangChain, LangGraph, or a vector database.
 - Use ALFWorld text tasks: `train` for acquisition, `valid_seen` for pilots, and untouched `valid_unseen` only for final evaluation.
 - Use one repository and isolated Hermes profiles. Experimental profiles contain no bundled skills.

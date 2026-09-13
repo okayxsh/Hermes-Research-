@@ -59,7 +59,7 @@ class PilotTests(unittest.TestCase):
     def test_registry_transitions_and_stale_running(self) -> None:
         registry = PilotRegistry(self.root)
         run_id = "phase6-fake-registry"
-        registry.create(run_id, "fake", "fingerprint", ["pilot_00"], "hermes3:8b")
+        registry.create(run_id, "fake", "fingerprint", ["pilot_00"], "gemma4:12b")
         registry.transition(run_id, "pilot_00", PilotStatus.RUNNING, attempt_id="a")
         self.assertEqual(["pilot_00"], registry.mark_stale_running_interrupted(run_id))
         registry.transition(run_id, "pilot_00", PilotStatus.RUNNING, attempt_id="b")
@@ -101,8 +101,8 @@ class PilotTests(unittest.TestCase):
     def test_resume_restarts_interrupted_test_with_new_attempt(self) -> None:
         registry = PilotRegistry(self.root)
         run_id = "phase6-fake-interrupted"
-        fingerprint = input_fingerprint(self.root, PilotMode.FAKE, "hermes3:8b")
-        registry.create(run_id, "fake", fingerprint, ["pilot_00"], "hermes3:8b")
+        fingerprint = input_fingerprint(self.root, PilotMode.FAKE, "gemma4:12b")
+        registry.create(run_id, "fake", fingerprint, ["pilot_00"], "gemma4:12b")
         registry.transition(run_id, "pilot_00", PilotStatus.RUNNING, attempt_id="old-attempt")
         PilotRunner(self.root).resume(run_id)
         state = registry.load(run_id)
@@ -128,7 +128,7 @@ class PilotTests(unittest.TestCase):
     def test_manual_evidence_is_hashed_and_does_not_change_status(self) -> None:
         registry = PilotRegistry(self.root)
         run_id = "phase6-fake-manual"
-        registry.create(run_id, "fake", "fingerprint", ["pilot_00"], "hermes3:8b")
+        registry.create(run_id, "fake", "fingerprint", ["pilot_00"], "gemma4:12b")
         source = self.root / "manual.json"; source.write_text('{"observed":true,"api_token":"secret"}\n', encoding="utf-8")
         evidence = add_manual_evidence(self.root, run_id, "pilot_00", source, EvidenceLevel.STATIC)
         self.assertEqual(64, len(evidence["sha256"]))

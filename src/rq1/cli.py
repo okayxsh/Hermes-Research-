@@ -502,6 +502,8 @@ def command_acquisition(root: Path, args: argparse.Namespace) -> int:
         payload = launch.prelaunch_check(root, args)
     elif command == "check-report":
         payload = launch.check_report(root, args.run_id)
+    elif command == "preflight":
+        payload = launch.production_preflight(root, args)
     else:
         payload = launch.prepare_approvals(root, Path(args.proposal), Path(args.evidence_report))
     print(json.dumps(payload, indent=2, sort_keys=True))
@@ -808,7 +810,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_pilot_selection(pilot_plan)
     pilot_run = pilot_sub.add_parser("run")
     pilot_run.add_argument("--mode", choices=("fake", "real"), required=True)
-    pilot_run.add_argument("--candidate-model", choices=("hermes3:8b", "llama3.1:8b"), default="hermes3:8b")
+    pilot_run.add_argument("--candidate-model", choices=("gemma4:12b",), default="gemma4:12b")
     pilot_run.add_argument("--dry-run", action="store_true")
     pilot_run.add_argument("--yes", action="store_true")
     pilot_run.add_argument("--confirm-destructive", action="store_true")
@@ -868,6 +870,8 @@ def build_parser() -> argparse.ArgumentParser:
     item.add_argument("--run-id", required=True); item.add_argument("--task-id", action="append"); item.add_argument("--max-runs", type=int); item.add_argument("--resume", action="store_true")
     item.add_argument("--model", help="Ollama model for this NON-SCIENTIFIC check only (default: the frozen acquisition model).")
     item = acquisition_sub.add_parser("check-report"); item.add_argument("--run-id", required=True)
+    item = acquisition_sub.add_parser("preflight", help="Technical production preflight: every acquisition run gate except human approval; starts no episode.")
+    item.add_argument("--run-id"); item.add_argument("--proposal"); item.add_argument("--approval-dir"); item.add_argument("--backup-dir")
     item = acquisition_sub.add_parser("prepare-approvals", help="Write UNAPPROVED acquisition approval requests; never approves.")
     item.add_argument("--proposal", required=True); item.add_argument("--evidence-report", required=True)
     snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")

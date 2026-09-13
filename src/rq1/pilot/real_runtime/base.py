@@ -31,7 +31,7 @@ class RealExecutionContext:
     run_id: str
     attempt_id: str
     output_dir: Path
-    candidate_model: str = "hermes3:8b"
+    candidate_model: str = "gemma4:12b"
 
     def snapshot(self) -> CapabilitySnapshot:
         alfworld = real_adapter_capability().to_dict()

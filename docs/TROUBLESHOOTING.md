@@ -63,7 +63,7 @@ Run `python -m rq1.cli alfworld capabilities`. The adapter supports exactly inst
 
 ### Model missing or smoke test fails
 
-`--skip-model` prevents a pull but does not create a pass. The primary model remains `hermes3:8b`. Install the fallback only with `--install-fallback-model`; never silently change model selection after a failure.
+`--skip-model` prevents a pull but does not create a pass. The RQ1 backbone remains `gemma4:12b` (Decision 010). `--install-fallback-model` pulls `llama3.1:8b` for diagnostics only; never change model selection after a failure.
 
 ### Fake bridge passes but pilot is blocked
 

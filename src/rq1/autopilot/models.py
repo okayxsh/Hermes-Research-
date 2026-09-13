@@ -19,7 +19,7 @@ def canonical_hash(value: Any) -> str:
 @dataclass(frozen=True)
 class RunPlan:
     schema_version: int; run_plan_id: str; mode: str; repository_commit: str | None
-    primary_model: str = "hermes3:8b"; fallback_model: str = "llama3.1:8b"; model_digest: str | None = None
+    primary_model: str = "gemma4:12b"; fallback_model: str | None = None; model_digest: str | None = None
     hermes_version: str | None = None; ollama_version: str | None = None; alfworld_version: str | None = None; alfworld_data_digest: str | None = None; python_version: str | None = None
     task_splits: dict[str, str] = field(default_factory=lambda: {"acquisition":"train", "pilot":"valid_seen", "evaluation":"valid_unseen"})
     acquisition_task_count: int | None = None; evaluation_task_count: int | None = None; task_family_balancing_policy: str | None = None

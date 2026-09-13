@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
-from rq1.acquisition.environment import observed_environment, verify_launch_environment
+from rq1.acquisition.environment import model_digest, observed_environment, verify_launch_environment
+from rq1.acquisition.protocol import DECISION_RECORDS
 from rq1.acquisition.executor import RealAcquisitionExecutor
 from rq1.acquisition.gates import (
     load_task_manifest,
@@ -40,15 +43,26 @@ from rq1.acquisition.reporting import write_report
 from rq1.acquisition.runner import AcquisitionError, AcquisitionRunner
 from rq1.acquisition.skill_creation import prompt_hashes
 from rq1.acquisition.skill_pool import EMPTY_POOL_HASH, SkillPoolError, pool_hash, rebuild_pool, verify_snapshot
-from rq1.bridge.adapters.capabilities import default_data_dir
+from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
 from rq1.bridge.adapters.task_index import _resolve_task_family
 from rq1.experiment.models import canonical_hash
-from rq1.experiment.persistence import ExperimentStore, atomic_write_json, durable_append_jsonl
+from rq1.experiment.persistence import ExperimentStateError, ExperimentStore, atomic_write_json, durable_append_jsonl
 from rq1.experiment.runner import RunnerOptions
-from rq1.freeze.validation import ACQUISITION_EVIDENCE_MODE, git_state
-from rq1.hermes.episode_driver import ACTION_SELECTION_PROTOCOL, INFERENCE_SEED, MAX_SELECTION_ATTEMPTS, RealEpisodeDriver
+from rq1.freeze.validation import ACQUISITION_ENVIRONMENT_REQUIRED, ACQUISITION_EVIDENCE_MODE, git_state
+from rq1.hermes.episode_driver import (
+    ACTION_SELECTION_PROTOCOL,
+    INFERENCE_SEED,
+    MAX_SELECTION_ATTEMPTS,
+    MODEL_CONTEXT_LENGTH,
+    MODEL_QUANTIZATION,
+    MODEL_TIMEOUT_SECONDS,
+    OUTPUT_TOKEN_CAP,
+    RealEpisodeDriver,
+    provider_settings,
+)
 from rq1.skills.leakage import find_leakage
 from rq1.tasks.discovery import CANONICAL_FAMILIES, discover_tasks
+from rq1.tasks.selection import ACQUISITION_INITIAL_TASKS
 from rq1.utils.hashing import sha256_file
 from rq1.utils.time import utc_now
 
@@ -79,6 +93,9 @@ def run_configuration(
             "environment_seed": ACQUISITION_ENVIRONMENT_SEED,
             "skill_generation_protocol": SKILL_GENERATION_PROTOCOL,
             "skill_generation_attempts": SKILL_GENERATION_ATTEMPTS,
+            "output_token_cap": OUTPUT_TOKEN_CAP,
+            "model_context_length": MODEL_CONTEXT_LENGTH,
+            "model_timeout_seconds": MODEL_TIMEOUT_SECONDS,
         },
         "protocol_sha256": protocol_sha256(),
         "queue_sha256": queue_sha256,
@@ -288,11 +305,60 @@ def _real_episode_evidence(directory: Path, record: Mapping[str, Any]) -> bool:
     return False
 
 
+def attempt_lineage(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Separate authorized retry lineage from duplicate completed unit executions.
+
+    A unit may have several attempts only when every earlier attempt failed and
+    each later attempt names its predecessor as an authorized ``retry_failed``
+    successor.  The last attempt is the authoritative outcome; failure history
+    is reported, never discarded.
+    """
+    by_key: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        by_key.setdefault(str(row.get("run_key")), []).append(row)
+    problems: list[str] = []
+    duplicates = 0
+    retried: list[dict[str, Any]] = []
+    for key, attempts in by_key.items():
+        duplicates += max(0, sum(item.get("status") == "completed" for item in attempts) - 1)
+        for previous, current in zip(attempts, attempts[1:]):
+            if previous.get("status") != "failed":
+                problems.append(f"{key}: attempt {current.get('attempt_id')} follows a non-failed attempt")
+            if current.get("supersedes_attempt_id") != previous.get("attempt_id") or current.get("retry_reason") != "retry_failed":
+                problems.append(f"{key}: attempt {current.get('attempt_id')} is not an authorized retry of its predecessor")
+        if len(attempts) > 1:
+            final = attempts[-1]
+            retried.append({
+                "run_key": key,
+                "task_id": final.get("task_id"),
+                "attempts": [
+                    {
+                        "attempt_id": item.get("attempt_id"),
+                        "attempt_index": item.get("attempt_index"),
+                        "status": item.get("status"),
+                        "supersedes_attempt_id": item.get("supersedes_attempt_id"),
+                        "retry_reason": item.get("retry_reason"),
+                        "errors": item.get("errors"),
+                        "timestamp": item.get("timestamp"),
+                    }
+                    for item in attempts
+                ],
+                "authoritative_attempt_id": final.get("attempt_id"),
+                "authoritative_status": final.get("status"),
+                "authoritative_success": final.get("success"),
+            })
+    return {"authorized": not problems, "problems": problems, "duplicate_completed_units": duplicates, "retried_units": retried}
+
+
 def check_report(root: Path, run_id: str) -> dict[str, Any]:
     store = ExperimentStore(root, run_id, base=root / CHECK_BASE)
     if not run_id.startswith(CHECK_PREFIX) or not store.manifest_path.is_file():
         return {"ok": False, "status": "blocked", "reason": "unknown non-scientific acquisition check"}
-    results = store.terminal_results(phase="acquisition", repair_tail=False)
+    lineage = attempt_lineage([row for row in store.read_results(repair_tail=False) if row.get("phase") == "acquisition"])
+    try:
+        results = store.terminal_results(phase="acquisition", repair_tail=False)
+    except ExperimentStateError:
+        results = {}
     records = sorted(results.values(), key=lambda item: int(item.get("task_index", 0)))
     completed = [item for item in records if item.get("status") == "completed"]
     configuration = json.loads((store.manifests / "acquisition.json").read_text(encoding="utf-8")).get("configuration", {})
@@ -321,7 +387,11 @@ def check_report(root: Path, run_id: str) -> dict[str, Any]:
         "skill_pool_size_hash_updated": bool(pool) and pool_hash(pool) != EMPTY_POOL_HASH and checkpoint_pool.get("hash") == pool_hash(pool) and checkpoint_pool.get("size") == len(pool),
         "later_unit_observed_restored_pool": any(int(item.get("skill_pool_size_before") or 0) >= 1 for item in completed),
         "resume_invocation_observed": len(invocations) >= 2 and any(item.get("mode") == "resume" for item in invocations),
-        "no_completed_unit_rerun": len(store.read_results(repair_tail=False)) == len(results),
+        "authorized_retry_lineage": lineage["authorized"] and bool(results),
+        "no_duplicate_completed_units": lineage["duplicate_completed_units"] == 0,
+        "no_unresolved_infrastructure_failures": bool(records) and all(item.get("status") == "completed" for item in records),
+        "final_model_identity": configuration.get("model_name") == ACQUISITION_MODEL,
+        "output_token_cap_active": runtime.get("output_token_cap") == OUTPUT_TOKEN_CAP,
         "no_scientific_retrieval": bool(completed) and all(item.get("scientific_retrieval_count") == 0 and not item.get("retrieved_skill_ids") for item in completed),
         "single_clean_commit": bool(clean) and bool(invocations) and all(item.get("repository_commit") == commit and item.get("clean") is True for item in invocations),
     }
@@ -357,6 +427,7 @@ def check_report(root: Path, run_id: str) -> dict[str, Any]:
             "hash": pool_hash(pool),
             "skills": [{"skill_id": skill.skill_id, "task_family": skill.task_family, "source_task_id": skill.source_task_id, "text": skill.text} for skill in pool],
         },
+        "attempt_lineage": lineage,
         "output_directory": str(store.directory),
     }
     path = store.directory / CHECK_REPORT
@@ -383,6 +454,9 @@ def validate_run(root: Path, run_id: str) -> dict[str, Any]:
         problems.append("scientific retrieval occurred during acquisition")
     if any(item.get("scientific_evidence") is not True for item in completed):
         problems.append("completed result is not marked as scientific evidence")
+    lineage = attempt_lineage([row for row in store.read_results(repair_tail=False) if row.get("phase") == "acquisition"])
+    if lineage["duplicate_completed_units"] or not lineage["authorized"]:
+        problems.append("acquisition results contain a duplicate completed unit or an unauthorized retry")
     return {
         "ok": not problems,
         "status": "valid" if not problems else "invalid",
@@ -394,6 +468,8 @@ def validate_run(root: Path, run_id: str) -> dict[str, Any]:
         "skill_pool_size": len(pool),
         "skill_pool_hash": pool_hash(pool),
         "skills_per_family": dict(Counter(skill.task_family for skill in pool)),
+        "retried_units": len(lineage["retried_units"]),
+        "duplicate_completed_units": lineage["duplicate_completed_units"],
     }
 
 
@@ -451,7 +527,8 @@ def prepare_approvals(root: Path, proposal_path: Path, evidence_path: Path) -> d
             "inputs": observed_environment(root, task_queue_sha256=queue_sha, alfworld_data_identity=proposal.data_root_identity),
             "evidence_report": evidence_reference,
             "attestation": [
-                "The recorded commit, Python environment, ALFWorld data, Hermes, Ollama, and hermes3:8b digest are the approved acquisition environment.",
+                f"The recorded commit, Python environment, ALFWorld data, Hermes, Ollama, {ACQUISITION_MODEL} ({MODEL_QUANTIZATION}) digest, and provider settings (num_predict {OUTPUT_TOKEN_CAP}, num_ctx {MODEL_CONTEXT_LENGTH}, temperature 0, seed {INFERENCE_SEED}, think false) are the approved acquisition environment.",
+                "Seed and temperature are fixed, but provider/model inference is not claimed to be deterministic (Decision 010).",
                 "The referenced NON-SCIENTIFIC acquisition check passed at this commit and is not scientific data.",
                 "A resume on replacement hardware must reproduce every enforced identity; host name and GPU are recorded only.",
             ],
@@ -471,11 +548,13 @@ def prepare_approvals(root: Path, proposal_path: Path, evidence_path: Path) -> d
                 "inference_seed": INFERENCE_SEED,
                 "prompt_hashes": prompt_hashes(root),
                 "decision_record_sha256": sha256_file(root / DECISION_RECORD),
+                "decision_records_sha256": {record: sha256_file(root / record) for record in DECISION_RECORDS},
             },
             "evidence_report": evidence_reference,
             "attestation": [
                 "Decision 007 was made on 2026-09-13 before any scientific acquisition data existed.",
-                "The acquisition protocol is: 50-action budget; fresh session per task; no retrieval; the same hermes3:8b agent writes at most one create-only candidate after success; exact-normalized duplicate rejection only; no retrospective deduplication; results-authoritative skill pool; fail-closed resume.",
+                f"The acquisition protocol is: 50-action budget; fresh session per task; no retrieval; the same {ACQUISITION_MODEL} agent writes at most one create-only candidate after success; exact-normalized duplicate rejection only; no retrospective deduplication; results-authoritative skill pool; fail-closed resume.",
+                f"Decision 010 was made on 2026-09-13 before any scientific acquisition data existed: {ACQUISITION_MODEL} is the backbone; every model response is capped at {OUTPUT_TOKEN_CAP} output tokens; invalid or capped responses consume one of three action-selection attempts and are never infrastructure failures; infrastructure failures are genuine execution failures only.",
             ],
             "how_to_approve": how,
             "command": f"python -m rq1.cli freeze acquisition-protocol --approval-file {paths['acquisition-protocol']} --pilot-report {evidence_path} --yes",
@@ -491,3 +570,180 @@ def prepare_approvals(root: Path, proposal_path: Path, evidence_path: Path) -> d
         "proposal_manifest_sha256": proposal.manifest_sha256,
         "protocol_sha256": protocol_sha256(),
     }
+
+
+PRODUCTION_RUN_ID = "rq1-acquisition-gemma4-12b"
+PRODUCTION_BACKUP_DIR = "/workspace/persistent/backups"
+PREFLIGHT_BASE = Path("artifacts") / "prelaunch" / "production-preflight"
+HERMES_PYTHON = Path("/usr/local/lib/hermes-agent/venv/bin/python")
+APPROVAL_REQUEST_NAMES = ("task-freeze", "acquisition-environment", "acquisition-protocol")
+# Gate reasons that only mean the human-approved freezes do not exist yet.
+APPROVAL_PENDING_REASONS = frozenset({
+    "exactly one frozen acquisition task manifest is required (found 0)",
+    "invalid acquisition-environment freeze: FileNotFoundError",
+    "invalid acquisition-protocol freeze: FileNotFoundError",
+    "frozen acquisition queue lacks approval metadata",
+    "acquisition-environment freeze lacks human approval",
+    "acquisition-protocol freeze lacks human approval",
+})
+
+
+def production_commands(run_id: str = PRODUCTION_RUN_ID, backup_dir: str = PRODUCTION_BACKUP_DIR) -> dict[str, str]:
+    durable = f"--run-id {run_id} --yes --backup-dir {backup_dir} --require-backup"
+    return {
+        "run": f"python -m rq1.cli acquisition run {durable}",
+        "resume": f"python -m rq1.cli acquisition resume {durable}",
+        "retry_failed": f"python -m rq1.cli acquisition retry-failed {durable}",
+        "status": f"python -m rq1.cli experiment status --run-id {run_id}",
+        "validate": f"python -m rq1.cli acquisition validate --run-id {run_id}",
+    }
+
+
+def _writable(directory: Path) -> bool:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=".rq1-preflight-") as handle:
+            handle.write(b"ok")
+            handle.flush()
+        return True
+    except OSError:
+        return False
+
+
+def _read_request(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def production_preflight(root: Path, args: argparse.Namespace) -> dict[str, Any]:
+    """Every technical check of ``acquisition run`` except human approval; starts no episode.
+
+    Before approval the task proposal and the UNAPPROVED approval requests stand in
+    for the frozen manifest and freezes they become, so the same identities are
+    verified against the live repository and environment.
+    """
+    run_id = str(getattr(args, "run_id", None) or PRODUCTION_RUN_ID)
+    backup_dir = str(getattr(args, "backup_dir", None) or PRODUCTION_BACKUP_DIR)
+    commit, clean, error = git_state(root)
+    checks: dict[str, bool] = {"clean_committed_repository": bool(commit) and clean and not error}
+    details: dict[str, Any] = {"repository_commit": commit}
+
+    approval_dir = Path(args.approval_dir) if getattr(args, "approval_dir", None) else root / APPROVAL_DIR / str(commit or "")[:12]
+    requests = {name: _read_request(approval_dir / f"{name}.approval.json") for name in APPROVAL_REQUEST_NAMES}
+    checks["approval_requests_present"] = all(value is not None for value in requests.values())
+    task_request = requests["task-freeze"] or {}
+    environment_request = requests["acquisition-environment"] or {}
+    protocol_request = requests["acquisition-protocol"] or {}
+    approval_status = {
+        "task-freeze": task_request.get("status"),
+        "acquisition-environment": (environment_request.get("approval") or {}).get("status"),
+        "acquisition-protocol": (protocol_request.get("approval") or {}).get("status"),
+    }
+    subject = task_request.get("subject") or {}
+    proposal_path = Path(args.proposal) if getattr(args, "proposal", None) else Path(str(subject.get("proposal_path") or ""))
+    try:
+        proposal = load_task_manifest(proposal_path)
+    except (OSError, TypeError, ValueError):
+        proposal = None
+    queue_sha = queue_identity_sha256(proposal) if proposal is not None else None
+    checks["queue_proposal_valid"] = proposal is not None and proposal.status == "proposed" and not validate_queue_manifest(proposal, require_frozen=False)
+    checks["queue_proposal_at_commit"] = proposal is not None and proposal.repository_commit == commit
+    checks["task_request_references_queue"] = (
+        proposal is not None and subject.get("manifest_sha256") == proposal.manifest_sha256 and subject.get("task_queue_sha256") == queue_sha
+    )
+    details["queue"] = {
+        "proposal_path": str(proposal_path),
+        "task_queue_sha256": queue_sha,
+        "manifest_sha256": proposal.manifest_sha256 if proposal is not None else None,
+        "count": proposal.actual_count if proposal is not None else None,
+        "family_counts": dict(proposal.family_counts) if proposal is not None else None,
+    }
+
+    environment_inputs = environment_request.get("inputs") or {}
+    protocol_inputs = protocol_request.get("inputs") or {}
+    checks["environment_request_complete"] = bool(environment_inputs) and not (ACQUISITION_ENVIRONMENT_REQUIRED - set(environment_inputs))
+    checks["environment_request_at_commit_and_queue"] = (
+        environment_inputs.get("repository_commit") == commit and environment_inputs.get("task_queue_sha256") == queue_sha
+    )
+    checks["protocol_request_matches_repository"] = (
+        protocol_inputs.get("repository_commit") == commit
+        and protocol_inputs.get("protocol") == protocol_definition()
+        and protocol_inputs.get("protocol_sha256") == protocol_sha256()
+        and protocol_inputs.get("task_queue_sha256") == queue_sha
+        and protocol_inputs.get("acquisition_action_budget") == ACQUISITION_ACTION_BUDGET
+        and protocol_inputs.get("inference_seed") == INFERENCE_SEED
+    )
+    checks["prompt_hashes_consistent"] = environment_inputs.get("prompt_hashes") == protocol_inputs.get("prompt_hashes") == prompt_hashes(root)
+    checks["frozen_model_identity"] = (
+        environment_inputs.get("model_tag") == ACQUISITION_MODEL
+        and environment_inputs.get("model_quantization") == MODEL_QUANTIZATION
+        and bool(environment_inputs.get("model_digest"))
+        and environment_inputs.get("provider_settings") == provider_settings()
+    )
+    drift = verify_launch_environment(root, environment_inputs) if environment_inputs else ["acquisition environment request is missing"]
+    checks["live_environment_matches_request"] = not drift
+    details["environment_drift"] = drift
+    live_data_identity = discover_tasks(default_data_dir(), "train").data_root_identity
+    checks["alfworld_train_data_identity"] = (
+        proposal is not None and live_data_identity == proposal.data_root_identity == environment_inputs.get("alfworld_data_identity")
+    )
+    checks["real_alfworld_adapter_ready"] = probe_alfworld_capabilities(default_data_dir()).real_adapter_ready
+    checks["hermes_runtime_present"] = HERMES_PYTHON.is_file()
+    checks["ollama_serves_frozen_digest"] = (
+        bool(environment_inputs.get("model_digest")) and model_digest(ACQUISITION_MODEL) == environment_inputs.get("model_digest")
+    )
+
+    plan = None
+    if proposal is not None:
+        try:
+            plan = AcquisitionRunner(root).plan_from_manifest(proposal, run_id)
+        except AcquisitionError as exc:
+            details["plan_error"] = str(exc)
+    checks["production_plan_is_frozen_queue"] = (
+        plan is not None and len(plan.task_ids) == ACQUISITION_INITIAL_TASKS and plan.queue_sha256 == queue_sha
+    )
+    configuration = run_configuration(root, queue_sha256=str(queue_sha), scientific=True)
+    details["production_configuration"] = {
+        "model_name": configuration["model_name"],
+        "runtime_settings": configuration["runtime_settings"],
+        "protocol_sha256": configuration["protocol_sha256"],
+    }
+    checks["production_configuration_frozen_controller"] = (
+        configuration["model_name"] == ACQUISITION_MODEL
+        and configuration["runtime_settings"].get("output_token_cap") == OUTPUT_TOKEN_CAP
+        and configuration["scientific_evidence"] is True
+    )
+    checks["production_run_id_unused"] = not run_id.startswith(CHECK_PREFIX) and not (root / "results" / "final" / run_id).exists()
+    checks["results_final_writable"] = _writable(root / "results" / "final")
+    checks["backup_directory_writable"] = _writable(Path(backup_dir))
+    free = shutil.disk_usage(root).free
+    details["results_filesystem_free_gb"] = round(free / 1e9, 1)
+    checks["results_filesystem_free_space_20gb"] = free >= 20e9
+
+    gate = validate_acquisition_gates(root)
+    technical_reasons = [reason for reason in gate.reasons if reason not in APPROVAL_PENDING_REASONS]
+    checks["production_gate_blocked_only_by_pending_approval"] = not technical_reasons
+    details["production_gate_reasons"] = list(gate.reasons)
+    technical_pass = all(checks.values())
+    generated = utc_now()
+    report = {
+        "schema_version": 1,
+        "label": "NON-SCIENTIFIC PRODUCTION PREFLIGHT",
+        "scientific_evidence": False,
+        "generated_at": generated,
+        "run_id": run_id,
+        "technical_pass": technical_pass,
+        "human_approval_pending": bool(gate.reasons) or any(status != "APPROVED" for status in approval_status.values()),
+        "approval_status": approval_status,
+        "approval_directory": str(approval_dir),
+        "checks": checks,
+        "details": details,
+        "commands": production_commands(run_id, backup_dir),
+    }
+    stamp = generated.replace(":", "").replace("-", "")
+    path = root / PREFLIGHT_BASE / f"preflight-{stamp}.json"
+    atomic_write_json(path, report)
+    return {"ok": technical_pass, "report": str(path), "report_sha256": sha256_file(path), **report}

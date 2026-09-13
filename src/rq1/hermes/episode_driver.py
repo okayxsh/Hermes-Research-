@@ -31,7 +31,7 @@ from rq1.retrieval.query import INVENTORY_NOT_OBSERVED_MARKER
 # Canonical Ollama inference seed shared by every RQ1 condition.  It is
 # independent of the frozen experimental task seeds (11, 29, 47).
 INFERENCE_SEED = 42
-ACTION_SELECTION_PROTOCOL = "action-index-history-v2"
+ACTION_SELECTION_PROTOCOL = "action-index-history-v3"
 # Decision 008: every decision sees the complete observable history of the
 # current episode (prior actions and their resulting observations only).
 ACTION_HISTORY_POLICY = "full_within_episode_actions_and_observations"
@@ -39,6 +39,17 @@ ACTION_HISTORY_POLICY = "full_within_episode_actions_and_observations"
 INITIAL_OBSERVATION_POLICY = "verbatim_reset_observation_at_every_decision"
 INVENTORY_POLICY = "not_observed_marker_inventory_only_via_inventory_action"
 ACTION_INDEX_PARSING_POLICY = "exactly_one_action_index_line_surrounding_prose_ignored"
+# Decision 010: the validated experimental backbone and its bounded provider call.
+EXPERIMENT_MODEL = "gemma4:12b"
+MODEL_QUANTIZATION = "Q4_K_M"
+OUTPUT_TOKEN_CAP = 2048
+MODEL_CONTEXT_LENGTH = 32768
+MODEL_TIMEOUT_SECONDS = 180
+BRIDGE_TIMEOUT_SECONDS = 300
+OUTPUT_CAP_REJECTION = "output_token_cap_reached"
+MODEL_OUTPUT_FAILURE_POLICY = "invalid_or_capped_response_consumes_one_selection_attempt"
+INFRASTRUCTURE_FAILURE_POLICY = "provider_bridge_or_environment_execution_error_only"
+DETERMINISM_POLICY = "seed_and_temperature_fixed_provider_inference_not_claimed_deterministic"
 EMPTY_HISTORY_MARKER = "(no previous steps)"
 MAX_SELECTION_ATTEMPTS = 3
 RETRY_CLARIFICATION = (
@@ -81,6 +92,33 @@ class ActionSelection:
     action: str | None
     index: int | None
     attempts: tuple[dict[str, Any], ...]
+
+
+class ProviderText(str):
+    """Generated model text that also carries the provider's stop evidence."""
+
+    done_reason: str | None
+    eval_count: int | None
+    prompt_eval_count: int | None
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        done_reason: str | None = None,
+        eval_count: int | None = None,
+        prompt_eval_count: int | None = None,
+    ) -> "ProviderText":
+        value = super().__new__(cls, text)
+        value.done_reason = done_reason
+        value.eval_count = eval_count
+        value.prompt_eval_count = prompt_eval_count
+        return value
+
+
+def reached_output_cap(response: str) -> bool:
+    """True when the provider stopped generating because of the output-token cap."""
+    return getattr(response, "done_reason", None) == "length"
 
 
 def extract_task_goal(initial_observation: str) -> str:
@@ -206,7 +244,12 @@ def select_admissible_action(
             history=history,
         )
         response = ask(prompt)
-        index, rejection = classify_action_index(response, admissible_actions)
+        if reached_output_cap(response):
+            # Decision 010: a response cut off at the output cap is incomplete, so
+            # it consumes this attempt and is never parsed.
+            index, rejection = None, OUTPUT_CAP_REJECTION
+        else:
+            index, rejection = classify_action_index(response, admissible_actions)
         action = admissible_actions[index] if index is not None else None
         attempts.append(
             {
@@ -215,6 +258,8 @@ def select_admissible_action(
                 "response": response,
                 "parsed_index": index,
                 "rejection_reason": rejection,
+                "done_reason": getattr(response, "done_reason", None),
+                "eval_count": getattr(response, "eval_count", None),
                 "selected_action": action,
                 "valid": action is not None,
             }
@@ -232,7 +277,28 @@ def ollama_chat_payload(model: str, prompt: str, seed: int) -> dict[str, Any]:
         # Provider setting: thinking-capable models (e.g. Gemma 4) enable hidden
         # reasoning by default in Ollama; the controller adds no chain-of-thought.
         "think": False,
-        "options": {"temperature": 0, "seed": seed},
+        # Decision 010: a finite output cap (Ollama ``num_predict``) and an
+        # explicit context window, identical for every call and condition.
+        "options": {"temperature": 0, "seed": seed, "num_predict": OUTPUT_TOKEN_CAP, "num_ctx": MODEL_CONTEXT_LENGTH},
+    }
+
+
+def provider_settings() -> dict[str, Any]:
+    """The frozen provider-call identity recorded in the acquisition freezes."""
+    return {
+        "provider": "ollama",
+        "endpoint": "/api/chat",
+        "stream": False,
+        "think": False,
+        "options": ollama_chat_payload(EXPERIMENT_MODEL, "", INFERENCE_SEED)["options"],
+        "output_cap_parameter": "options.num_predict",
+        "output_cap_rejection": OUTPUT_CAP_REJECTION,
+        "model_timeout_seconds": MODEL_TIMEOUT_SECONDS,
+        "bridge_timeout_seconds": BRIDGE_TIMEOUT_SECONDS,
+        "max_selection_attempts": MAX_SELECTION_ATTEMPTS,
+        "model_output_failure_policy": MODEL_OUTPUT_FAILURE_POLICY,
+        "infrastructure_failure_policy": INFRASTRUCTURE_FAILURE_POLICY,
+        "determinism": DETERMINISM_POLICY,
     }
 
 
@@ -435,6 +501,7 @@ class RealEpisodeSession:
         self.records: list[ActionRecord] = []
         self.invalid_model_actions = 0
         self.selection_failures: list[dict[str, Any]] = []
+        self.rejection_counts: dict[str, int] = {}
         self._call_number = 0
         self._events = output_dir / "episode-events.jsonl"
 
@@ -540,7 +607,20 @@ class RealEpisodeSession:
         content = value.get("message", {}).get("content") if isinstance(value, dict) else None
         if not isinstance(content, str):
             raise EpisodeDriverError("Ollama action selection returned no text response")
-        return content
+        # Provider errors above are infrastructure failures.  Everything the model
+        # generated, including a response cut off at the output cap, is returned
+        # for the controller to judge (Decision 010).
+        def count(key: str) -> int | None:
+            item = value.get(key)
+            return item if isinstance(item, int) else None
+
+        done_reason = value.get("done_reason")
+        return ProviderText(
+            content,
+            done_reason=done_reason if isinstance(done_reason, str) else None,
+            eval_count=count("eval_count"),
+            prompt_eval_count=count("prompt_eval_count"),
+        )
 
     def complete_post_success_learning(self, prompt: str) -> str:
         """Ask the same experimental model for its post-success candidate skill."""
@@ -554,6 +634,8 @@ class RealEpisodeSession:
                 "inference_seed": self.driver.inference_seed,
                 "prompt": prompt,
                 "response": response,
+                "done_reason": getattr(response, "done_reason", None),
+                "eval_count": getattr(response, "eval_count", None),
             },
         )
         return response
@@ -581,6 +663,9 @@ class RealEpisodeSession:
             history=history,
         )
         for attempt in selection.attempts:
+            if attempt["rejection_reason"]:
+                reason = attempt["rejection_reason"]
+                self.rejection_counts[reason] = self.rejection_counts.get(reason, 0) + 1
             self._event(
                 "model_selection",
                 {
@@ -589,6 +674,8 @@ class RealEpisodeSession:
                     "initial_observation_policy": INITIAL_OBSERVATION_POLICY,
                     "inventory_policy": INVENTORY_POLICY,
                     "action_index_parsing": ACTION_INDEX_PARSING_POLICY,
+                    "output_token_cap": OUTPUT_TOKEN_CAP,
+                    "model_output_failure_policy": MODEL_OUTPUT_FAILURE_POLICY,
                     "history_steps": len(history),
                     "inference_seed": self.driver.inference_seed,
                     "max_attempts": MAX_SELECTION_ATTEMPTS,
@@ -639,10 +726,10 @@ class RealEpisodeDriver:
         root: Path,
         *,
         data_dir: Path | None = None,
-        model_name: str = "hermes3:8b",
+        model_name: str = EXPERIMENT_MODEL,
         ollama_url: str = "http://127.0.0.1:11434",
-        bridge_timeout_seconds: float = 300,
-        model_timeout_seconds: float = 180,
+        bridge_timeout_seconds: float = BRIDGE_TIMEOUT_SECONDS,
+        model_timeout_seconds: float = MODEL_TIMEOUT_SECONDS,
         inference_seed: int = INFERENCE_SEED,
         bridge_log_root: Path | None = None,
     ) -> None:
