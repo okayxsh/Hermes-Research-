@@ -60,11 +60,16 @@ RUNNING_STATES = {"completed", "paused", "incomplete"}
 
 
 def run_configuration(
-    root: Path, *, queue_sha256: str, scientific: bool, freezes: Mapping[str, str] | None = None
+    root: Path,
+    *,
+    queue_sha256: str,
+    scientific: bool,
+    freezes: Mapping[str, str] | None = None,
+    model_name: str = ACQUISITION_MODEL,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
         "version": ACQUISITION_POLICY_VERSION,
-        "model_name": ACQUISITION_MODEL,
+        "model_name": model_name,
         "runtime_settings": {
             "temperature": ACQUISITION_TEMPERATURE,
             "seed": INFERENCE_SEED,
@@ -94,8 +99,11 @@ def _execute(
     options: RunnerOptions,
     scientific: bool,
     task_manifest_path: Path | None = None,
+    model_name: str = ACQUISITION_MODEL,
 ) -> dict[str, Any]:
-    with RealEpisodeDriver(root, data_dir=default_data_dir(), bridge_log_root=store.directory / "logs" / "bridge") as driver:
+    with RealEpisodeDriver(
+        root, data_dir=default_data_dir(), model_name=model_name, bridge_log_root=store.directory / "logs" / "bridge",
+    ) as driver:
         executor = RealAcquisitionExecutor(root, store, driver, scientific=scientific, queue_sha256=plan.queue_sha256)
         return AcquisitionRunner(root).run_resumable(
             plan,
@@ -207,12 +215,16 @@ def prelaunch_check(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     plan_path = store.directory / "check-plan.json"
     commit, clean, _error = git_state(root)
     requested = list(getattr(args, "task_id", None) or [])
+    requested_model = getattr(args, "model", None)
     if args.resume:
         if not plan_path.is_file():
             return {"ok": False, "status": "blocked", "reason": "cannot resume an unknown non-scientific check"}
         saved = json.loads(plan_path.read_text(encoding="utf-8"))
         if requested and requested != saved["task_ids"]:
             return {"ok": False, "status": "blocked", "reason": "check queue differs from the saved check plan"}
+        model_name = str(saved.get("model_name", ACQUISITION_MODEL))
+        if requested_model and requested_model != model_name:
+            return {"ok": False, "status": "blocked", "reason": "check model differs from the saved check plan"}
         task_ids, families = list(saved["task_ids"]), list(saved["task_families"])
     else:
         if plan_path.exists():
@@ -224,12 +236,14 @@ def prelaunch_check(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             return {"ok": False, "status": "blocked", "reason": "check tasks overlap the scientific acquisition queue", "overlap": overlap}
         families = [_train_task_family(default_data_dir(), task_id) for task_id in requested]
         task_ids = requested
+        model_name = str(requested_model or ACQUISITION_MODEL)
         atomic_write_json(plan_path, {
             "schema_version": 1,
             "label": "NON-SCIENTIFIC PRELAUNCH ACQUISITION CHECK",
             "scientific_evidence": False,
             "task_ids": task_ids,
             "task_families": families,
+            "model_name": model_name,
             "repository_commit": commit,
             "created_at": utc_now(),
         })
@@ -239,14 +253,16 @@ def prelaunch_check(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         "mode": "resume" if args.resume else "run",
         "repository_commit": commit,
         "clean": clean,
+        "model_name": model_name,
         "max_runs": args.max_runs,
         "timestamp": utc_now(),
     })
     result = _execute(
         root, plan, store,
-        configuration=run_configuration(root, queue_sha256=queue_sha, scientific=False),
+        configuration=run_configuration(root, queue_sha256=queue_sha, scientific=False, model_name=model_name),
         options=RunnerOptions(resume=bool(args.resume), max_runs=args.max_runs, fail_fast=True),
         scientific=False,
+        model_name=model_name,
     )
     return {"ok": result["status"] in RUNNING_STATES, "label": "NON-SCIENTIFIC PRELAUNCH ACQUISITION CHECK", "scientific_evidence": False, **result}
 

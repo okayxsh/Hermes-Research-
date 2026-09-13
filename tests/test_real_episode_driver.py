@@ -276,6 +276,7 @@ class ActionSelectionControllerTests(unittest.TestCase):
         self.assertEqual(42, INFERENCE_SEED)
         self.assertNotIn(INFERENCE_SEED, FROZEN_SEEDS)
         self.assertEqual({"temperature": 0, "seed": INFERENCE_SEED}, ollama_chat_payload("hermes3:8b", "p", INFERENCE_SEED)["options"])
+        self.assertIs(False, ollama_chat_payload("gemma4:12b", "p", INFERENCE_SEED)["think"])
         config = load_json_yaml(ROOT / "configs" / "base.yaml")["model_inference"]
         self.assertEqual(INFERENCE_SEED, config["seed"])
         self.assertEqual(0, config["temperature"])

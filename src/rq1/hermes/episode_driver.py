@@ -203,6 +203,9 @@ def ollama_chat_payload(model: str, prompt: str, seed: int) -> dict[str, Any]:
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
+        # Provider setting: thinking-capable models (e.g. Gemma 4) enable hidden
+        # reasoning by default in Ollama; the controller adds no chain-of-thought.
+        "think": False,
         "options": {"temperature": 0, "seed": seed},
     }
 

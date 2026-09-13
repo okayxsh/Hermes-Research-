@@ -449,13 +449,15 @@ class AcquisitionExecutionTests(unittest.TestCase):
         parser = build_parser()
         for argv in (
             ["acquisition", "run", "--run-id", "rq1-acquisition", "--yes", "--backup-dir", "/backup", "--require-backup"],
-            ["acquisition", "check", "--run-id", "prelaunch-acquisition-check-x", "--task-id", "train:a", "--max-runs", "2"],
+            ["acquisition", "check", "--run-id", "prelaunch-acquisition-check-x", "--task-id", "train:a", "--max-runs", "2", "--model", "gemma4:12b"],
             ["acquisition", "check-report", "--run-id", "prelaunch-acquisition-check-x"],
             ["acquisition", "prepare-approvals", "--proposal", "proposal.json", "--evidence-report", "report.json"],
             ["freeze", "acquisition-protocol", "--approval-file", "approval.json", "--pilot-report", "report.json", "--yes"],
         ):
             parser.parse_args(argv)
         self.assertNotIn("no final run was started", (REPO / "src" / "rq1" / "cli.py").read_text(encoding="utf-8"))
+        self.assertEqual("gemma4:12b", launch.run_configuration(self.root, queue_sha256=QUEUE, scientific=False, model_name="gemma4:12b")["model_name"])
+        self.assertEqual("hermes3:8b", launch.run_configuration(self.root, queue_sha256=QUEUE, scientific=False)["model_name"])
 
 
 if __name__ == "__main__":

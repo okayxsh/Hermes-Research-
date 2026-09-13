@@ -866,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     item = acquisition_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
     item = acquisition_sub.add_parser("check", help="NON-SCIENTIFIC prelaunch check under artifacts/prelaunch/acquisition-check.")
     item.add_argument("--run-id", required=True); item.add_argument("--task-id", action="append"); item.add_argument("--max-runs", type=int); item.add_argument("--resume", action="store_true")
+    item.add_argument("--model", help="Ollama model for this NON-SCIENTIFIC check only (default: the frozen acquisition model).")
     item = acquisition_sub.add_parser("check-report"); item.add_argument("--run-id", required=True)
     item = acquisition_sub.add_parser("prepare-approvals", help="Write UNAPPROVED acquisition approval requests; never approves.")
     item.add_argument("--proposal", required=True); item.add_argument("--evidence-report", required=True)
