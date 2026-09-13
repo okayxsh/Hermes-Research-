@@ -43,16 +43,21 @@ def load_task_manifest(path: Path) -> TaskManifest:
 
 
 def queue_identity_sha256(manifest: TaskManifest) -> str:
-    """Queue hash that is invariant under freezing (status, approval, timestamps)."""
-    return canonical_hash(
-        {
-            "manifest_type": manifest.manifest_type,
-            "split": manifest.split,
-            "data_root_identity": manifest.data_root_identity,
-            "selection_policy": dict(manifest.selection_policy),
-            "tasks": [task.to_dict() for task in sorted(manifest.tasks, key=lambda item: item.order_index)],
-        }
-    )
+    """Queue hash that is invariant under freezing (status, approval, timestamps).
+
+    A continuation queue also binds its parent lineage; queues without lineage
+    hash exactly as before.
+    """
+    payload: dict[str, Any] = {
+        "manifest_type": manifest.manifest_type,
+        "split": manifest.split,
+        "data_root_identity": manifest.data_root_identity,
+        "selection_policy": dict(manifest.selection_policy),
+        "tasks": [task.to_dict() for task in sorted(manifest.tasks, key=lambda item: item.order_index)],
+    }
+    if manifest.lineage is not None:
+        payload["lineage"] = dict(manifest.lineage)
+    return canonical_hash(payload)
 
 
 def validate_queue_manifest(manifest: TaskManifest, *, require_frozen: bool) -> list[str]:

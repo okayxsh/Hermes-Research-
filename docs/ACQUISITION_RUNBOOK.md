@@ -100,3 +100,29 @@ Launch and resume enforce the commit, Python version, dependency lock, ALFWorld
 version, Hermes version and commit, Ollama version, model tag, digest, quantization,
 provider settings, inference seed, prompt hashes, and config hashes. Host name and GPU
 are recorded only, and a lock left by another host is treated as stale.
+
+## 8. Balanced extension 181–240 (Decision 011)
+
+The completed 180-task run is read-only. The extension is the separate run
+`rq1-acquisition-gemma4-12b-ext-181-240`: 60 TRAIN tasks (10 per family) that continue
+the frozen selection, starting from the parent's exact final 34-skill pool, with identical
+settings ([Decision 011](decisions/011-acquisition-extension-181-240.md)).
+
+```bash
+EXT=rq1-acquisition-gemma4-12b-ext-181-240
+$PY -m rq1.cli acquisition-extension propose        # queue proposal + immutable starting pool
+$PY -m rq1.cli acquisition-extension check --run-id prelaunch-acquisition-extension-check-<label> --task-id <non-queue TRAIN task> --max-runs 1
+$PY -m rq1.cli acquisition-extension check --run-id prelaunch-acquisition-extension-check-<label> --resume
+$PY -m rq1.cli acquisition-extension check-report --run-id prelaunch-acquisition-extension-check-<label>
+$PY -m rq1.cli acquisition-extension prepare-approvals --proposal <proposal> --evidence-report <report>
+$PY -m rq1.cli acquisition-extension preflight --backup-dir $BACKUP   # only human approval may remain
+```
+
+A human reviewer approves the three requests in
+`artifacts/approvals/acquisition-extension/<commit12>/` and runs their recorded commands
+(`acquisition-extension freeze-tasks`, `freeze acquisition-extension-environment`,
+`freeze acquisition-extension-protocol`). Then `acquisition-extension plan` must report
+`launch_permitted: true`, and the extension is launched, monitored, stopped, resumed, and
+retried exactly as in sections 2–6 with `acquisition-extension` in place of `acquisition`
+and `--run-id $EXT`. `acquisition-extension validate --run-id $EXT` reports the starting pool,
+the appended skills, and the combined per-family pool.

@@ -50,6 +50,16 @@ from rq1.utils.hashing import sha256_text
 from rq1.utils.time import utc_now
 
 
+def unit_lineage(unit: ExperimentUnit) -> dict[str, Any]:
+    """Parent run and logical combined position of a continuation unit; empty otherwise."""
+    if unit.payload.get("parent_run_id") is None:
+        return {}
+    return {
+        "parent_run_id": unit.payload["parent_run_id"],
+        "logical_acquisition_index": unit.payload["logical_acquisition_index"],
+    }
+
+
 class AcquisitionEpisodeHarness:
     """``AcquisitionHarness`` for one unit: a fresh session and an optional candidate."""
 
@@ -188,6 +198,7 @@ class AcquisitionEpisodeHarness:
                 "policy_version": ACQUISITION_POLICY_VERSION,
                 "experiment_id": self.context.experiment_id,
                 "scientific_evidence": self.scientific,
+                **unit_lineage(self.unit),
             },
         )
         return {**base, "status": "accepted", "skill": skill.to_dict()}, skill
@@ -212,7 +223,11 @@ class RealAcquisitionExecutor:
         queue_sha256: str | None,
         action_budget: int = ACQUISITION_ACTION_BUDGET,
         environment_seed: int = ACQUISITION_ENVIRONMENT_SEED,
+        parent_pool: Sequence[PoolSkill] = (),
+        parent_run_id: str | None = None,
     ) -> None:
+        if parent_pool and parent_run_id is None:
+            raise ValueError("a starting skill pool requires its parent run ID")
         self.root = root
         self.store = store
         self.driver = driver
@@ -220,18 +235,23 @@ class RealAcquisitionExecutor:
         self.queue_sha256 = queue_sha256
         self.action_budget = action_budget
         self.environment_seed = environment_seed
+        # The exact final pool of a completed parent run; read-only here.
+        self.parent_pool = tuple(parent_pool)
+        self.parent_run_id = parent_run_id
 
     def committed_pool(self) -> tuple[PoolSkill, ...]:
-        return rebuild_pool(self.store.terminal_results(phase="acquisition", repair_tail=False).values())
+        return rebuild_pool(self.store.terminal_results(phase="acquisition", repair_tail=False).values(), base=self.parent_pool)
 
     def preflight(self, units: Sequence[ExperimentUnit], latest: Mapping[str, Mapping[str, Any]]) -> None:
         for unit in units:
             if unit.payload.get("task_family") not in TASK_FAMILIES:
                 raise SkillPoolError(f"queue unit {unit.task_index} lacks a frozen task family")
-        verify_snapshot(self.store.directory, rebuild_pool(latest.values()))
+            if unit.payload.get("parent_run_id") != self.parent_run_id:
+                raise SkillPoolError(f"queue unit {unit.task_index} parent lineage differs from the executor starting pool")
+        verify_snapshot(self.store.directory, rebuild_pool(latest.values(), base=self.parent_pool))
 
     def checkpoint_state(self, units: Sequence[ExperimentUnit], latest: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-        skills = rebuild_pool(latest.values())
+        skills = rebuild_pool(latest.values(), base=self.parent_pool)
         write_snapshot(self.store.directory, skills)
         families = {
             family: {"planned": 0, "completed": 0, "successful": 0, "scientific_failures": 0, "infrastructure_failures": 0, "accepted_skills": 0}
@@ -252,10 +272,21 @@ class RealAcquisitionExecutor:
             elif record.get("status") == "failed":
                 counts["infrastructure_failures"] += 1
                 failed.append(unit.run_key)
-        for skill in skills:
+        # accepted_skills counts the skills this run appended, never the starting pool.
+        for skill in skills[len(self.parent_pool):]:
             families[skill.task_family]["accepted_skills"] += 1
         pending = [unit for unit in units if unit.run_key not in latest]
+        continuation = {} if self.parent_run_id is None else {
+            "continuation": {
+                "parent_run_id": self.parent_run_id,
+                "starting_pool_size": len(self.parent_pool),
+                "starting_pool_hash": pool_hash(self.parent_pool),
+                "appended_skills": len(skills) - len(self.parent_pool),
+                "pool_per_family": {family: sum(skill.task_family == family for skill in skills) for family in TASK_FAMILIES},
+            }
+        }
         return {
+            **continuation,
             "acquisition_policy_version": ACQUISITION_POLICY_VERSION,
             "scientific_evidence": self.scientific,
             "queue_sha256": self.queue_sha256,
@@ -323,5 +354,6 @@ class RealAcquisitionExecutor:
             "queue_sha256": self.queue_sha256,
             "skill_pool_size_before": len(pool),
             "skill_pool_hash_before": pool_hash(pool),
+            **unit_lineage(unit),
         }
         return replace(result.outcome, measurements=measurements, log_paths=(*result.log_paths, events_log))

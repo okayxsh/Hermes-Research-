@@ -9,6 +9,10 @@ class AcquisitionPlan:
     profile: str = "rq1-acquisition"
     task_families: tuple[str, ...] = ()
     queue_sha256: str | None = None
+    # Continuation of a completed parent acquisition: unit N is logical position
+    # ``logical_index_offset + N`` of the combined acquisition.
+    parent_run_id: str | None = None
+    logical_index_offset: int = 0
 
     def to_dict(self): return asdict(self)
 

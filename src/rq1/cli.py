@@ -512,6 +512,34 @@ def command_acquisition(root: Path, args: argparse.Namespace) -> int:
     return 0 if payload.get("ok") else 1
 
 
+def command_acquisition_extension(root: Path, args: argparse.Namespace) -> int:
+    from rq1.acquisition import extension_launch as extension
+    command = args.extension_command
+    if command == "propose":
+        payload = extension.propose_extension(root, args)
+    elif command == "plan":
+        payload = extension.extension_plan(root, args)
+    elif command in {"run", "resume", "retry-failed"}:
+        payload = extension.extension_run(root, args, resume=command != "run", retry_failed=command == "retry-failed")
+    elif command == "validate":
+        payload = extension.validate_extension_run(root, args.run_id)
+    elif command == "check":
+        payload = extension.extension_check(root, args)
+    elif command == "check-report":
+        payload = extension.extension_check_report(root, args.run_id)
+    elif command == "freeze-tasks":
+        payload = extension.freeze_extension_tasks(root, args)
+    elif command == "preflight":
+        from rq1.acquisition.extension_preflight import extension_preflight
+        payload = extension_preflight(root, args)
+    else:
+        payload = extension.prepare_extension_approvals(root, Path(args.proposal), Path(args.evidence_report))
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if payload.get("status") == "interrupted":
+        return 130
+    return 0 if payload.get("ok") else 1
+
+
 def command_snapshots(root: Path, args: argparse.Namespace) -> int:
     if args.snapshots_command == "plan":
         from rq1.freeze.validation import validate_final_gates
@@ -847,7 +875,7 @@ def build_parser() -> argparse.ArgumentParser:
     freeze = sub.add_parser("freeze", help="Plan or create immutable final-experiment freezes.")
     freeze_sub = freeze.add_subparsers(dest="freeze_command", required=True)
     freeze_sub.add_parser("plan")
-    for name in ("environment", "protocol", "acquisition-environment", "acquisition-protocol"):
+    for name in ("environment", "protocol", "acquisition-environment", "acquisition-protocol", "acquisition-extension-environment", "acquisition-extension-protocol"):
         item = freeze_sub.add_parser(name)
         item.add_argument("--approval-file", required=True)
         item.add_argument("--pilot-report", required=True)
@@ -874,6 +902,22 @@ def build_parser() -> argparse.ArgumentParser:
     item.add_argument("--run-id"); item.add_argument("--proposal"); item.add_argument("--approval-dir"); item.add_argument("--backup-dir")
     item = acquisition_sub.add_parser("prepare-approvals", help="Write UNAPPROVED acquisition approval requests; never approves.")
     item.add_argument("--proposal", required=True); item.add_argument("--evidence-report", required=True)
+    extension = sub.add_parser("acquisition-extension", help="Balanced 181-240 acquisition extension (Decision 011): approval-gated continuation of the completed 180-run.")
+    extension_sub = extension.add_subparsers(dest="extension_command", required=True)
+    extension_sub.add_parser("propose", help="Write the 60-task continuation queue proposal and the immutable starting-pool snapshot.")
+    item = extension_sub.add_parser("plan"); item.add_argument("--task-manifest")
+    for name in ("run", "resume", "retry-failed"):
+        item = extension_sub.add_parser(name); add_durable_run_options(item); item.add_argument("--yes", action="store_true")
+    item = extension_sub.add_parser("validate"); item.add_argument("--run-id", required=True)
+    item = extension_sub.add_parser("check", help="NON-SCIENTIFIC extension check under artifacts/prelaunch/acquisition-extension-check.")
+    item.add_argument("--run-id", required=True); item.add_argument("--task-id", action="append"); item.add_argument("--max-runs", type=int); item.add_argument("--resume", action="store_true")
+    item = extension_sub.add_parser("check-report"); item.add_argument("--run-id", required=True)
+    item = extension_sub.add_parser("prepare-approvals", help="Write UNAPPROVED extension approval requests; never approves.")
+    item.add_argument("--proposal", required=True); item.add_argument("--evidence-report", required=True)
+    item = extension_sub.add_parser("freeze-tasks", help="Freeze the human-approved extension queue.")
+    item.add_argument("--proposal", required=True); item.add_argument("--approval-file", required=True); item.add_argument("--yes", action="store_true")
+    item = extension_sub.add_parser("preflight", help="Technical extension preflight: every launch gate except human approval; starts no episode.")
+    item.add_argument("--run-id"); item.add_argument("--proposal"); item.add_argument("--approval-dir"); item.add_argument("--backup-dir")
     snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")
     snapshots_sub = snapshots.add_subparsers(dest="snapshots_command", required=True)
     snapshots_sub.add_parser("plan")
@@ -960,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "tasks": return command_tasks(root, args)
         if args.command == "freeze": return command_freeze(root, args)
         if args.command == "acquisition": return command_acquisition(root, args)
+        if args.command == "acquisition-extension": return command_acquisition_extension(root, args)
         if args.command == "snapshots": return command_snapshots(root, args)
         if args.command == "evaluation": return command_evaluation(root, args)
         if args.command == "analysis": return command_analysis(root, args)

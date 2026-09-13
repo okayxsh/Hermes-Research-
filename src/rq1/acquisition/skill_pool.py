@@ -78,15 +78,25 @@ def skill_id_for(source_task_id: str, title: str, body: str) -> str:
     return "skill_" + sha256_text(f"{source_task_id}\0{title}\0{body}")[:16]
 
 
-def rebuild_pool(records: Iterable[Mapping[str, Any]]) -> tuple[PoolSkill, ...]:
+def rebuild_pool(records: Iterable[Mapping[str, Any]], base: Sequence[PoolSkill] = ()) -> tuple[PoolSkill, ...]:
+    """Rebuild the pool from committed results, continuing an immutable ``base``.
+
+    ``base`` is the exact final pool of a completed parent run (an acquisition
+    extension).  Its skills are never modified; new skills continue its pool
+    indices and exact duplicates are rejected against it.
+    """
     completed = [
         record for record in records
         if record.get("phase") == "acquisition" and record.get("status") == "completed"
     ]
     completed.sort(key=lambda record: int(record.get("task_index", 0)))
-    skills: list[PoolSkill] = []
-    texts: set[str] = set()
-    identifiers: set[str] = set()
+    skills: list[PoolSkill] = list(base)
+    if [skill.pool_index for skill in skills] != list(range(1, len(skills) + 1)):
+        raise SkillPoolError("starting skill pool indices are not contiguous")
+    texts: set[str] = {skill.text for skill in skills}
+    identifiers: set[str] = {skill.skill_id for skill in skills}
+    if len(texts) != len(skills) or len(identifiers) != len(skills):
+        raise SkillPoolError("starting skill pool contains duplicate skills")
     for record in completed:
         where = f"task_index={record.get('task_index')}"
         if record.get("skill_pool_hash_before") != pool_hash(skills) or record.get("skill_pool_size_before") != len(skills):

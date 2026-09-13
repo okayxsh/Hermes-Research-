@@ -12,8 +12,8 @@ def validate_manifest(manifest: TaskManifest, *, require_frozen: bool = False) -
     errors: list[str] = []
     if manifest.status not in {item.value for item in ManifestState}: errors.append("invalid manifest status")
     if require_frozen and manifest.status != ManifestState.FROZEN.value: errors.append("manifest is not frozen")
-    if manifest.manifest_type not in {"pilot", "acquisition", "evaluation"}: errors.append("invalid manifest type")
-    expected = {"pilot": "valid_seen", "acquisition": "train", "evaluation": "valid_unseen"}.get(manifest.manifest_type)
+    if manifest.manifest_type not in {"pilot", "acquisition", "acquisition-extension", "evaluation"}: errors.append("invalid manifest type")
+    expected = {"pilot": "valid_seen", "acquisition": "train", "acquisition-extension": "train", "evaluation": "valid_unseen"}.get(manifest.manifest_type)
     if manifest.split != expected: errors.append("manifest type/split mismatch")
     if manifest.actual_count != len(manifest.tasks): errors.append("actual_count mismatch")
     if [item.order_index for item in manifest.tasks] != list(range(1, len(manifest.tasks) + 1)): errors.append("task order indices are not contiguous")

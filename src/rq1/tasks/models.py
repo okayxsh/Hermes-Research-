@@ -27,5 +27,10 @@ class TaskManifest:
     repository_commit: str | None; selection_policy: dict[str, Any]; requested_count: int | None; actual_count: int
     family_counts: dict[str, int]; tasks: tuple[TaskRecord, ...]; exclusions: tuple[dict[str, str], ...]
     duplicate_resolution: tuple[dict[str, str], ...]; generated_at: str; approved_at: str | None; approval_reference: str | None; manifest_sha256: str
+    # Parent lineage of a continuation queue (acquisition-extension).  It is omitted
+    # when absent, so every other manifest keeps its exact content hash.
+    lineage: dict[str, Any] | None = None
     def to_dict(self) -> dict[str, Any]:
-        value = asdict(self); value["tasks"] = [item.to_dict() for item in self.tasks]; return value
+        value = asdict(self); value["tasks"] = [item.to_dict() for item in self.tasks]
+        if value["lineage"] is None: value.pop("lineage")
+        return value

@@ -27,15 +27,29 @@ class AcquisitionRunner:
         return AcquisitionPlan(run_id or f"acquisition-{uuid4()}", ids)
 
     def plan_from_manifest(self, manifest: TaskManifest, run_id: str) -> AcquisitionPlan:
-        """Preserve the frozen queue order and family of every task."""
-        if manifest.manifest_type != "acquisition" or manifest.split != "train":
+        """Preserve the frozen queue order and family of every task.
+
+        An ``acquisition-extension`` queue also carries its parent run and logical
+        position offset from the manifest lineage.
+        """
+        if manifest.manifest_type not in {"acquisition", "acquisition-extension"} or manifest.split != "train":
             raise AcquisitionError("acquisition requires a TRAIN acquisition task manifest")
+        extension = manifest.manifest_type == "acquisition-extension"
+        lineage = manifest.lineage or {}
+        if extension and (not lineage.get("parent_run_id") or not isinstance(lineage.get("logical_index_offset"), int)):
+            raise AcquisitionError("an acquisition extension queue requires parent lineage")
+        if not extension and manifest.lineage is not None:
+            raise AcquisitionError("only an acquisition extension queue may carry parent lineage")
         tasks = sorted(manifest.tasks, key=lambda item: item.order_index)
         if any(task.split != "train" or not task.task_id.startswith("train:") for task in tasks):
             raise AcquisitionError("acquisition queue contains a non-TRAIN task")
         ids = tuple(task.task_id for task in tasks)
         if len(ids) != len(set(ids)): raise AcquisitionError("frozen acquisition queue contains duplicate task IDs")
-        return AcquisitionPlan(run_id, ids, task_families=tuple(task.family for task in tasks), queue_sha256=queue_identity_sha256(manifest))
+        return AcquisitionPlan(
+            run_id, ids, task_families=tuple(task.family for task in tasks), queue_sha256=queue_identity_sha256(manifest),
+            parent_run_id=str(lineage["parent_run_id"]) if extension else None,
+            logical_index_offset=int(lineage["logical_index_offset"]) if extension else 0,
+        )
 
     def install_plan(self, plan: AcquisitionPlan) -> None:
         for task_id in plan.task_ids:
@@ -57,15 +71,18 @@ class AcquisitionRunner:
         preflight: PhaseHook | None = None,
         checkpoint_extension: PhaseHook | None = None,
         progress: Callable[[str], None] | None = print,
+        gate: Callable[..., Any] | None = None,
     ) -> dict[str, object]:
         """Run the queue through the durable boundary.
 
         Scientific runs require the approved acquisition freezes, the frozen
         queue, and ``results/final``.  Non-scientific checks are confined to
         ``artifacts/prelaunch`` and must be labelled ``scientific_evidence=false``.
+        ``gate`` replaces the initial-acquisition gate for an approved
+        continuation (the acquisition extension gate).
         """
         if scientific:
-            gates = validate_acquisition_gates(self.root, task_manifest_path=task_manifest_path)
+            gates = (gate or validate_acquisition_gates)(self.root, task_manifest_path=task_manifest_path)
             if not gates.valid:
                 raise AcquisitionError("acquisition gate blocked: " + "; ".join(gates.reasons))
             if gates.task_manifest is None or plan.queue_sha256 != queue_identity_sha256(gates.task_manifest):
@@ -102,6 +119,12 @@ def acquisition_units(
 ) -> list[ExperimentUnit]:
     if plan.task_families and len(plan.task_families) != len(plan.task_ids):
         raise ValueError("acquisition plan task families must align with task IDs")
+
+    def lineage(index: int) -> dict[str, object]:
+        if plan.parent_run_id is None:
+            return {}
+        return {"parent_run_id": plan.parent_run_id, "logical_acquisition_index": plan.logical_index_offset + index}
+
     return [
         ExperimentUnit(
             phase="acquisition",
@@ -114,11 +137,13 @@ def acquisition_units(
                 "task_id": task_id,
                 "task_index": index,
                 "profile": plan.profile,
+                **lineage(index),
             },
             payload={
                 "split": plan.split,
                 "profile": plan.profile,
                 **({"task_family": plan.task_families[index - 1]} if plan.task_families else {}),
+                **lineage(index),
             },
             library_name=plan.profile,
             library_size=initial_library_size,

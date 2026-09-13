@@ -36,13 +36,23 @@ ACQUISITION_PROTOCOL_REQUIRED = {
     "repository_commit", "protocol", "protocol_sha256", "task_queue_sha256",
     "acquisition_action_budget", "inference_seed", "prompt_hashes", "decision_record_sha256",
 }
+ACQUISITION_EXTENSION_ENVIRONMENT_REQUIRED = ACQUISITION_ENVIRONMENT_REQUIRED | {
+    "os", "kernel", "cuda_version", "torch_version", "torch_cuda_version", "parent_run_id",
+}
+ACQUISITION_EXTENSION_PROTOCOL_REQUIRED = ACQUISITION_PROTOCOL_REQUIRED | {
+    "inherited_protocol_sha256", "parent_run_id", "parent_pool_size", "parent_pool_hash",
+    "parent_queue_sha256", "parent_closeout_manifest_sha256", "starting_pool_sha256",
+}
 REQUIRED_INPUTS = {
     "environment": ENVIRONMENT_REQUIRED,
     "protocol": PROTOCOL_REQUIRED,
     "acquisition-environment": ACQUISITION_ENVIRONMENT_REQUIRED,
     "acquisition-protocol": ACQUISITION_PROTOCOL_REQUIRED,
+    "acquisition-extension-environment": ACQUISITION_EXTENSION_ENVIRONMENT_REQUIRED,
+    "acquisition-extension-protocol": ACQUISITION_EXTENSION_PROTOCOL_REQUIRED,
 }
 ACQUISITION_EVIDENCE_MODE = "non_scientific_acquisition_check"
+ACQUISITION_EXTENSION_EVIDENCE_MODE = "non_scientific_acquisition_extension_check"
 
 
 def _sha(value: Any) -> str:
@@ -91,11 +101,14 @@ def build_freeze(root: Path, kind: str, approval: dict[str, Any], pilot_report: 
     if error or not clean or not commit:
         raise ValueError("freeze requires a clean repository with a resolved commit")
     if kind.startswith("acquisition-"):
+        extension = kind.startswith("acquisition-extension-")
         if (
-            pilot_report.get("mode") != ACQUISITION_EVIDENCE_MODE
+            pilot_report.get("mode") != (ACQUISITION_EXTENSION_EVIDENCE_MODE if extension else ACQUISITION_EVIDENCE_MODE)
             or pilot_report.get("passed") is not True
             or pilot_report.get("scientific_evidence") is not False
         ):
+            if extension:
+                raise ValueError("acquisition extension freeze requires a passed non-scientific acquisition extension check report")
             raise ValueError("acquisition freeze requires a passed non-scientific acquisition check report")
         if pilot_report.get("repository_commit") != commit or inputs.get("repository_commit") != commit:
             raise ValueError("acquisition freeze evidence and inputs must match the current commit")

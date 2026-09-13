@@ -42,7 +42,8 @@ from rq1.acquisition.protocol import (
 from rq1.acquisition.reporting import write_report
 from rq1.acquisition.runner import AcquisitionError, AcquisitionRunner
 from rq1.acquisition.skill_creation import prompt_hashes
-from rq1.acquisition.skill_pool import EMPTY_POOL_HASH, SkillPoolError, pool_hash, rebuild_pool, verify_snapshot
+from rq1.acquisition.extension_protocol import EXTENSION_FROZEN_DIR, EXTENSION_PROPOSAL_ARCHIVE_DIR, EXTENSION_PROPOSAL_DIR
+from rq1.acquisition.skill_pool import EMPTY_POOL_HASH, PoolSkill, SkillPoolError, pool_hash, rebuild_pool, verify_snapshot
 from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
 from rq1.bridge.adapters.task_index import _resolve_task_family
 from rq1.experiment.models import canonical_hash
@@ -117,24 +118,32 @@ def _execute(
     scientific: bool,
     task_manifest_path: Path | None = None,
     model_name: str = ACQUISITION_MODEL,
+    parent_pool: Sequence[PoolSkill] = (),
+    parent_run_id: str | None = None,
+    gate: Any = None,
 ) -> dict[str, Any]:
     with RealEpisodeDriver(
         root, data_dir=default_data_dir(), model_name=model_name, bridge_log_root=store.directory / "logs" / "bridge",
     ) as driver:
-        executor = RealAcquisitionExecutor(root, store, driver, scientific=scientific, queue_sha256=plan.queue_sha256)
+        executor = RealAcquisitionExecutor(
+            root, store, driver, scientific=scientific, queue_sha256=plan.queue_sha256,
+            parent_pool=parent_pool, parent_run_id=parent_run_id,
+        )
         return AcquisitionRunner(root).run_resumable(
             plan,
             executor,
             configuration=dict(configuration),
             options=options,
             output_base=store.directory.parent,
-            initial_library_hash=EMPTY_POOL_HASH,
-            initial_library_size=0,
+            # An initial acquisition starts empty; an extension starts from its parent's final pool.
+            initial_library_hash=pool_hash(parent_pool),
+            initial_library_size=len(parent_pool),
             task_manifest_path=task_manifest_path,
             scientific=scientific,
             store=store,
             preflight=executor.preflight,
             checkpoint_extension=executor.checkpoint_state,
+            gate=gate,
         )
 
 
@@ -205,9 +214,12 @@ def scientific_run(root: Path, args: argparse.Namespace, *, resume: bool, retry_
 
 
 def _scientific_queue_task_ids(root: Path) -> set[str]:
+    """Every task of a proposed or frozen scientific acquisition or extension queue."""
     identifiers: set[str] = set()
-    for folder in ("proposals", "proposal_archive", "frozen"):
-        for path in (root / "artifacts" / "task_manifests" / folder).glob("acquisition-*.json"):
+    sources = [(root / "artifacts" / "task_manifests" / folder, "acquisition-*.json") for folder in ("proposals", "proposal_archive", "frozen")]
+    sources += [(root / folder, "acquisition-extension-*.json") for folder in (EXTENSION_PROPOSAL_DIR, EXTENSION_PROPOSAL_ARCHIVE_DIR, EXTENSION_FROZEN_DIR)]
+    for directory, pattern in sources:
+        for path in directory.glob(pattern):
             identifiers.update(task.task_id for task in load_task_manifest(path).tasks)
     return identifiers
 

@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "policy_version": "acquisition-extension-v1",
+  "decision_record": "docs/decisions/011-acquisition-extension-181-240.md",
+  "frozen_before_extension_acquisition": true,
+  "activation": {
+    "contingency": "later_hard_cap of the frozen acquisition protocol",
+    "initial_task_count": 180,
+    "initial_tasks_per_family": 30,
+    "hard_cap": {
+      "total": 240,
+      "per_family": 40
+    },
+    "automatic_extension": false,
+    "trigger": "planned accumulated-library quotas unmet by the completed initial acquisition",
+    "final_evaluation_started": false,
+    "evaluation_outcomes_exist": false,
+    "parent_results_discarded_or_rerun": false
+  },
+  "parent": {
+    "run_id": "rq1-acquisition-gemma4-12b",
+    "results_directory": "results/final/rq1-acquisition-gemma4-12b",
+    "completed_units": 180,
+    "successful_units": 86,
+    "repository_commit": "8bd452e76120da21d721c6e894d1ce5af4912ca9",
+    "queue_sha256": "1f401869ea877969072f4d73e314db5841ff3f9aae875057ec3e4b5fe468ee09",
+    "task_manifest": "artifacts/task_manifests/frozen/acquisition-b64c383e0f335b90.json",
+    "task_manifest_sha256": "717aa855c4947c2503aa019d014a474b77fbabcf0d45825de8d1aa41ab414ef2",
+    "pool_size": 34,
+    "pool_hash": "11579cfe7ae0b232f233a9527fe96bae5985b50416b7408f2be89af2a4031341",
+    "closeout_manifest": "artifacts/acquisition-closeout/rq1-acquisition-gemma4-12b/closeout-manifest.json",
+    "closeout_manifest_sha256": "98c54bb3d33816da4771d7185a23a7cf2b739e550d87f59998214bf454d629de"
+  },
+  "inherited_acquisition_protocol_sha256": "7e76ea460584b423684a1d406749ec3cebefa398f1ad4fcc27490450e5abc84d",
+  "inherited_acquisition_protocol": {
+    "schema_version": 1,
+    "policy_version": "acquisition-execution-v2",
+    "decision_record": "docs/decisions/007-acquisition-execution-policy.md",
+    "frozen_before_scientific_acquisition": true,
+    "split": "train",
+    "task_families": [
+      "pick_and_place",
+      "pick_two_and_place",
+      "look_at_object",
+      "clean_and_place",
+      "heat_and_place",
+      "cool_and_place"
+    ],
+    "initial_task_count": 180,
+    "tasks_per_family": 30,
+    "automatic_extension": false,
+    "later_hard_cap": {
+      "total": 240,
+      "per_family": 40
+    },
+    "task_selection": {
+      "version": "task-selection-v1",
+      "seed": 1,
+      "requested_count": 180,
+      "balancing": "round_robin_families",
+      "information": "train_metadata_only"
+    },
+    "acquisition_action_budget": 50,
+    "action_budget_varies_by_task_or_family": false,
+    "environment_seed": 0,
+    "fresh_session_per_task": true,
+    "profile": "rq1-acquisition",
+    "model": "gemma4:12b",
+    "model_quantization": "Q4_K_M",
+    "model_decision_record": "docs/decisions/010-gemma-backbone-and-model-output-failures.md",
+    "inference": {
+      "temperature": 0,
+      "seed": 42,
+      "action_selection_protocol": "action-index-history-v3",
+      "action_history": "full_within_episode_actions_and_observations",
+      "action_history_decision_record": "docs/decisions/008-action-selection-episode-history.md",
+      "initial_observation": "verbatim_reset_observation_at_every_decision",
+      "inventory": "not_observed_marker_inventory_only_via_inventory_action",
+      "action_index_parsing": "exactly_one_action_index_line_surrounding_prose_ignored",
+      "interface_decision_record": "docs/decisions/009-observation-interface-corrections.md",
+      "max_selection_attempts": 3,
+      "think": false,
+      "output_token_cap": 2048,
+      "output_cap_parameter": "options.num_predict",
+      "model_context_length": 32768,
+      "model_timeout_seconds": 180,
+      "bridge_timeout_seconds": 300,
+      "model_output_failure_policy": "invalid_or_capped_response_consumes_one_selection_attempt",
+      "infrastructure_failure_policy": "provider_bridge_or_environment_execution_error_only",
+      "determinism": "seed_and_temperature_fixed_provider_inference_not_claimed_deterministic",
+      "model_decision_record": "docs/decisions/010-gemma-backbone-and-model-output-failures.md"
+    },
+    "scientific_retrieval_during_acquisition": false,
+    "skill_creation": {
+      "author": "same_experimental_agent",
+      "separate_summariser": false,
+      "trigger": "successful_train_episode_only",
+      "mode": "create_only",
+      "patching": false,
+      "max_candidates_per_successful_episode": 1,
+      "failed_episode_candidates": 0,
+      "infrastructure_failure_candidates": 0,
+      "generation_protocol": "post-success-skill-v1",
+      "generation_attempts": 1,
+      "prompt": "hermes/prompts/post_success_learning.md",
+      "validation_prompt": "hermes/prompts/skill_validation.md",
+      "text_format": "skill-text-v1",
+      "validation_rules": [
+        "format_title_body_or_no_skill",
+        "no_task_id_pattern",
+        "no_room_number",
+        "no_object_instance_number",
+        "no_source_task_identifier",
+        "no_executed_instance_action_verbatim",
+        "no_exact_normalized_duplicate"
+      ]
+    },
+    "duplicate_policy": {
+      "acquisition_rejection": "exact_normalized_duplicate_only",
+      "normalization": "skill-text-v1 whitespace normalization: trim and collapse whitespace runs, including line endings; case preserved",
+      "semantic_deduplication": false,
+      "embedding_deduplication": false,
+      "llm_duplicate_judge": false,
+      "near_duplicates": "preserved",
+      "retrospective_library_deduplication": false
+    },
+    "persistence": {
+      "completion_authority": "results.jsonl",
+      "skill_pool": "append-only; rebuilt from committed completed results in queue order; skill_pool.json is a derived atomic snapshot",
+      "checkpoint": "atomic after every unit",
+      "infrastructure_failure": "genuine execution failures only (provider, bridge, environment, device, OS); failed result without skill; run halts for chronological retry-failed",
+      "model_output_failure": "invalid or output-capped responses consume action-selection attempts inside the episode and are never infrastructure failures",
+      "resume": "fail closed on commit, runtime, configuration, queue, or skill-pool drift"
+    }
+  },
+  "scientific_settings_changed": false,
+  "split": "train",
+  "task_families": [
+    "pick_and_place",
+    "pick_two_and_place",
+    "look_at_object",
+    "clean_and_place",
+    "heat_and_place",
+    "cool_and_place"
+  ],
+  "extension_task_count": 60,
+  "extension_tasks_per_family": 10,
+  "logical_acquisition_positions": {
+    "first": 181,
+    "last": 240
+  },
+  "combined_task_count_after_completion": 240,
+  "combined_tasks_per_family_after_completion": 40,
+  "task_selection": {
+    "version": "task-selection-v1",
+    "seed": 1,
+    "requested_count": 240,
+    "balancing": "round_robin_families",
+    "selected_positions": {
+      "first": 181,
+      "last": 240
+    },
+    "information": "train_metadata_only",
+    "rule": "recompute the frozen selection at the combined count; positions 1 to the parent count must equal the parent frozen queue in order; the remaining positions are the extension queue",
+    "parent_queue_tasks_excluded": true,
+    "difficulty_or_outcome_based_selection": false
+  },
+  "starting_skill_pool": {
+    "source": "parent results.jsonl (authority), verified against the parent skill_pool.json snapshot, the closeout manifest, and the recorded hash",
+    "size": 34,
+    "hash": "11579cfe7ae0b232f233a9527fe96bae5985b50416b7408f2be89af2a4031341",
+    "empty_start": false
+  },
+  "continuation": {
+    "persistence": "append-only; separate run directory; parent results, checkpoint, and skill pool are read-only",
+    "skill_mode": "create_only",
+    "max_candidates_per_successful_episode": 1,
+    "first_new_pool_index": 35,
+    "duplicate_rejection": "exact_normalized_duplicate_only, against every parent and extension accepted skill",
+    "parent_skills_modified": false,
+    "parent_skills_deleted": false,
+    "semantic_deduplication": false,
+    "near_duplicates": "preserved",
+    "retrospective_deduplication": false,
+    "provenance_rewritten": false,
+    "patching": false
+  },
+  "fresh_session_per_task": true,
+  "acquisition_action_budget": 50,
+  "model": "gemma4:12b",
+  "model_digest": "4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c",
+  "model_quantization": "Q4_K_M",
+  "inference": {
+    "temperature": 0,
+    "seed": 42,
+    "think": false,
+    "output_token_cap": 2048,
+    "model_context_length": 32768,
+    "action_selection_protocol": "action-index-history-v3",
+    "action_history": "full_within_episode_actions_and_observations",
+    "initial_observation": "verbatim_reset_observation_at_every_decision",
+    "inventory": "not_observed_marker_inventory_only_via_inventory_action",
+    "action_index_parsing": "exactly_one_action_index_line_surrounding_prose_ignored",
+    "max_selection_attempts": 3
+  },
+  "skill_generation": {
+    "author": "same_experimental_agent",
+    "protocol": "post-success-skill-v1",
+    "attempts": 1
+  },
+  "scientific_retrieval_during_acquisition": false,
+  "failures": {
+    "model_output_failure": "invalid or output-capped responses consume action-selection attempts inside the episode; a scientific outcome, never an infrastructure failure",
+    "infrastructure_failure": "genuine execution failures only; failed result without skill; run halts for chronological retry-failed"
+  },
+  "resume": {
+    "checkpoint": "atomic after every unit; results.jsonl is the recovery authority",
+    "completed_units_rerun": false,
+    "fail_closed_on": "commit, runtime, configuration, queue, parent, or skill-pool drift"
+  }
+}
