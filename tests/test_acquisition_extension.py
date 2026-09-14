@@ -549,6 +549,51 @@ class ExtensionGateTests(unittest.TestCase):
         self.assertEqual([(True, reference.run_id, 7), (True, reference.run_id, 8)], [(item["scientific_evidence"], item["parent_run_id"], item["logical_acquisition_index"]) for item in rows])
         self.assertEqual((2, 4), (rows[0]["skill_pool_size_before"], len(rebuild_pool(rows, base=state.pool))))
 
+        # The hard cap counts every scientific acquisition run: a second run of the same
+        # queue is refused before any episode, while the existing run may still resume.
+        second = argparse.Namespace(yes=True, run_id="rq1-acquisition-extension-second", task_manifest=None, max_runs=None, backup_dir=None, require_backup=False)
+        with patch("rq1.acquisition.extension.git_state", return_value=(COMMIT, True, None)), patch.object(launch, "ACQUISITION_HARD_CAP", 60):
+            blocked = extension_launch.extension_run(root, second, resume=False, retry_failed=False, parent=reference)
+            new_run_plan = extension_launch.extension_plan(root, argparse.Namespace(task_manifest=None), parent=reference)
+            resume_plan = extension_launch.extension_plan(root, argparse.Namespace(task_manifest=None, run_id=run_id), parent=reference)
+        self.assertEqual(("blocked", False, 60), (blocked["status"], blocked["hard_cap"]["permitted"], blocked["hard_cap"]["allocated_units_other_runs"]))
+        self.assertFalse((root / "results" / "final" / "rq1-acquisition-extension-second").exists())
+        self.assertEqual((False, True), (new_run_plan["launch_permitted"], resume_plan["launch_permitted"]))
+
+
+def write_phase_manifest(root: Path, run_id: str, families: dict, *, scientific: bool = True) -> None:
+    directory = root / "results" / "final" / run_id / "manifests"
+    directory.mkdir(parents=True)
+    planned = [{"payload": {"task_family": family}} for family, count in families.items() for _ in range(count)]
+    payload = {"configuration": {"scientific_evidence": scientific}, "planned_runs": planned, "planned_run_count": len(planned)}
+    (directory / "acquisition.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+class HardCapTests(unittest.TestCase):
+    def test_no_scientific_acquisition_beyond_240_units_or_40_per_family(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            queue_180 = [family for family in TASK_FAMILIES for _ in range(30)]
+            queue_60 = [family for family in TASK_FAMILIES for _ in range(10)]
+            self.assertTrue(launch.hard_cap_status(root, PARENT.run_id, queue_180)["permitted"])
+            write_phase_manifest(root, PARENT.run_id, {family: 30 for family in TASK_FAMILIES})
+            self.assertTrue(launch.hard_cap_status(root, EXTENSION_RUN_ID, queue_60)["permitted"])
+            write_phase_manifest(root, EXTENSION_RUN_ID, {family: 10 for family in TASK_FAMILIES})
+            write_phase_manifest(root, "non-scientific-check", {family: 10 for family in TASK_FAMILIES}, scientific=False)
+            # Resuming either completed run adds no unit.
+            for run_id, queue in ((PARENT.run_id, queue_180), (EXTENSION_RUN_ID, queue_60)):
+                status = launch.hard_cap_status(root, run_id, queue)
+                self.assertEqual((True, 240 - len(queue)), (status["permitted"], status["allocated_units_other_runs"]))
+            for run_id, queue in (("rq1-acquisition-gemma4-12b-ext-second", queue_60), ("rq1-acquisition-new", queue_180), ("rq1-acquisition-episode-241", ["cool_and_place"])):
+                status = launch.hard_cap_status(root, run_id, queue)
+                self.assertFalse(status["permitted"])
+                self.assertTrue(any("hard cap of 240" in problem for problem in status["problems"]))
+                self.assertTrue(any("40 tasks per family" in problem for problem in status["problems"]))
+            broken = root / "results" / "final" / "unreadable" / "manifests"
+            broken.mkdir(parents=True)
+            (broken / "acquisition.json").write_text("{", encoding="utf-8")
+            self.assertFalse(launch.hard_cap_status(root, EXTENSION_RUN_ID, queue_60)["permitted"])
+
 
 if __name__ == "__main__":
     unittest.main()

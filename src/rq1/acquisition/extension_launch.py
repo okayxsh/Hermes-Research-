@@ -63,6 +63,7 @@ from rq1.acquisition.launch import (
     _scientific_queue_task_ids,
     _train_task_family,
     attempt_lineage,
+    hard_cap_status,
 )
 from rq1.acquisition.models import AcquisitionPlan
 from rq1.acquisition.protocol import (
@@ -169,11 +170,13 @@ def propose_extension(root: Path, args: argparse.Namespace, parent: ParentRefere
 def extension_plan(root: Path, args: argparse.Namespace, parent: ParentReference = PARENT) -> dict[str, Any]:
     manifest_path = Path(args.task_manifest) if getattr(args, "task_manifest", None) else None
     gate = validate_extension_gates(root, task_manifest_path=manifest_path, parent=parent)
+    cap = hard_cap_status(root, getattr(args, "run_id", None), [task.family for task in gate.task_manifest.tasks] if gate.task_manifest else [])
     return {
         "ok": True,
         "dry_run": True,
-        "launch_permitted": gate.valid,
+        "launch_permitted": gate.valid and cap["permitted"],
         "gate": gate.to_dict(),
+        "hard_cap": cap,
         "parent": parent.to_dict(),
         "extension_protocol_sha256": extension_protocol_sha256(parent),
         "extension_protocol": extension_protocol_definition(parent),
@@ -596,6 +599,9 @@ def extension_run(root: Path, args: argparse.Namespace, *, resume: bool, retry_f
     gate = validate_extension_gates(root, task_manifest_path=manifest_path, parent=parent)
     if not gate.valid or gate.task_manifest is None or gate.environment is None or gate.protocol is None:
         return _blocked(gate=gate.to_dict())
+    cap = hard_cap_status(root, run_id, [task.family for task in gate.task_manifest.tasks])
+    if not cap["permitted"]:
+        return _blocked(hard_cap=cap)
     drift = verify_launch_environment(root, gate.environment.inputs)
     state = load_parent(root, parent)
     drift.extend(state.problems)

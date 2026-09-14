@@ -63,7 +63,7 @@ from rq1.hermes.episode_driver import (
 )
 from rq1.skills.leakage import find_leakage
 from rq1.tasks.discovery import CANONICAL_FAMILIES, discover_tasks
-from rq1.tasks.selection import ACQUISITION_INITIAL_TASKS
+from rq1.tasks.selection import ACQUISITION_HARD_CAP, ACQUISITION_HARD_CAP_PER_FAMILY, ACQUISITION_INITIAL_TASKS
 from rq1.utils.hashing import sha256_file
 from rq1.utils.time import utc_now
 
@@ -159,14 +159,66 @@ def _next_step(status: str, run_id: str) -> str:
     }.get(status, "inspect checkpoint.json")
 
 
+def scientific_acquisition_allocation(root: Path) -> dict[str, Any]:
+    """Planned units of every scientific acquisition run under ``results/final``: the hard-cap ledger."""
+    runs: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for path in sorted((root / "results" / "final").glob("*/manifests/acquisition.json")):
+        try:
+            phase = json.loads(path.read_text(encoding="utf-8"))
+            planned = list(phase["planned_runs"])
+            scientific = phase["configuration"].get("scientific_evidence")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            problems.append(f"unreadable acquisition phase manifest: {path}")
+            continue
+        if scientific is not True:
+            continue
+        runs[path.parent.parent.name] = {
+            "units": len(planned),
+            "families": dict(Counter(str((unit.get("payload") or {}).get("task_family")) for unit in planned)),
+        }
+    return {"runs": runs, "problems": problems}
+
+
+def hard_cap_status(root: Path, run_id: str | None, task_families: Sequence[str]) -> dict[str, Any]:
+    """Whether running ``run_id`` on this queue keeps scientific acquisition within the frozen hard cap.
+
+    Every other scientific acquisition run counts with its whole planned queue, so resuming
+    an existing run adds nothing while any new run past 240 units (40 per family) is refused.
+    """
+    allocation = scientific_acquisition_allocation(root)
+    others = {name: value for name, value in allocation["runs"].items() if name != run_id}
+    families: Counter[str] = Counter(task_families)
+    for value in others.values():
+        families.update(value["families"])
+    total = sum(value["units"] for value in others.values()) + len(task_families)
+    problems = list(allocation["problems"])
+    if total > ACQUISITION_HARD_CAP:
+        problems.append(f"scientific acquisition would total {total} units, above the frozen hard cap of {ACQUISITION_HARD_CAP}")
+    over = {family: count for family, count in sorted(families.items()) if count > ACQUISITION_HARD_CAP_PER_FAMILY}
+    if over:
+        problems.append(f"scientific acquisition would exceed the frozen hard cap of {ACQUISITION_HARD_CAP_PER_FAMILY} tasks per family: {over}")
+    return {
+        "permitted": not problems,
+        "problems": problems,
+        "hard_cap": {"total": ACQUISITION_HARD_CAP, "per_family": ACQUISITION_HARD_CAP_PER_FAMILY},
+        "run_id": run_id,
+        "requested_units": len(task_families),
+        "allocated_units_other_runs": total - len(task_families),
+        "other_runs": {name: value["units"] for name, value in others.items()},
+    }
+
+
 def acquisition_plan(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = Path(args.task_manifest) if getattr(args, "task_manifest", None) else None
     gate = validate_acquisition_gates(root, task_manifest_path=manifest_path)
+    cap = hard_cap_status(root, getattr(args, "run_id", None), [task.family for task in gate.task_manifest.tasks] if gate.task_manifest else [])
     return {
         "ok": True,
         "dry_run": True,
-        "launch_permitted": gate.valid,
+        "launch_permitted": gate.valid and cap["permitted"],
         "gate": gate.to_dict(),
+        "hard_cap": cap,
         "protocol_sha256": protocol_sha256(),
         "protocol": protocol_definition(),
     }
@@ -181,6 +233,9 @@ def scientific_run(root: Path, args: argparse.Namespace, *, resume: bool, retry_
     gate = validate_acquisition_gates(root, task_manifest_path=manifest_path)
     if not gate.valid or gate.task_manifest is None or gate.environment is None or gate.protocol is None:
         return {"ok": False, "status": "blocked", "gate": gate.to_dict()}
+    cap = hard_cap_status(root, str(args.run_id), [task.family for task in gate.task_manifest.tasks])
+    if not cap["permitted"]:
+        return {"ok": False, "status": "blocked", "hard_cap": cap}
     drift = verify_launch_environment(root, gate.environment.inputs)
     if discover_tasks(default_data_dir(), "train").data_root_identity != gate.task_manifest.data_root_identity:
         drift.append("ALFWorld TRAIN data identity differs from the approved frozen queue")
@@ -729,6 +784,9 @@ def production_preflight(root: Path, args: argparse.Namespace) -> dict[str, Any]
         and configuration["scientific_evidence"] is True
     )
     checks["production_run_id_unused"] = not run_id.startswith(CHECK_PREFIX) and not (root / "results" / "final" / run_id).exists()
+    cap = hard_cap_status(root, run_id, [task.family for task in proposal.tasks] if proposal is not None else [])
+    checks["acquisition_hard_cap_respected"] = proposal is not None and cap["permitted"]
+    details["hard_cap"] = cap
     checks["results_final_writable"] = _writable(root / "results" / "final")
     checks["backup_directory_writable"] = _writable(Path(backup_dir))
     free = shutil.disk_usage(root).free

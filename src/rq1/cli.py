@@ -883,6 +883,7 @@ def build_parser() -> argparse.ArgumentParser:
     acquisition = sub.add_parser("acquisition", help="Train-only RQ1 acquisition: approval-gated scientific runs and non-scientific checks.")
     acquisition_sub = acquisition.add_subparsers(dest="acquisition_command", required=True)
     item = acquisition_sub.add_parser("plan"); item.add_argument("--task-manifest")
+    item.add_argument("--run-id", help="Evaluate the hard cap for resuming this existing run (default: a new run).")
     def add_durable_run_options(item: argparse.ArgumentParser) -> None:
         item.add_argument("--run-id", required=True)
         item.add_argument("--max-runs", type=int)
@@ -906,6 +907,7 @@ def build_parser() -> argparse.ArgumentParser:
     extension_sub = extension.add_subparsers(dest="extension_command", required=True)
     extension_sub.add_parser("propose", help="Write the 60-task continuation queue proposal and the immutable starting-pool snapshot.")
     item = extension_sub.add_parser("plan"); item.add_argument("--task-manifest")
+    item.add_argument("--run-id", help="Evaluate the hard cap for resuming this existing run (default: a new run).")
     for name in ("run", "resume", "retry-failed"):
         item = extension_sub.add_parser(name); add_durable_run_options(item); item.add_argument("--yes", action="store_true")
     item = extension_sub.add_parser("validate"); item.add_argument("--run-id", required=True)

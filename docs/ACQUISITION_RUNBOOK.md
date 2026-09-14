@@ -126,3 +126,23 @@ A human reviewer approves the three requests in
 retried exactly as in sections 2–6 with `acquisition-extension` in place of `acquisition`
 and `--run-id $EXT`. `acquisition-extension validate --run-id $EXT` reports the starting pool,
 the appended skills, and the combined per-family pool.
+
+## 9. Acquisition closed at the hard cap (240)
+
+Scientific acquisition is complete: the 180 parent units and 60 extension units reach the
+frozen hard cap of 240 tasks (40 per family). No further acquisition is authorized.
+
+- The following commands count the planned queue of every scientific acquisition run under
+  `results/final/`: `run`, `resume` and `retry-failed` of both `acquisition` and
+  `acquisition-extension`, both `plan` commands, and both preflights.
+- They refuse any run that would take the total past 240 or a family past 40.
+- Resuming an existing run adds no unit. Pass `--run-id` to `plan` to check a resume.
+
+The read-only closeout tooling is in `scripts/acquisition_closeout/`:
+- `closeout_180.py` and `build_archive_180.py`: the parent run.
+- `closeout_240.py`, `verify_hard_cap_240.py` and `build_archive_240.py`: the complete
+  acquisition, including the raw 50-skill pool, yield report, human skill-validation package,
+  and library-feasibility analysis.
+
+They write only under `artifacts/acquisition-closeout/`, `artifacts/skill-validation/`, and
+`/workspace/persistent/exports/`, and refuse to overwrite existing outputs.

@@ -43,7 +43,7 @@ from rq1.acquisition.extension_protocol import (
     extension_protocol_sha256,
 )
 from rq1.acquisition.gates import ENVIRONMENT_FREEZE, PROTOCOL_FREEZE, load_task_manifest, queue_identity_sha256
-from rq1.acquisition.launch import CHECK_PREFIX, HERMES_PYTHON, PRODUCTION_BACKUP_DIR, _read_request, _writable
+from rq1.acquisition.launch import CHECK_PREFIX, HERMES_PYTHON, PRODUCTION_BACKUP_DIR, _read_request, _writable, hard_cap_status
 from rq1.acquisition.protocol import ACQUISITION_ACTION_BUDGET, ACQUISITION_MODEL, ACQUISITION_TEMPERATURE, protocol_sha256
 from rq1.acquisition.runner import AcquisitionError, AcquisitionRunner
 from rq1.acquisition.skill_creation import prompt_hashes
@@ -294,6 +294,9 @@ def extension_preflight(root: Path, args: argparse.Namespace, parent: ParentRefe
     checks["extension_run_id_unused"] = (
         run_id != parent.run_id and not run_id.startswith((CHECK_PREFIX, EXTENSION_CHECK_PREFIX)) and not run_directory.exists()
     )
+    cap = hard_cap_status(root, run_id, [task.family for task in proposal.tasks] if proposal is not None else [])
+    checks["acquisition_hard_cap_respected"] = proposal is not None and cap["permitted"]
+    details["hard_cap"] = cap
     checks["extension_outputs_separate_from_parent"] = run_directory.resolve() != parent_dir and not run_directory.resolve().is_relative_to(parent_dir)
     checks["extension_checkpoint_path_available"] = not (run_directory / "checkpoint.json").exists() and not (run_directory / "results.jsonl").exists()
     checks["results_final_writable"] = _writable(root / "results" / "final")
