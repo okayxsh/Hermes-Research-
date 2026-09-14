@@ -43,6 +43,18 @@ ACQUISITION_EXTENSION_PROTOCOL_REQUIRED = ACQUISITION_PROTOCOL_REQUIRED | {
     "inherited_protocol_sha256", "parent_run_id", "parent_pool_size", "parent_pool_hash",
     "parent_queue_sha256", "parent_closeout_manifest_sha256", "starting_pool_sha256",
 }
+EVALUATION_AMENDMENT_REQUIRED = {
+    "repository_commit", "amendment_version", "protocol", "protocol_sha256", "raw_pool_hash", "raw_pool_snapshot_sha256",
+    "combined_closeout_manifest_sha256", "skill_quality_rubric_sha256", "core_review_template_sha256", "decision_record_sha256",
+}
+EVALUATION_ENVIRONMENT_REQUIRED = ACQUISITION_ENVIRONMENT_REQUIRED | {
+    "os", "kernel", "cuda_version", "torch_version", "torch_cuda_version", "embedding_dimension", "evaluation_matrix_sha256",
+}
+EVALUATION_PROTOCOL_REQUIRED = {
+    "repository_commit", "protocol", "protocol_sha256", "task_manifest_sha256", "task_queue_sha256", "controlled_failures_sha256",
+    "evaluation_matrix_sha256", "prompt_hashes", "decision_records_sha256", "inference_seeds", "skill_quality_rubric_sha256",
+    "relevance_rubric_sha256",
+}
 REQUIRED_INPUTS = {
     "environment": ENVIRONMENT_REQUIRED,
     "protocol": PROTOCOL_REQUIRED,
@@ -50,9 +62,13 @@ REQUIRED_INPUTS = {
     "acquisition-protocol": ACQUISITION_PROTOCOL_REQUIRED,
     "acquisition-extension-environment": ACQUISITION_EXTENSION_ENVIRONMENT_REQUIRED,
     "acquisition-extension-protocol": ACQUISITION_EXTENSION_PROTOCOL_REQUIRED,
+    "evaluation-amendment": EVALUATION_AMENDMENT_REQUIRED,
+    "evaluation-environment": EVALUATION_ENVIRONMENT_REQUIRED,
+    "evaluation-protocol": EVALUATION_PROTOCOL_REQUIRED,
 }
 ACQUISITION_EVIDENCE_MODE = "non_scientific_acquisition_check"
 ACQUISITION_EXTENSION_EVIDENCE_MODE = "non_scientific_acquisition_extension_check"
+EVALUATION_EVIDENCE_MODE = "non_scientific_evaluation_check"
 
 
 def _sha(value: Any) -> str:
@@ -100,16 +116,19 @@ def build_freeze(root: Path, kind: str, approval: dict[str, Any], pilot_report: 
     commit, clean, error = git_state(root)
     if error or not clean or not commit:
         raise ValueError("freeze requires a clean repository with a resolved commit")
-    if kind.startswith("acquisition-"):
-        extension = kind.startswith("acquisition-extension-")
+    if kind.startswith(("acquisition-", "evaluation-")):
+        if kind.startswith("evaluation-"):
+            mode, message = EVALUATION_EVIDENCE_MODE, "evaluation freeze requires a passed non-scientific evaluation check report"
+        elif kind.startswith("acquisition-extension-"):
+            mode, message = ACQUISITION_EXTENSION_EVIDENCE_MODE, "acquisition extension freeze requires a passed non-scientific acquisition extension check report"
+        else:
+            mode, message = ACQUISITION_EVIDENCE_MODE, "acquisition freeze requires a passed non-scientific acquisition check report"
         if (
-            pilot_report.get("mode") != (ACQUISITION_EXTENSION_EVIDENCE_MODE if extension else ACQUISITION_EVIDENCE_MODE)
+            pilot_report.get("mode") != mode
             or pilot_report.get("passed") is not True
             or pilot_report.get("scientific_evidence") is not False
         ):
-            if extension:
-                raise ValueError("acquisition extension freeze requires a passed non-scientific acquisition extension check report")
-            raise ValueError("acquisition freeze requires a passed non-scientific acquisition check report")
+            raise ValueError(message)
         if pilot_report.get("repository_commit") != commit or inputs.get("repository_commit") != commit:
             raise ValueError("acquisition freeze evidence and inputs must match the current commit")
         pilot_run_id = str(pilot_report.get("run_id", ""))

@@ -129,6 +129,11 @@ class RealALFWorldAdapter:
             "general": {"training_method": "dagger"}, "dagger": {"training": {"max_nb_steps_per_episode": action_limit}},
         }
         train_eval = "train" if task.split == "train" else "eval_in_distribution"
+        if task.split == "valid_unseen":
+            # Authorized evaluation only: a one-game root avoids scanning the split, and the
+            # out-of-distribution mode never attaches the expert plan to the observed state.
+            train_eval = "eval_out_of_distribution"
+            config["dataset"]["eval_ood_data_path"] = str((root / task.game_file).parent)
         wrapper = AlfredTWEnv(config, train_eval=train_eval)
         wrapper.game_files, wrapper.num_games = [str(root / task.game_file)], 1
         return wrapper.init_env(batch_size=1)

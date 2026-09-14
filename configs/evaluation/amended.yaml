@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "amendment_version": "pre-evaluation-library-amendment-v1",
+  "policy_version": "controlled-recovery-evaluation-v1",
+  "decision_record": "docs/decisions/012-pre-evaluation-library-amendment.md",
+  "frozen_before_evaluation": true,
+  "amendment": {
+    "reason": "acquisition ended at the pre-approved hard cap of 240 before evaluation; the raw pool cannot fill Clean-24/Accum-60/Accum-96",
+    "raw_pool_hash": "7fb4b72df6f197bd097e79ae346e5ad6498efc24ed6aa6b30c63408daf1196ba",
+    "raw_skills_per_family": {
+      "pick_and_place": 11,
+      "pick_two_and_place": 8,
+      "look_at_object": 4,
+      "clean_and_place": 9,
+      "heat_and_place": 15,
+      "cool_and_place": 3
+    },
+    "original_conditions": {
+      "NoLib": 0,
+      "Clean-24": 24,
+      "Accum-60": 60,
+      "Accum-96": 96
+    },
+    "original_conditions_feasible": false,
+    "evaluation_outcomes_observed": false,
+    "skills_fabricated": false,
+    "acquisition_episodes_discarded": false,
+    "quality_rule_loosened": false,
+    "semantic_deduplication": false
+  },
+  "libraries": {
+    "conditions": [
+      "NoLib",
+      "Core-6",
+      "Accum-12",
+      "Accum-18"
+    ],
+    "per_family_sizes": {
+      "NoLib": 0,
+      "Core-6": 1,
+      "Accum-12": 2,
+      "Accum-18": 3
+    },
+    "library_sizes": {
+      "NoLib": 0,
+      "Core-6": 6,
+      "Accum-12": 12,
+      "Accum-18": 18
+    },
+    "rule": "A",
+    "core": "per family, the chronologically earliest skill marked PASS under skill-quality-rubric-v1",
+    "extras": "per family, the chronologically earliest acquired skills not in the core, whether or not reviewed or passing",
+    "nesting": "Core-6 subset Accum-12 subset Accum-18, identical core in every non-empty library",
+    "balanced_per_family": true,
+    "semantic_deduplication": false,
+    "near_duplicates": "preserved",
+    "source": "the raw 50-skill acquisition pool only",
+    "rubric": "docs/SKILL_QUALITY_RUBRIC.md",
+    "skill_text_format": "skill-text-v1"
+  },
+  "tasks": {
+    "split": "valid_unseen",
+    "task_families": [
+      "pick_and_place",
+      "pick_two_and_place",
+      "look_at_object",
+      "clean_and_place",
+      "heat_and_place",
+      "cool_and_place"
+    ],
+    "tasks_per_family": 5,
+    "task_count": 30,
+    "selection": {
+      "version": "task-selection-v2",
+      "rule": "five_longest_handcoded_expert_routes_per_family",
+      "length_definition": "number of actions in the ALFWorld 0.4.2 hand-coded expert (TextWorld) route from reset to success",
+      "tie_break": "task_id ascending",
+      "tasks_per_family": 5,
+      "replacement": "next-longest task of the same family when no checkpoint admits a validated controlled failure before freeze",
+      "information": "valid_unseen task metadata and hand-coded expert routes only; no model, agent, or acquisition outcome"
+    }
+  },
+  "controlled_failure": {
+    "version": "midpoint-navigation-detour-v1",
+    "candidate_order": "reference route of length L: index L//2, then L//2+1, L//2-1, L//2+2, ... (prefix non-empty, continuation non-empty)",
+    "eligible_checkpoint": "the next reference action is navigation ('go to ...')",
+    "perturbation": "controlled reversible action perturbation: dispatch the lexicographically first admissible 'go to ...' action that differs from the next reference action",
+    "perturbation_requirements": [
+      "legal admissible navigation",
+      "differs from the expected next action",
+      "valid non-terminal transition",
+      "changes the observation (a different location)",
+      "non-goal and non-destructive (navigation only)",
+      "deterministic and identical for every condition and seed of the task"
+    ],
+    "oracle_validation": "in the real bridge: replay prefix -> detour -> remaining reference route (whose first action is navigation, so it rejoins) must complete with ALFWorld success",
+    "oracle_visibility": "oracle and reference actions are never shown to the model",
+    "object_relocation": false,
+    "runtime_verification": "each episode must reproduce the frozen checkpoint and post-detour observable digests; a mismatch fails the unit closed",
+    "state_digest": "sha256 of canonical JSON {observation, admissible_actions, step_number} of the bridge state",
+    "canonical_failure_message": "The environment state no longer matches the expected plan. Reassess the current state and continue."
+  },
+  "matrix": {
+    "conditions": [
+      "NoLib",
+      "Core-6",
+      "Accum-12",
+      "Accum-18"
+    ],
+    "seeds": [
+      11,
+      29,
+      47
+    ],
+    "units": 360,
+    "condition_labels_visible_to_model": false,
+    "schedule": {
+      "version": "balanced-interleaved-v1",
+      "cells": "task x seed (90), ordered by family (canonical order), frozen task order, seed ascending",
+      "condition_order_within_cell": "CONDITIONS rotated left by ((cell_index // SHARD_COUNT) mod 4)",
+      "shards": "cell_index mod SHARD_COUNT; each shard holds 15 cells x all 4 conditions (60 units); conditions stay together per cell",
+      "outcome_dependent_reordering": false
+    },
+    "shard_count": 6
+  },
+  "episode": {
+    "fresh_session_per_unit": true,
+    "order": [
+      "reset",
+      "replay frozen checkpoint prefix",
+      "controlled detour",
+      "verify frozen digests",
+      "build failure context",
+      "single retrieval (library conditions)",
+      "inject recovery memory",
+      "recovery actions"
+    ],
+    "total_action_budget": 50,
+    "recovery_action_budget": "total_action_budget - checkpoint prefix length - 1 (the detour), fixed per task",
+    "skill_writes": false,
+    "post_success_learning": false
+  },
+  "retrieval": {
+    "model": "sentence-transformers/all-mpnet-base-v2",
+    "revision": "e8c3b32edf5434bc2275fc9bab85f82640a19130",
+    "snapshot_sha256": "bbfecb04a834241144af31e9200a3dd0df83ff0fbb2453d56a4bb383a6bfbe11",
+    "embedding_dimension": 768,
+    "normalized_embeddings": true,
+    "ranking": "cosine similarity, descending; ties by skill_id",
+    "top_k": 3,
+    "timing": "exactly once, immediately after the controlled failure and before the first recovery action",
+    "pre_failure_retrieval": false,
+    "repeated_or_per_step_retrieval": false,
+    "nolib": "no retrieval; the same recovery boundary injects an explicit no_retrieval marker",
+    "query_version": "query-v2",
+    "query_template_sha256": "d519a394b6ba45ce88e427f5bedcd3f18f4fc1b6bc9bf576531f87d8dc4a1275",
+    "query_fields": [
+      "task goal",
+      "current observation",
+      "inventory field",
+      "canonical failure message"
+    ],
+    "inventory_unobserved_marker": "<not observed \u2014 use the inventory action>",
+    "action_history_in_query": false,
+    "logged": [
+      "candidate skill ids",
+      "ranks",
+      "cosine scores",
+      "query text hash"
+    ],
+    "scores_visible_to_model": false
+  },
+  "recovery_memory": {
+    "placement": "one structured RECOVERY MEMORY block in every post-failure action-selection prompt; never the system prompt",
+    "content": "rank, skill_id, and skill text of each top-3 skill; no cosine score",
+    "nolib": "the same block with no_retrieved_skills_available = true"
+  },
+  "model": {
+    "tag": "gemma4:12b",
+    "digest": "4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c",
+    "quantization": "Q4_K_M",
+    "temperature": 0,
+    "think": false,
+    "num_predict": 2048,
+    "num_ctx": 32768,
+    "inference_seed": "the unit's evaluation replicate seed (11, 29, or 47), identical across conditions",
+    "determinism": "seed_and_temperature_fixed_provider_inference_not_claimed_deterministic",
+    "action_selection_protocol": "action-index-history-v3",
+    "action_history": "full_within_episode_actions_and_observations",
+    "initial_observation": "verbatim_reset_observation_at_every_decision",
+    "inventory": "not_observed_marker_inventory_only_via_inventory_action",
+    "action_index_parsing": "exactly_one_action_index_line_surrounding_prose_ignored",
+    "max_selection_attempts": 3,
+    "model_timeout_seconds": 180,
+    "model_output_failure_policy": "invalid_or_capped_response_consumes_one_selection_attempt",
+    "infrastructure_failure_policy": "provider_bridge_or_environment_execution_error_only"
+  },
+  "metrics": {
+    "primary": "conditional_recovery_rate",
+    "eligible_unit": "a unit that reproduced the frozen checkpoint and post-detour digests and finished its post-failure phase without an infrastructure failure",
+    "recovery_success": "ALFWorld reports done and won within the recovery action budget after the controlled failure",
+    "conditional_recovery_rate": "recovery successes / eligible units, per condition",
+    "task_completion_rate": "successful units / all scheduled units of the condition (equal to the recovery success count because the checkpoint precedes completion)",
+    "recovery_latency_actions": "post-failure environment actions up to and including the successful action (successful units only)",
+    "recovery_latency_seconds": "wall time from recovery-memory injection to the successful step's bridge result (successful units only)",
+    "post_failure_actions": "environment actions dispatched after the detour (all eligible units)",
+    "invalid_action_selections": "rejected action-selection attempts after the failure",
+    "retries": "re-asked action-selection attempts after a rejection; selection_exhausted marks three rejections at one decision",
+    "infrastructure_failure_rate": "units whose final attempt failed for a genuine execution reason / scheduled units",
+    "precision_at_3": "adjudicated human-relevant skills among the retrieved top-3 / 3, per retrieval",
+    "retrieval_noise": "1 - precision_at_3",
+    "nolib_retrieval_metrics": "reported separately as no retrieval, never coerced to 0 or 1",
+    "breakdowns": [
+      "condition",
+      "task family",
+      "seed"
+    ],
+    "uncertainty": "percentile bootstrap, 2000 replicates, seed 20260806, resampling task-seed cells",
+    "association": "Spearman rank correlation between per-retrieval noise and recovery outcomes; descriptive and non-causal"
+  },
+  "relevance_labelling": {
+    "rubric": "docs/RETRIEVAL_RELEVANCE_RUBRIC.md",
+    "raters": 2,
+    "labels": [
+      "RELEVANT",
+      "IRRELEVANT"
+    ],
+    "independent": true,
+    "blinded_to": [
+      "condition",
+      "outcome",
+      "cosine score"
+    ],
+    "agreement": "Cohen's kappa on the original independent labels",
+    "adjudication": "after independent rating; final Precision@3 uses adjudicated labels"
+  }
+}

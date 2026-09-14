@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rq1.bridge.adapters.base import IndexedTask
+from rq1.bridge.adapters.unseen_access import allowed_real_splits
 
 
 ALLOWED_REAL_SPLITS = frozenset({"train", "valid_seen"})
@@ -73,10 +74,10 @@ class TaskIndex:
     identity: str
 
     def resolve(self, task_id: str, split: str) -> IndexedTask:
-        if split not in ALLOWED_REAL_SPLITS:
+        if split not in allowed_real_splits():
             raise TaskIndexError(
                 "Real ALFWorld permits only train or valid_seen; "
-                "valid_unseen is never available here."
+                "valid_unseen is never available here without explicit evaluation authorization."
             )
 
         matches = [
@@ -100,7 +101,7 @@ class TaskIndex:
         return matches[0]
 
     def for_split(self, split: str) -> tuple[IndexedTask, ...]:
-        if split not in ALLOWED_REAL_SPLITS:
+        if split not in allowed_real_splits():
             raise TaskIndexError(
                 "Only train and valid_seen can be indexed by this command."
             )
@@ -132,9 +133,12 @@ class TaskIndex:
 def build_task_index(
     data_root: Path,
     *,
-    splits: tuple[str, ...] = ("train", "valid_seen"),
+    splits: tuple[str, ...] | None = None,
 ) -> TaskIndex:
-    if any(split not in ALLOWED_REAL_SPLITS for split in splits):
+    # valid_unseen is indexed only under an explicit evaluation authorization.
+    if splits is None:
+        splits = tuple(sorted(allowed_real_splits()))
+    if any(split not in allowed_real_splits() for split in splits):
         raise TaskIndexError(
             "valid_unseen is intentionally excluded from real adapter indexing."
         )

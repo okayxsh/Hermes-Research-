@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from rq1.bridge.adapters.unseen_access import UnseenAccessError, require_unseen_access
+
 
 class ReferenceRouteError(RuntimeError):
     pass
@@ -36,7 +38,13 @@ def _game_path(data_dir: Path, task_id: str, split: str) -> Path:
 
 def derive_handcoded_reference(data_dir: Path, task_id: str, split: str) -> ReferenceRoute:
     """Derive a route from ALFWorld's installed hand-coded expert surface."""
-    if split != "valid_seen":
+    if split == "valid_unseen":
+        # Only the explicitly authorized evaluation preparation or evaluation may derive these.
+        try:
+            require_unseen_access()
+        except UnseenAccessError as exc:
+            raise ReferenceRouteError(str(exc)) from exc
+    elif split != "valid_seen":
         raise ReferenceRouteError("recovery reference routes are valid_seen-only before final evaluation")
     try:
         from alfworld.agents.environment.alfred_tw_env import AlfredTWEnv

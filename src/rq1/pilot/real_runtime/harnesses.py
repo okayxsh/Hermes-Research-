@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from rq1.bridge.adapters.unseen_access import require_unseen_access
 from rq1.hermes.episode_driver import EpisodeDriverError, RealEpisodeDriver, RealEpisodeSession
 from rq1.recovery.controlled_failure import (
     CANONICAL_FAILURE_MESSAGE,
@@ -20,6 +21,16 @@ from rq1.recovery.controlled_failure import (
     select_reversible_navigation_action,
 )
 from rq1.recovery.models import RecoveryState
+
+
+def bridge_state_digest(state: Mapping[str, Any]) -> str:
+    """Observable digest of a bridge state: observation, admissible actions, and step number."""
+    payload = {
+        "observation": state.get("observation"),
+        "admissible_actions": state.get("admissible_actions"),
+        "step_number": state.get("step_number"),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _recovery_state(state: Mapping[str, Any], *, task_goal: str) -> RecoveryState:
@@ -96,7 +107,14 @@ class RealAcquisitionHarness:
 
 
 class RealRecoveryHarness:
-    """Real valid_seen recovery adapter with a validation-only detour oracle."""
+    """Real recovery adapter with a validation-only detour oracle.
+
+    It serves valid_seen by default.  The amended evaluation (Decision 012) passes
+    ``allowed_split="valid_unseen"``, which additionally requires the explicit
+    valid_unseen authorization, and a ``frozen_perturbation``: the checkpoint and
+    detour proven by the pre-freeze oracle, which every episode must reproduce
+    exactly (digest equality) instead of re-running the oracle.
+    """
 
     def __init__(
         self,
@@ -107,6 +125,9 @@ class RealRecoveryHarness:
         attempt_id: str,
         reference_actions: Sequence[str],
         total_action_limit: int = 80,
+        allowed_split: str = "valid_seen",
+        profile_prefix: str = "rq1-prelaunch",
+        frozen_perturbation: Mapping[str, Any] | None = None,
     ) -> None:
         self.driver = driver
         self.output_dir = output_dir
@@ -114,12 +135,17 @@ class RealRecoveryHarness:
         self.attempt_id = attempt_id
         self.reference_actions = tuple(reference_actions)
         self.total_action_limit = total_action_limit
+        self.allowed_split = allowed_split
+        self.profile_prefix = profile_prefix
+        self.frozen_perturbation = dict(frozen_perturbation) if frozen_perturbation is not None else None
         self.session: RealEpisodeSession | None = None
         self._memory: Mapping[str, Any] | None = None
         self._prefix: tuple[str, ...] = ()
         self._continuation: tuple[str, ...] = ()
         self._task: tuple[str, str, int] | None = None
         self._detour_action: str | None = None
+        self.checkpoint_digest: str | None = None
+        self.post_detour_state: dict[str, Any] | None = None
 
     def close(self) -> None:
         if self.session is not None:
@@ -129,8 +155,10 @@ class RealRecoveryHarness:
     def start_and_replay(
         self, task_id: str, split: str, seed: int, prefix_actions: Sequence[str]
     ) -> RecoveryState:
-        if split != "valid_seen":
-            raise ValueError("real recovery harness permits valid_seen only")
+        if split != self.allowed_split:
+            raise ValueError(f"real recovery harness permits {self.allowed_split} only")
+        if split == "valid_unseen":
+            require_unseen_access()
         self._prefix = tuple(prefix_actions)
         if self.reference_actions[: len(self._prefix)] != self._prefix:
             raise ControlledFailureError("prefix is not a frozen reference-route prefix", code="prefix_mismatch")
@@ -142,7 +170,7 @@ class RealRecoveryHarness:
             output_dir=self.output_dir,
             run_id=self.run_id,
             attempt_id=self.attempt_id,
-            profile="rq1-prelaunch-recovery",
+            profile=f"{self.profile_prefix}-recovery",
         )
         self.session.__enter__()
         self.session.start(task_id, split, seed, self.total_action_limit)
@@ -169,7 +197,7 @@ class RealRecoveryHarness:
             output_dir=oracle_dir,
             run_id=self.run_id + "-oracle",
             attempt_id=self.attempt_id + "-oracle",
-            profile="rq1-prelaunch-oracle-validation",
+            profile=f"{self.profile_prefix}-oracle-validation",
         ) as oracle:
             oracle.start(task_id, split, seed, self.total_action_limit)
             oracle.apply_scripted(self._prefix, phase="oracle_checkpoint_replay")
@@ -194,21 +222,29 @@ class RealRecoveryHarness:
         admissible = self.session.state.get("admissible_actions")
         if not isinstance(admissible, list):
             raise ControlledFailureError("checkpoint has no observable admissible actions", code="admissible_actions_unavailable")
+        self.checkpoint_digest = bridge_state_digest(self.session.state)
+        frozen = self.frozen_perturbation
+        if frozen is not None and self.checkpoint_digest != frozen.get("checkpoint_digest"):
+            raise ControlledFailureError("episode did not reproduce the frozen checkpoint state", code="checkpoint_digest_mismatch")
         detour = select_reversible_navigation_action(admissible, expected)
+        if frozen is not None and detour != frozen.get("detour_action"):
+            raise ControlledFailureError("deterministic detour differs from the frozen detour", code="detour_mismatch")
         before = str(self.session.state.get("observation", ""))
         state = self.session.step(detour, phase="controlled_detour")
         if state.get("done") or state.get("action_valid") is not True:
             raise ControlledFailureError("controlled detour was not a live non-terminal transition", code="detour_invalid")
         if str(state.get("observation", "")) == before:
             raise ControlledFailureError("controlled detour did not change the observed state", code="detour_no_state_change")
-        self._oracle(detour)
+        digest = bridge_state_digest(state)
+        if frozen is None:
+            self._oracle(detour)
+            rule = "sorted_first_safe_navigation_not_expected_then_real_oracle_rejoin"
+        else:
+            if digest != frozen.get("post_detour_digest"):
+                raise ControlledFailureError("episode did not reproduce the frozen post-detour state", code="post_detour_digest_mismatch")
+            rule = "sorted_first_safe_navigation_not_expected_frozen_after_real_oracle_rejoin_digest_verified"
         self._detour_action = detour
-        digest_payload = {
-            "observation": state.get("observation"),
-            "admissible_actions": state.get("admissible_actions"),
-            "step_number": state.get("step_number"),
-        }
-        digest = hashlib.sha256(json.dumps(digest_payload, sort_keys=True).encode("utf-8")).hexdigest()
+        self.post_detour_state = dict(state)
         return ControlledActionPerturbation(
             checkpoint_id=checkpoint_id,
             action=detour,
@@ -216,7 +252,7 @@ class RealRecoveryHarness:
             failure_message=failure_message,
             post_state_digest=digest,
             solvable=True,
-            selection_rule="sorted_first_safe_navigation_not_expected_then_real_oracle_rejoin",
+            selection_rule=rule,
         )
 
     def inject_recovery_memory(self, message: Mapping[str, Any]) -> None:

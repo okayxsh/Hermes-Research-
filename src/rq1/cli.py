@@ -540,6 +540,27 @@ def command_acquisition_extension(root: Path, args: argparse.Namespace) -> int:
     return 0 if payload.get("ok") else 1
 
 
+def command_evaluation_amended(root: Path, args: argparse.Namespace) -> int:
+    from rq1.bridge.adapters.unseen_access import UnseenAccessError
+    command = args.evaluation_amended_command
+    try:
+        if command == "core-package":
+            from rq1.evaluation.amended_review import write_core_review_package
+            payload = write_core_review_package(root)
+        elif command == "prepare-tasks":
+            from rq1.evaluation.task_preparation import prepare_evaluation_tasks
+            payload = prepare_evaluation_tasks(root, args)
+        else:
+            from rq1.evaluation import amended_launch
+            payload = amended_launch.dispatch(root, args)
+    except UnseenAccessError as exc:
+        payload = {"ok": False, "status": "blocked", "reason": str(exc)}
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    if payload.get("status") == "interrupted":
+        return 130
+    return 0 if payload.get("ok") else 1
+
+
 def command_snapshots(root: Path, args: argparse.Namespace) -> int:
     if args.snapshots_command == "plan":
         from rq1.freeze.validation import validate_final_gates
@@ -920,6 +941,11 @@ def build_parser() -> argparse.ArgumentParser:
     item.add_argument("--proposal", required=True); item.add_argument("--approval-file", required=True); item.add_argument("--yes", action="store_true")
     item = extension_sub.add_parser("preflight", help="Technical extension preflight: every launch gate except human approval; starts no episode.")
     item.add_argument("--run-id"); item.add_argument("--proposal"); item.add_argument("--approval-dir"); item.add_argument("--backup-dir")
+    amended = sub.add_parser("evaluation-amended", help="Amended controlled-recovery evaluation (Decision 012): 0/6/12/18 nested libraries, approval-gated.")
+    amended_sub = amended.add_subparsers(dest="evaluation_amended_command", required=True)
+    amended_sub.add_parser("core-package", help="Write the fast human core-validation package (review each family until its first PASS).")
+    item = amended_sub.add_parser("prepare-tasks", help="valid_unseen task selection and controlled-failure oracle validation (requires RQ1_VALID_UNSEEN_ACCESS=evaluation-task-preparation); no model call.")
+    item.add_argument("--yes", action="store_true"); item.add_argument("--workers", type=int)
     snapshots = sub.add_parser("snapshots", help="Immutable chronological final snapshots.")
     snapshots_sub = snapshots.add_subparsers(dest="snapshots_command", required=True)
     snapshots_sub.add_parser("plan")
@@ -1007,6 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "freeze": return command_freeze(root, args)
         if args.command == "acquisition": return command_acquisition(root, args)
         if args.command == "acquisition-extension": return command_acquisition_extension(root, args)
+        if args.command == "evaluation-amended": return command_evaluation_amended(root, args)
         if args.command == "snapshots": return command_snapshots(root, args)
         if args.command == "evaluation": return command_evaluation(root, args)
         if args.command == "analysis": return command_analysis(root, args)
