@@ -4,8 +4,10 @@ No valid_unseen data, model, or real ALFWorld is used; every episode is scripted
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+from types import SimpleNamespace
 import tempfile
 import unittest
 from dataclasses import replace
@@ -49,6 +51,7 @@ from rq1.freeze.validation import EVALUATION_EVIDENCE_MODE, REQUIRED_INPUTS, bui
 from rq1.pilot.real_runtime.harnesses import bridge_state_digest
 from rq1.recovery.controlled_failure import ControlledFailureError
 from rq1.recovery.reference_route import ReferenceRouteError, derive_handcoded_reference
+from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE
 from rq1.retrieval.text import build_skill_text, skill_text_hash
 from rq1.skills.library import TASK_FAMILIES
 from rq1.utils.config import load_json_yaml
@@ -339,6 +342,158 @@ class ExecutorTests(unittest.TestCase):
     def test_state_digest_is_order_stable(self) -> None:
         self.assertEqual(bridge_state_digest({"observation": "o", "admissible_actions": ["a"], "step_number": 1, "extra": 1}),
                          bridge_state_digest({"step_number": 1, "admissible_actions": ["a"], "observation": "o"}))
+
+
+class LaunchHelperTests(unittest.TestCase):
+    def test_cli_commands_and_blocker_classification(self) -> None:
+        from rq1.cli import build_parser
+        from rq1.evaluation import amended_launch
+
+        parser = build_parser()
+        for argv in (
+            ["evaluation-amended", "core-package"], ["evaluation-amended", "prepare-tasks", "--yes", "--workers", "8"],
+            ["evaluation-amended", "check", "--run-id", "prelaunch-evaluation-check-x", "--max-runs", "1"],
+            ["evaluation-amended", "check-report", "--run-id", "prelaunch-evaluation-check-x"],
+            ["evaluation-amended", "prepare-approvals", "--evidence-report", "r.json"],
+            ["evaluation-amended", "freeze-tasks", "--proposal", "p", "--controlled-failures", "f", "--approval-file", "a", "--yes"],
+            ["evaluation-amended", "build-libraries", "--yes"], ["evaluation-amended", "plan"], ["evaluation-amended", "preflight", "--backup-dir", "/b"],
+            ["evaluation-amended", "run", "--shard", "3", "--yes", "--backup-dir", "/b", "--require-backup"], ["evaluation-amended", "resume", "--shard", "6", "--yes"],
+            ["evaluation-amended", "retry-failed", "--shard", "1", "--yes"], ["evaluation-amended", "validate"], ["evaluation-amended", "merge", "--yes"],
+            ["evaluation-amended", "rater-export", "--yes"], ["evaluation-amended", "analyze"],
+            ["freeze", "evaluation-protocol", "--approval-file", "a", "--pilot-report", "r", "--yes"],
+        ):
+            parser.parse_args(argv)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            parser.parse_args(["evaluation-amended", "run", "--shard", "7", "--yes"])
+        human, technical = amended_launch.pending_only(["invalid evaluation-protocol freeze: FileNotFoundError",
+                                                        "exactly one evaluation library freeze is required (found 0)", "repository working tree is not clean"])
+        self.assertEqual((2, ["repository working tree is not clean"]), (len(human), technical))
+        commands = amended_launch.evaluation_commands("/backups")
+        self.assertIn("RQ1_VALID_UNSEEN_ACCESS=scientific-evaluation", commands["shard_1"])
+        self.assertEqual(6, sum(name.startswith("shard_") for name in commands))
+        with patch.dict(os.environ, {UNSEEN_ACCESS_ENV: TASK_PREPARATION}):
+            self.assertFalse(amended_launch.evaluation_check(Path("."), argparse.Namespace(run_id="prelaunch-evaluation-check-x", resume=False, max_runs=1))["ok"])
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(UNSEEN_ACCESS_ENV, None)
+            with self.assertRaises(UnseenAccessError):
+                amended_launch.evaluation_run(Path("."), argparse.Namespace(yes=True, shard=1), resume=False, retry_failed=False)
+
+    def test_task_and_controlled_failure_validation(self) -> None:
+        from rq1.evaluation.amended_launch import failures_problems, task_manifest_problems
+        from rq1.evaluation.amended_protocol import CHECKPOINT_POLICY, MANIFEST_TYPE, TASK_SELECTION
+        from rq1.tasks.models import TaskManifest, TaskRecord
+        from rq1.tasks.validation import manifest_hash
+
+        tasks = synthetic_tasks()
+        records = tuple(TaskRecord(task.task_id, "valid_unseen", task.task_family, task.task_id.split(":", 1)[1], f"s{index}", f"g{index}", index)
+                        for index, task in enumerate(tasks, 1))
+        value = {"schema_version": 1, "manifest_type": MANIFEST_TYPE, "status": "proposed", "split": "valid_unseen", "alfworld_version": "0.4.2",
+                 "data_root_identity": "d", "repository_commit": "c", "selection_policy": dict(TASK_SELECTION), "requested_count": 30, "actual_count": 30,
+                 "family_counts": {family: 5 for family in sorted(TASK_FAMILIES)}, "tasks": [record.to_dict() for record in records], "exclusions": [],
+                 "duplicate_resolution": [], "generated_at": "t", "approved_at": None, "approval_reference": None, "manifest_sha256": ""}
+        value["manifest_sha256"] = manifest_hash(value)
+        manifest = TaskManifest(**{**value, "tasks": records, "exclusions": (), "duplicate_resolution": ()})
+        self.assertEqual([], task_manifest_problems(manifest, require_frozen=False))
+        definitions = [{"task_id": task.task_id, "task_family": task.task_family, "split": "valid_unseen", "checkpoint_id": task.checkpoint_id,
+                        "checkpoint_digest": "a" * 64, "post_detour_digest": "b" * 64, "detour_action": "go to bed 1", "expected_next_action": "go to desk 1",
+                        "prefix_actions": ["go to bed 1"], "reference_actions": list(REFERENCE), "recovery_action_budget": 48, "oracle": {"validated": True}}
+                       for task in tasks]
+        failures = {"policy": CHECKPOINT_POLICY, "canonical_failure_message": CANONICAL_FAILURE_MESSAGE, "tasks": definitions, "model_calls": 0}
+        self.assertEqual([], failures_problems(failures, manifest))
+        self.assertTrue(failures_problems({**failures, "tasks": [{**definitions[0], "recovery_action_budget": 47}, *definitions[1:]]}, manifest))
+        self.assertTrue(failures_problems({**failures, "tasks": [{**definitions[0], "detour_action": "go to desk 1"}, *definitions[1:]]}, manifest))
+        self.assertTrue(failures_problems({**failures, "tasks": [{**definitions[0], "oracle": {"validated": False}}, *definitions[1:]]}, manifest))
+        self.assertTrue(failures_problems({**failures, "model_calls": 1}, manifest))
+        self.assertTrue(task_manifest_problems(replace(manifest, selection_policy={"rule": "easiest"}), require_frozen=False))
+
+
+class LibraryFreezeTests(unittest.TestCase):
+    def test_library_freeze_is_built_from_the_review_and_recomputed(self) -> None:
+        from rq1.evaluation import amended_launch, amended_libraries
+        from rq1.evaluation.amended_protocol import CORE_REVIEW_FILE, RAW_POOL_SNAPSHOT
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool = synthetic_pool()
+            snapshot = {"pool_hash": "synthetic", "pool_size": 50, "entries": [
+                {"pool_index": entry.pool_index, "family_chronological_rank": entry.family_rank, "logical_acquisition_index": entry.logical_acquisition_index,
+                 "origin": entry.origin, "source_run_id": entry.source_run_id, "source_episode_events_log": None,
+                 "skill": {"skill_id": entry.skill_id, "title": f"{entry.task_family} skill {entry.family_rank}",
+                           "body": f"General {entry.task_family} guidance number {entry.family_rank}.", "text": entry.text, "text_sha256": entry.text_sha256,
+                           "task_family": entry.task_family, "source_task_id": entry.source_task_id}} for entry in pool]}
+            (root / RAW_POOL_SNAPSHOT).parent.mkdir(parents=True)
+            (root / RAW_POOL_SNAPSHOT).write_text(json.dumps(snapshot), encoding="utf-8")
+            review = root / CORE_REVIEW_FILE
+            review.parent.mkdir(parents=True)
+            decisions = {family: (["FAIL", "PASS"] if family == "cool_and_place" else ["PASS"]) for family in TASK_FAMILIES}
+            review.write_bytes(render_review_csv(reviewed(pool, decisions)))
+            approved = SimpleNamespace(approval={"status": "APPROVED", "approved_by": "reviewer", "approved_at": "2026-09-14T12:00:00Z"},
+                                       repository_commit="c" * 40, input_fingerprint="f")
+            patches = (patch.object(amended_libraries, "RAW_POOL_HASH", "synthetic"), patch.object(amended_launch, "read_freeze", return_value=(approved, [])),
+                       patch.object(amended_launch, "git_state", return_value=("c" * 40, True, None)))
+            with patches[0], patches[1], patches[2]:
+                self.assertFalse(amended_launch.build_libraries(root, argparse.Namespace(yes=False, review_file=None))["ok"])
+                result = amended_launch.build_libraries(root, argparse.Namespace(yes=True, review_file=None))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(("skill_cool_and_place_2", 18), (result["core"]["cool_and_place"], result["sizes"]["Accum-18"]))
+                _payload, libraries, problems = amended_launch.load_library_freeze(root)
+                self.assertEqual([], problems)
+                self.assertEqual({condition: LIBRARY_SIZES[condition] for condition in CONDITIONS}, {condition: libraries[condition].size for condition in CONDITIONS})
+                self.assertFalse(amended_launch.build_libraries(root, argparse.Namespace(yes=True, review_file=None))["ok"])
+                review.write_bytes(review.read_bytes().replace(b"PASS_Q1_Q7", b"PASS_Q1_Q7 edited", 1))
+                self.assertTrue(any("core review changed" in problem for problem in amended_launch.load_library_freeze(root)[2]))
+                pending = root / "pending.csv"
+                pending.write_bytes(render_review_csv(reviewed(pool, {family: ["PASS"] for family in TASK_FAMILIES[:5]})))
+                blocked = amended_launch.build_libraries(root, argparse.Namespace(yes=True, review_file=str(pending)))
+            self.assertEqual((False, ["cool_and_place"]), (blocked["ok"], blocked["selection"]["pending_families"]))
+
+
+class AnalysisTests(unittest.TestCase):
+    def test_metrics_intervals_and_retrieval_quality(self) -> None:
+        from rq1.evaluation.amended_analysis import analyze, retrieval_quality, unit_rows
+
+        matrix = build_matrix(synthetic_tasks())
+        successes_below = {"NoLib": 0, "Core-6": 1, "Accum-12": 2, "Accum-18": 3}
+        records = []
+        for unit in matrix:
+            seed_index = EVALUATION_SEEDS.index(unit["seed"])
+            failed = unit["condition"] == "Accum-12" and unit["task_family"] == "cool_and_place" and seed_index == 0
+            record = {"run_key": unit["unit_key"], "status": "failed" if failed else "completed", "matrix_unit": unit, "task_id": unit["task_id"],
+                      "task_family": unit["task_family"], "seed": unit["seed"], "condition": unit["condition"]}
+            if not failed:
+                success = seed_index < successes_below[unit["condition"]]
+                record.update({"eligible": True, "post_failure_budget_complete": True, "recovery_success": success, "post_failure_actions": 5 if success else 20,
+                               "recovery_latency_actions": 5 if success else None, "recovery_latency_seconds": 40.0 if success else None,
+                               "invalid_action_selections": 1, "retries": 1, "selection_exhausted": False,
+                               "retrieval": {"event_id": unit["unit_key"][:8], "top": [] if unit["condition"] == "NoLib" else
+                                             [{"rank": rank, "skill_id": f"s{rank}", "score": 0.5} for rank in (1, 2, 3)]}})
+            records.append(record)
+        metrics = analyze(records, replicates=200)
+        self.assertEqual((0.0, 1.0), (metrics["by_condition"]["NoLib"]["conditional_recovery_rate"], metrics["by_condition"]["Accum-18"]["conditional_recovery_rate"]))
+        self.assertAlmostEqual(1 / 3, metrics["by_condition"]["Core-6"]["conditional_recovery_rate"])
+        accum12 = metrics["by_condition"]["Accum-12"]
+        self.assertEqual((90, 5, 85, 55), (accum12["scheduled_units"], accum12["infrastructure_failures"], accum12["eligible_units"], accum12["recovery_successes"]))
+        self.assertAlmostEqual(55 / 85, accum12["conditional_recovery_rate"])
+        self.assertAlmostEqual(55 / 90, accum12["task_completion_rate"])
+        self.assertEqual((5.0, 40.0), (accum12["recovery_latency_actions_mean"], accum12["recovery_latency_seconds_mean"]))
+        interval = metrics["uncertainty"]["conditional_recovery_rate"]["Accum-18_minus_NoLib"]
+        self.assertEqual((1.0, 1.0, 90), (interval["lower"], interval["upper"], metrics["uncertainty"]["cells"]))
+        self.assertEqual("PENDING_HUMAN_RELEVANCE_LABELS", metrics["retrieval_quality"]["status"])
+        self.assertEqual(15, metrics["by_condition_and_family"]["Core-6"]["cool_and_place"]["scheduled_units"])
+        rows = unit_rows(records)
+        keys = [{"item_id": row["unit_key"][:16], "unit_key": row["unit_key"], "condition": row["condition"], "top_count": 3}
+                for row in rows if row["condition"] != "NoLib" and row["eligible"]]
+        rater_a = {(key["item_id"], rank): ("RELEVANT" if rank == 1 else "IRRELEVANT") for key in keys for rank in (1, 2, 3)}
+        rater_b = dict(rater_a)
+        rater_b[next(iter(rater_b))] = "IRRELEVANT"
+        quality = retrieval_quality(keys, rows, rater_a=rater_a, rater_b=rater_b, adjudicated=rater_a)
+        self.assertAlmostEqual(1 / 3, quality["by_condition"]["Core-6"]["precision_at_3_mean"])
+        self.assertAlmostEqual(2 / 3, quality["by_condition"]["Accum-18"]["retrieval_noise_mean"])
+        self.assertEqual(0, quality["by_condition"]["NoLib"]["retrievals"])
+        self.assertLess(quality["agreement"]["cohens_kappa"], 1.0)
+        self.assertEqual((False, True), (quality["association"]["causal_claim"], quality["association"]["descriptive_only"]))
+        with self.assertRaises(ValueError):
+            retrieval_quality(keys, rows, rater_a=rater_a, rater_b={**rater_b, ("extra", 1): "RELEVANT"}, adjudicated=rater_a)
 
 
 if __name__ == "__main__":
