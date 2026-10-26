@@ -1,0 +1,21 @@
+{
+  "worker_count": 4,
+  "min_gpu_free_mib": 16384,
+  "ollama_base_port": 11534,
+  "ollama_binary": "ollama",
+  "randomization_seed": 20261026,
+  "tokenizer_revision": "SET_TO_THE_EXACT_FROZEN_TOKENIZER_REVISION",
+  "task_manifest_path": "${RQ1_FROZEN_TASK_MANIFEST}",
+  "controlled_failures_path": "${RQ1_CONTROLLED_FAILURES}",
+  "accum18_library_path": "${RQ1_ACCUM18_LIBRARY}",
+  "relevance_path": "${RQ1_TASK_SKILL_RELEVANCE_CSV}",
+  "gate_scores_path": "${RQ1_VALID_SEEN_GATE_SCORES_CSV}",
+  "gate_labels_path": "${RQ1_VALID_SEEN_GATE_LABELS_CSV}",
+  "gate_calibration_path": "${RQ1_GATE_CALIBRATION_FROZEN}",
+  "tokenizer_path": "${RQ1_GEMMA_TOKENIZER_JSON}",
+  "filler_path": "${RQ1_APPROVED_NEUTRAL_FILLER}",
+  "alfworld_data_dir": "${RQ1_ALFWORLD_DATA_DIR}",
+  "sbert_cache": "${RQ1_HUGGINGFACE_CACHE}",
+  "ollama_models_dir": "${RQ1_OLLAMA_MODELS_DIR}",
+  "run_output_dir": "${RQ1_RUN_OUTPUT_DIR}"
+}

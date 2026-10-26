@@ -1026,6 +1026,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run-until")
     run.add_argument("stage", choices=tuple(STAGE_MAP))
     run.add_argument("--dry-run", action="store_true")
+    from rq1.university_gpu.cli import add_parser as add_university_gpu_parser
+    add_university_gpu_parser(sub)
     return parser
 
 
@@ -1061,6 +1063,9 @@ def main(argv: list[str] | None = None) -> int:
             from rq1.autopilot.cli import command as autopilot_command
             return autopilot_command(root, args)
         if args.command == "experiment": return command_experiment(root, args)
+        if args.command == "university-gpu":
+            from rq1.university_gpu.cli import run as run_university_gpu
+            return run_university_gpu(root, args)
         if args.command in {"report-assets", "archive"}: return command_final_derived(root, args.command)
         if args.command == "stage": return _run_stage(root, args.name, args.dry_run)
         if args.command == "run-until": return command_run_until(root, args.stage, args.dry_run)

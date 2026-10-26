@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from rq1.acquisition.environment import SBERT_MODEL, SBERT_REVISION
 from rq1.evaluation.amended_libraries import AmendedLibrary
@@ -59,6 +59,7 @@ class AmendedEvaluationExecutor:
         scientific: bool,
         split: str,
         provenance: Mapping[str, Any],
+        memory_intervention: Callable[[ExperimentUnit, EvaluationTask, Any, Mapping[str, Any]], tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
     ) -> None:
         self.driver = driver
         self.tasks = dict(tasks)
@@ -67,6 +68,7 @@ class AmendedEvaluationExecutor:
         self.scientific = scientific
         self.split = split
         self.provenance = dict(provenance)
+        self.memory_intervention = memory_intervention
 
     def __call__(self, unit: ExperimentUnit, context: RunExecutionContext) -> RunOutcome:
         task = self.tasks[unit.task_id]
@@ -91,7 +93,13 @@ class AmendedEvaluationExecutor:
         )
         stage = "episode"
         try:
-            result = run_recovery_episode(harness, spec, boundary, log_dir=context.output_dir / "result")
+            memory_transform = None
+            if self.memory_intervention is not None:
+                memory_transform = lambda retrieval_outcome, failure_context, _spec: self.memory_intervention(
+                    unit, task, retrieval_outcome, failure_context
+                )
+            result = run_recovery_episode(harness, spec, boundary, log_dir=context.output_dir / "result",
+                                          memory_transform=memory_transform)
             stage = "measurement"
             session = harness.session
             assert session is not None
@@ -179,4 +187,6 @@ class AmendedEvaluationExecutor:
             "recovery_actions": [record.action for record in recovery_records],
             "skill_writes": False,
         }
+        if self.memory_intervention is not None:
+            measurements["memory_intervention"] = result.intervention_metadata
         return replace(result.outcome, measurements=measurements, log_paths=(*result.log_paths, str(events_log)))

@@ -18,7 +18,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from rq1.experiment.models import RunOutcome
 from rq1.recovery.controlled_failure import (
@@ -29,7 +29,7 @@ from rq1.recovery.controlled_failure import (
     apply_controlled_failure,
 )
 from rq1.recovery.models import RecoveryState
-from rq1.retrieval.controller import RetrievalContext, SingleRetrievalBoundary
+from rq1.retrieval.controller import RetrievalContext, RetrievalOutcome, SingleRetrievalBoundary
 from rq1.retrieval.logging import RetrievalEventLog
 from rq1.retrieval.models import RetrievalQuery
 
@@ -78,6 +78,7 @@ class RecoveryEpisodeResult:
     retrieval_count: int
     no_retrieval: bool
     log_paths: tuple[str, ...]
+    intervention_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def run_recovery_episode(
@@ -87,6 +88,7 @@ def run_recovery_episode(
     *,
     log_dir: Path,
     failure_message: str = CANONICAL_FAILURE_MESSAGE,
+    memory_transform: Callable[[RetrievalOutcome, Mapping[str, Any], RecoveryEpisodeSpec], tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
 ) -> RecoveryEpisodeResult:
     started = time.monotonic()
 
@@ -132,8 +134,16 @@ def run_recovery_episode(
     )
     retrieval_outcome = boundary.retrieve(retrieval_context, query)
 
-    # 7. Structured recovery memory injection (rank + id + text only).
-    harness.inject_recovery_memory(retrieval_outcome.recovery_memory.to_dict())
+    # 7. Structured recovery-memory injection. The default frozen evaluation
+    # contract remains rank + ID + text only. Prospective interventions are
+    # explicitly supplied and logged by their dedicated executor.
+    recovery_memory = retrieval_outcome.recovery_memory.to_dict()
+    intervention_metadata: Mapping[str, Any] = {}
+    if memory_transform is not None:
+        recovery_memory, intervention_metadata = memory_transform(retrieval_outcome, failure_context.to_dict(), spec)
+        recovery_memory = dict(recovery_memory)
+        intervention_metadata = dict(intervention_metadata)
+    harness.inject_recovery_memory(recovery_memory)
 
     # 8. Recovery actions.
     steps = tuple(dict(step) for step in harness.run_recovery(spec.action_budget))
@@ -182,11 +192,12 @@ def run_recovery_episode(
         outcome=outcome,
         retrieval_event=retrieval_event,
         failure_context=failure_context.to_dict(),
-        recovery_memory=retrieval_outcome.recovery_memory.to_dict(),
+        recovery_memory=dict(recovery_memory),
         failure=failure.to_dict(),
         trajectory=trajectory.to_dict(),
         recovery_steps=steps,
         retrieval_count=1,
         no_retrieval=not retrieval_outcome.result.retrieved,
         log_paths=outcome.log_paths,
+        intervention_metadata=dict(intervention_metadata),
     )
