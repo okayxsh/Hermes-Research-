@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import time
+from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,7 +189,8 @@ class RunStore:
             raise SchedulerError("worker result unit_key differs from the assigned unit")
         if (body.get("status") != "completed" or body.get("task_id") != expected.get("task_id")
                 or body.get("condition") != expected.get("condition") or body.get("seed") != expected.get("seed")
-                or body.get("task_family") != expected.get("task_family")):
+                or body.get("task_family") != expected.get("task_family")
+                or not isinstance(body.get("recovery_success"), bool)):
             raise SchedulerError("worker result status or scientific identity differs from the frozen assignment")
         envelope = {"unit_key": unit_key, "attempt_id": attempt_id, "worker_id": worker_id,
                     "result_sha256": content_hash(body), "result": body}
@@ -217,13 +220,20 @@ class Coordinator:
         resume: bool = False,
         retry_failed: bool = False,
         cutoff_epoch: float | None = None,
-        minimum_start_seconds: float = 300,
+        max_attempts: int | None = None,
+        lock_held: bool = False,
+        storage_minimum_bytes: int = 1_000_000_000,
+        minimum_start_seconds: float = 1800,
         heartbeat_seconds: float = 60,
     ) -> dict[str, Any]:
         if heartbeat_seconds <= 0:
             raise SchedulerError("heartbeat interval must be positive")
+        if max_attempts is not None and max_attempts < 1:
+            raise SchedulerError("max_attempts must be positive")
+        if storage_minimum_bytes < 0:
+            raise SchedulerError("storage minimum cannot be negative")
         self.store.initialize()
-        with RunLock(self.store.root / "RUN.lock", resume=resume):
+        with (nullcontext() if lock_held else RunLock(self.store.root / "RUN.lock", resume=resume)):
             if self.stop_file.exists() and not resume:
                 raise SchedulerError("STOP file exists; resume only after reviewing the run state")
             if resume:
@@ -262,11 +272,25 @@ class Coordinator:
             attempted = 0
             interrupted_by_cutoff = False
             failures: list[dict[str, Any]] = []
+            backup_failed = False
+            storage_failed = False
             with ThreadPoolExecutor(max_workers=len(self.workers), thread_name_prefix="rq1-gpu-scheduler") as pool:
                 while pending or active:
-                    stop_requested = self.stop_file.exists()
+                    if pending and not storage_failed:
+                        try:
+                            free_bytes = shutil.disk_usage(self.store.root).free
+                            if free_bytes < storage_minimum_bytes:
+                                raise OSError(f"free storage {free_bytes} below reserve {storage_minimum_bytes}")
+                        except OSError as exc:
+                            storage_failed = True
+                            failures.append({"failure_class": "storage", "error_type": type(exc).__name__, "error": str(exc)})
+                            try:
+                                self.request_stop(f"storage check failed: {exc}")
+                            except OSError:
+                                pass
+                    stop_requested = self.stop_file.exists() or backup_failed or storage_failed
                     before_cutoff = cutoff_epoch is None or time.time() + minimum_start_seconds < cutoff_epoch
-                    while pending and free_workers and not stop_requested and before_cutoff:
+                    while pending and free_workers and not stop_requested and before_cutoff and (max_attempts is None or attempted < max_attempts):
                         worker = free_workers.pop(0)
                         unit = pending.pop(0)
                         key = str(unit["unit_key"])
@@ -297,8 +321,6 @@ class Coordinator:
                             active[future] = (worker, unit, attempt_id, attempt_dir, now)
                     for future in done:
                         worker, unit, attempt_id, attempt_dir, _ = active.pop(future)
-                        free_workers.append(worker)
-                        free_workers.sort(key=lambda item: item.worker_id)
                         key = str(unit["unit_key"])
                         try:
                             result = dict(future.result())
@@ -307,6 +329,18 @@ class Coordinator:
                             output_path = self.store.record_result(unit, result, attempt_id=attempt_id, worker_id=worker.worker_id)
                             self.store.append_event({"event": "unit_completed", "unit_key": key, "attempt_id": attempt_id,
                                                      "worker_id": worker.worker_id, "result_sha256": sha256_file(output_path)})
+                            free_workers.append(worker)
+                            if not backup_failed and len(self.store.completed()) % 10 == 0:
+                                try:
+                                    from rq1.university_gpu.snapshot import backup_checkpoint
+                                    backup_checkpoint(self.store)
+                                except Exception as exc:
+                                    backup_failed = True
+                                    failures.append({"failure_class": "backup", "error_type": type(exc).__name__, "error": str(exc)})
+                                    try:
+                                        self.request_stop(f"automatic backup failed: {type(exc).__name__}: {exc}")
+                                    except OSError:
+                                        pass  # A full or failed disk must still stop new assignments.
                         except BaseException as exc:
                             info = {"unit_key": key, "attempt_id": attempt_id, "worker_id": worker.worker_id,
                                     "task_id": unit.get("task_id"), "task_family": unit.get("task_family"),
@@ -317,7 +351,10 @@ class Coordinator:
                                     "mutation_state_known": getattr(exc, "mutation_state_known", None)}
                             failures.append(info)
                             self.store.append_event({"event": "attempt_failed", **info})
-                    if self.stop_file.exists() and pending:
+                            if not getattr(worker, "quarantine_on_failure", False):
+                                free_workers.append(worker)
+                        free_workers.sort(key=lambda item: item.worker_id)
+                    if (self.stop_file.exists() or backup_failed or storage_failed) and pending:
                         interrupted_by_cutoff = False
                         pending.clear()
             completed_now = self.store.completed()
@@ -335,7 +372,7 @@ class Coordinator:
         bad = []
         for key, envelope in completed.items():
             result = envelope["result"]
-            if result.get("unit_key") != key or result.get("status") != "completed":
+            if result.get("unit_key") != key or result.get("status") != "completed" or not isinstance(result.get("recovery_success"), bool):
                 bad.append(key)
             if (result.get("task_id") != expected[key].get("task_id")
                     or result.get("task_family") != expected[key].get("task_family")

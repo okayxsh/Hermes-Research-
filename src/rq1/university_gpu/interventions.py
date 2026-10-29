@@ -167,8 +167,12 @@ def intervene(
         source_ids = []
     else:
         kept = [item for item in retrieval_top if float(item.get("score", -1)) >= gate_threshold]
-        candidate = _memory_from_top(kept, skill_texts)
-        memory, count = pad_memory_to_budget(candidate, token_budget=budget, filler_unit=filler_unit, tokenizer=tokenizer)
+        if len(kept) == len(retrieval_top):
+            # No item was removed, so the original block already has the exact budget.
+            memory, count = baseline, budget
+        else:
+            candidate = _memory_from_top(kept, skill_texts)
+            memory, count = pad_memory_to_budget(candidate, token_budget=budget, filler_unit=filler_unit, tokenizer=tokenizer)
         source_ids = [str(item["skill_id"]) for item in retrieval_top]
     injected = [str(item["skill_id"]) for item in _inner(memory).get("retrieved_skills", [])]
     return memory, {

@@ -15,6 +15,8 @@ from rq1.university_gpu.scheduler import SchedulerError
 
 
 class WorkerProcessClient:
+    # A failed subprocess or model connection is quarantined for operator review.
+    quarantine_on_failure = True
     def __init__(self, worker_id: str, config_path: Path, *, python: str = sys.executable, cwd: Path,
                  gpu_uuid: str, response_timeout: float = 3600) -> None:
         self.worker_id = worker_id

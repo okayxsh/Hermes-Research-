@@ -60,7 +60,7 @@ PYTHONPATH=src python3.11 -m rq1.cli university-gpu manifest freeze \
   --output "$RQ1_EVIDENCE/pilot-frozen.json"
 ```
 
-Manifest approval JSON includes `approved=true`, `approved_by`, `approval_reference`, and the exact `manifest_sha256`. Confirmatory approval must also set `previous_task_outcomes_acknowledged=true`. Freezing a manifest creates a new file and refuses to overwrite one.
+Manifest approval JSON includes `approved=true`, `approved_by`, `approval_reference`, and the exact `manifest_sha256`. Confirmatory approval must also set `previous_task_outcomes_acknowledged`, `eligibility_verified`, `blinded_relevance_verified`, `leakage_review_complete`, `pilot_go_approved`, and `precision_power_review_complete` to true, and include `power_report_sha256` and `pilot_validation_sha256`. Add `power_report_path` and `pilot_validation_path` to the external confirmatory config; preflight checks both hashes and that pilot validation reports 36/36 passed. These are human attestations, not proof of the underlying review. Freezing a manifest creates a new file and refuses to overwrite one.
 
 Confirmatory generation/launch is gated by complete valid-unseen oracle/task coverage, both raters and adjudication for every candidate skill on every task, valid-seen-only Gate calibration, explicit historical-outcome exposure acknowledgment, and a separate prespecified task-cluster precision/power simulation approved by the authors. The current code does not synthesize or assume the power inputs.
 
@@ -80,7 +80,7 @@ Scientific launch approval is separate from manifest freeze. It includes `approv
 ```bash
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu launch \
   --config "$RQ1_CONFIG" --manifest "$RQ1_EVIDENCE/pilot-frozen.json" \
-  --approval-file "$RQ1_EVIDENCE/pilot-launch-approval.json" --yes
+  --approval-file "$RQ1_EVIDENCE/pilot-launch-approval.json" --yes --cutoff-epoch "$RQ1_ACCESS_END_EPOCH"
 ```
 
 The launch requires exactly four physical NVIDIA devices, one UUID per isolated Ollama server, four unique endpoints, sufficient free memory, the frozen local model, and exact source/input identities. Ollama documents `CUDA_VISIBLE_DEVICES` as the GPU-selection control and recommends UUIDs over numeric IDs because ordering can vary ([Ollama GPU selection](https://github.com/ollama/ollama/blob/main/docs/gpu.mdx)). The package verifies live process-to-UUID placement before assigning episodes. It never substitutes a model or pulls a missing one. Confirmatory launch is a scientific/GPU operation and is not authorized merely by having prepared the package.
@@ -90,13 +90,13 @@ The coordinator writes immutable attempt records, heartbeats, per-unit authorita
 ```bash
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu status --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FROZEN_MANIFEST"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu stop --run-root "$RQ1_RUN_ROOT" --reason "operator cutoff"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu resume --config "$RQ1_CONFIG" --manifest "$RQ1_FROZEN_MANIFEST" --approval-file "$RQ1_LAUNCH_APPROVAL" --yes --retry-failed
+PYTHONPATH=src python3.11 -m rq1.cli university-gpu resume --config "$RQ1_CONFIG" --manifest "$RQ1_FROZEN_MANIFEST" --approval-file "$RQ1_LAUNCH_APPROVAL" --yes --retry-failed --cutoff-epoch "$RQ1_ACCESS_END_EPOCH"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu validate --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FROZEN_MANIFEST"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu merge --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FROZEN_MANIFEST"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu export --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FROZEN_MANIFEST" --destination "$RQ1_EXPORT_DIR"
 ```
 
-`stop` lets active episodes finish and assigns no new units. `--cutoff-epoch` is a Unix UTC epoch and prevents starting an episode within five minutes of cutoff; an incomplete run cannot merge or export. Resumption is at the episode-unit boundary only: an interrupted episode is not restored mid-trajectory. Physical attempts are at-least-once across failure/retry; the package makes no exactly-once execution claim.
+`stop` lets active episodes finish and assigns no new units. `--cutoff-epoch` is the actual access deadline as a Unix UTC epoch; assignment stops 30 minutes beforehand. Active episodes are not killed by the cutoff and can exceed that margin, so watch the clock. Resumption is at the episode-unit boundary only: an interrupted episode is not restored mid-trajectory. Physical attempts are at-least-once across failure/retry; the package makes no exactly-once execution claim. Use `export-progress` after the run stops to preserve incomplete work; `export` and `merge` still require completion.
 
 ## Offline analysis
 

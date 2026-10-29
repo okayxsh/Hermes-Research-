@@ -29,7 +29,7 @@ class SentenceBERTEmbedderOptionTests(unittest.TestCase):
             )
 
         self.assertEqual("sentence-transformers/all-mpnet-base-v2", captured["model_name"])
-        self.assertEqual("/persistent/frozen-hf-cache", captured["cache_folder"])
+        self.assertEqual(str(Path("/persistent/frozen-hf-cache")), captured["cache_folder"])
         self.assertEqual("frozen-revision", captured["revision"])
         self.assertIs(captured["local_files_only"], True)
 

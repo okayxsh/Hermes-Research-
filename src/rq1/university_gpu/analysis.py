@@ -13,7 +13,8 @@ from typing import Any, Mapping, Sequence
 from rq1.university_gpu.manifest import CONDITIONS, validate_manifest
 from rq1.university_gpu.models import content_hash, sha256_file
 
-CONTRASTS = (("D18", "D0"), ("Rel", "D18"), ("Irr", "D18"), ("Fill", "D18"), ("Gate", "D18"))
+CONTRASTS = (("D18", "D0"), ("Fill", "D0"), ("Rel", "Fill"), ("Irr", "Fill"),
+             ("Rel", "Irr"), ("Gate", "D18"), ("Rel", "D18"), ("Irr", "D18"), ("Fill", "D18"))
 LABEL_COLUMNS = ("adjudicated", "rater_a", "rater_b")
 
 
@@ -191,7 +192,8 @@ def analyze(
                      "power_or_sample_sufficiency_established": False,
                      "labels_preserved_and_read_only": relevance_labels is not None},
         "records_sha256": content_hash([dict(row) for row in records]),
-        "scientific_evidence": True,
+        "scientific_evidence": False,
+        "evidence_note": "Offline analysis alone cannot establish real hardware execution or scientific validity.",
     }
 
 

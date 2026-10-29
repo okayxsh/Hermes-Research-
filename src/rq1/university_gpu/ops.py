@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from uuid import uuid4
 
 from rq1.acquisition.environment import sbert_snapshot_sha256
 from rq1.evaluation.amended_protocol import MODEL_DIGEST as EXECUTED_MODEL_DIGEST, SBERT_SNAPSHOT_SHA256
@@ -31,7 +33,7 @@ from rq1.university_gpu.models import GPUDevice, atomic_write_json, content_hash
 from rq1.university_gpu.ollama import OllamaServer, probe_endpoint, worker_specs
 from rq1.university_gpu.relevance import RelevanceError, parse_relevance_csv
 from rq1.skills.library import TASK_FAMILIES
-from rq1.university_gpu.scheduler import Coordinator, RunStore
+from rq1.university_gpu.scheduler import Coordinator, RunLock, RunStore
 from rq1.university_gpu.worker_process import WorkerProcessClient
 from rq1.university_gpu.interventions import LocalGemmaTokenizer, TokenBudgetError, TokenizerIdentity
 
@@ -398,6 +400,19 @@ def _input_checks(config: Mapping[str, Any], manifest: Mapping[str, Any]) -> lis
     expected_revision = (manifest.get("tokenizer") or {}).get("revision")
     checks.append({"name": "tokenizer_revision", "status": "PASS" if config.get("tokenizer_revision") == expected_revision else "FAIL",
                    "expected": expected_revision, "observed": config.get("tokenizer_revision")})
+    if manifest.get("stage") == "confirmatory":
+        for key, field in (("power_report_path", "power_report_sha256"), ("pilot_validation_path", "pilot_validation_sha256")):
+            try:
+                path = Path(str(config[key]))
+                observed = sha256_file(path)
+                expected = manifest["approval"][field]
+                valid = observed == expected
+                if key == "pilot_validation_path":
+                    result = load_json(path)
+                    valid = valid and result.get("passed") is True and result.get("expected") == 36 and result.get("completed") == 36
+                checks.append({"name": key, "status": "PASS" if valid else "FAIL", "expected": expected, "observed": observed})
+            except (KeyError, OSError, AttributeError, TypeError, ValueError) as exc:
+                checks.append({"name": key, "status": "BLOCKED", "error": f"{type(exc).__name__}: {exc}"})
     return checks
 
 
@@ -506,7 +521,9 @@ def capture_placement(worker_pids: Mapping[str, int], *, runner: Any = subproces
                     capture_output=True, text=True, check=False, timeout=20)
     if result.returncode != 0:
         return {"passed": False, "errors": [result.stderr.strip() or "nvidia-smi process query failed"], "assignments": {}}
-    return verify_worker_placements(worker_pids, parse_compute_processes(result.stdout))
+    rows = parse_compute_processes(result.stdout)
+    placement = verify_worker_placements(worker_pids, rows)
+    return {**placement, "server_process_ids": dict(worker_pids), "compute_processes": rows}
 
 
 def run_design_launch(
@@ -519,6 +536,7 @@ def run_design_launch(
     resume: bool = False,
     retry_failed: bool = False,
     cutoff_epoch: float | None = None,
+    max_attempts: int | None = None,
 ) -> dict[str, Any]:
     if not yes or approval.get("gpu_inference") is not True or approval.get("scientific_run") is not True:
         raise OperatorError("launch requires --yes and explicit scientific/GPU approval")
@@ -526,8 +544,14 @@ def run_design_launch(
         raise OperatorError("approval does not match this frozen manifest")
     if manifest.get("stage") == "confirmatory" and approval.get("previous_task_outcomes_acknowledged") is not True:
         raise OperatorError("confirmatory approval must acknowledge that these task outcomes were observed in the historical RQ1 run")
-    if approval.get("approved_by") is None or approval.get("approval_reference") is None:
+    if not approval.get("approved_by") or not approval.get("approval_reference"):
         raise OperatorError("launch approval requires an approver and reference")
+    if max_attempts is not None and max_attempts < 1:
+        raise OperatorError("max_attempts must be positive")
+    if cutoff_epoch is None or not math.isfinite(cutoff_epoch):
+        raise OperatorError("a concrete access deadline is required")
+    if cutoff_epoch is not None and time.time() + 1800 >= cutoff_epoch:
+        raise OperatorError("access deadline is within the 30-minute assignment reserve")
     checked = preflight(root, config, manifest, check_endpoints=False)
     if checked["status"] != "STATIC_PASS":
         raise OperatorError("launch preflight is blocked: " + "; ".join(checked["problems"]))
@@ -554,6 +578,8 @@ def run_design_launch(
             raise OperatorError(f"frozen manifest selected a skill outside Accum-18: {task_id}")
     machine = machine_report(output_dir=run_root, gpu_count=4, min_gpu_free_mib=int(config.get("min_gpu_free_mib", 16_384)),
                              ollama_base_port=int(config.get("ollama_base_port", 11_534)))
+    if machine["status"] != "PASS":
+        raise OperatorError("hardware, storage, or endpoint ports changed after preflight")
     devices = [GPUDevice(str(item["uuid"]), int(item["index"]), str(item["name"]),
                          int(item["memory_total_mib"]), int(item["memory_free_mib"]))
                for item in machine["devices"]]
@@ -574,10 +600,18 @@ def run_design_launch(
         raise OperatorError("approved neutral filler is empty")
     # Reserve and validate the run identity before starting services or the
     # separately approved four-request placement smoke test.
-    store.initialize()
+    run_root.mkdir(parents=True, exist_ok=True)
+    launch_lock = RunLock(run_root / "RUN.lock", resume=resume)
+    launch_lock.__enter__()
+    try:
+        store.initialize()
+    except BaseException:
+        launch_lock.__exit__(None, None, None)
+        raise
     model_dir = Path(str(config["ollama_models_dir"]))
     servers = [OllamaServer(spec, model_dir, binary=str(config.get("ollama_binary", "ollama"))) for spec in specs]
     clients: list[WorkerProcessClient] = []
+    launch_id = uuid4().hex
     previous_unseen_access = os.environ.get("RQ1_VALID_UNSEEN_ACCESS")
     changed_unseen_access = False
     try:
@@ -595,8 +629,17 @@ def run_design_launch(
         expected_placement = {spec.worker_id: spec.gpu_uuid for spec in specs}
         if not placement.get("passed") or placement.get("assignments") != expected_placement:
             raise OperatorError("could not verify one distinct physical GPU per Ollama worker")
+        atomic_write_json(run_root / "launches" / f"{launch_id}.json", {
+            "schema": "rq1-university-launch-evidence-v1", "launch_id": launch_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(), "manifest_sha256": manifest["manifest_sha256"],
+            "approval": dict(approval), "preflight": checked, "model_probes": probes,
+            "smoke_test": smoke, "gpu_placement": placement,
+        }, overwrite=False)
         config_dir = run_root / "worker-configs"
         config_dir.mkdir(parents=True, exist_ok=True)
+        if manifest["stage"] == "confirmatory":
+            os.environ["RQ1_VALID_UNSEEN_ACCESS"] = "scientific-evaluation"
+            changed_unseen_access = True
         for spec in specs:
             worker_config = {
                 "worker_id": spec.worker_id, "gpu_uuid": spec.gpu_uuid, "ollama_endpoint": spec.endpoint,
@@ -616,7 +659,8 @@ def run_design_launch(
                                "tokenizer_revision": manifest["tokenizer"]["revision"],
                                "sbert_snapshot_sha256": manifest["retrieval"]["snapshot_sha256"],
                                "alfworld_data_sha256": manifest["inputs"]["alfworld_data_sha256"],
-                               "filler_sha256": manifest["inputs"]["filler_sha256"], "placement": placement},
+                               "filler_sha256": manifest["inputs"]["filler_sha256"],
+                               "placement": {"passed": placement["passed"], "assignments": placement["assignments"]}},
             }
             config_path = config_dir / f"{spec.worker_id}.json"
             if config_path.exists():
@@ -627,22 +671,32 @@ def run_design_launch(
             client = WorkerProcessClient(spec.worker_id, config_path, cwd=root, gpu_uuid=spec.gpu_uuid)
             client.start()
             clients.append(client)
-        if manifest["stage"] == "confirmatory":
-            os.environ["RQ1_VALID_UNSEEN_ACCESS"] = "scientific-evaluation"
-            changed_unseen_access = True
         coordinator = Coordinator(store, clients)
-        outcome = coordinator.run(resume=resume, retry_failed=retry_failed, cutoff_epoch=cutoff_epoch)
+        outcome = coordinator.run(resume=resume, retry_failed=retry_failed, cutoff_epoch=cutoff_epoch,
+                                  max_attempts=max_attempts, lock_held=True)
         return {"preflight": checked, "smoke_test": smoke, "gpu_placement": placement, "run": outcome}
+    except BaseException as exc:
+        try:
+            atomic_write_json(run_root / "launches" / f"{launch_id}-failure.json", {
+                "schema": "rq1-university-launch-failure-v1", "launch_id": launch_id,
+                "recorded_at": datetime.now(timezone.utc).isoformat(), "error_type": type(exc).__name__, "error": str(exc),
+            }, overwrite=False)
+        except OSError:
+            pass
+        raise
     finally:
         if changed_unseen_access:
             if previous_unseen_access is None:
                 os.environ.pop("RQ1_VALID_UNSEEN_ACCESS", None)
             else:
                 os.environ["RQ1_VALID_UNSEEN_ACCESS"] = previous_unseen_access
-        for client in reversed(clients):
-            client.stop()
-        for server in reversed(servers):
-            server.stop()
+        try:
+            for client in reversed(clients):
+                client.stop()
+            for server in reversed(servers):
+                server.stop()
+        finally:
+            launch_lock.__exit__(None, None, None)
 
 
 def status(run_root: Path, manifest_path: Path) -> dict[str, Any]:

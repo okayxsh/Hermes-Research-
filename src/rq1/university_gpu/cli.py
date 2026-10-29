@@ -61,7 +61,8 @@ def add_parser(subparsers: Any) -> None:
         item.add_argument("--approval-file", type=Path, required=True)
         item.add_argument("--yes", action="store_true")
         item.add_argument("--retry-failed", action="store_true")
-        item.add_argument("--cutoff-epoch", type=float)
+        item.add_argument("--cutoff-epoch", type=float, required=True, help="Actual access deadline in Unix seconds; assignment stops 30 minutes early.")
+        item.add_argument("--max-attempts", type=int, help="Stop assigning after this many attempts for a short approved benchmark.")
 
     item = actions.add_parser("status", help="Read run progress and validate stored event/result records.")
     item.add_argument("--run-root", type=Path, required=True)
@@ -79,6 +80,22 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--run-root", type=Path, required=True)
     item.add_argument("--manifest", type=Path, required=True)
     item.add_argument("--destination", type=Path, required=True)
+    item = actions.add_parser("export-progress", help="Export a stopped complete or incomplete run with integrity checks.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--destination", type=Path, required=True)
+    item.add_argument("--relevance", type=Path)
+    item = actions.add_parser("verify-export", help="Verify an exported run on this machine without inference.")
+    item.add_argument("--destination", type=Path, required=True)
+    item = actions.add_parser("benchmark-report", help="Summarize the first four completed pilot attempts.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = actions.add_parser("progress-report", help="Show descriptive counts and missing units for a stopped run.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = actions.add_parser("analysis-artifacts", help="Create descriptive CSV tables and an SVG from complete-run analysis JSON.")
+    item.add_argument("--analysis", type=Path, required=True)
+    item.add_argument("--output-dir", type=Path, required=True)
     item = actions.add_parser("analyze", help="Run exploratory paired/task-cluster and rater-sensitive analyses offline.")
     item.add_argument("--results", type=Path, required=True)
     item.add_argument("--manifest", type=Path, required=True)
@@ -96,10 +113,30 @@ def run(root: Path, args: argparse.Namespace) -> int:
     from rq1.university_gpu import ops
     from rq1.university_gpu.manifest import ManifestError, freeze_manifest, validate_manifest
     from rq1.university_gpu.models import atomic_write_json, load_json
-    from rq1.university_gpu.scheduler import Coordinator, RunStore
+    from rq1.university_gpu.scheduler import Coordinator, RunStore, SchedulerError
 
     try:
         action = args.university_gpu_command
+        if action == "analysis-artifacts":
+            from rq1.university_gpu.figures import write_artifacts
+            _emit(write_artifacts(args.analysis, args.output_dir))
+            return 0
+        if action == "progress-report":
+            from rq1.university_gpu.progress import report
+            _emit(report(args.run_root, args.manifest))
+            return 0
+        if action == "benchmark-report":
+            from rq1.university_gpu.benchmark import report
+            _emit(report(args.run_root, args.manifest))
+            return 0
+        if action == "verify-export":
+            from rq1.university_gpu.snapshot import verify_progress
+            _emit(verify_progress(args.destination))
+            return 0
+        if action == "export-progress":
+            from rq1.university_gpu.snapshot import export_progress
+            _emit(export_progress(root, args.run_root, args.manifest, args.destination, args.relevance))
+            return 0
         if action == "check":
             config = ops.load_external_config(args.config) if args.config else {}
             payload = ops.check(root, config=config)
@@ -173,7 +210,7 @@ def run(root: Path, args: argparse.Namespace) -> int:
             approval = load_json(args.approval_file)
             payload = ops.run_design_launch(root, config, manifest_value, approval=approval, yes=args.yes,
                                             resume=action == "resume", retry_failed=args.retry_failed,
-                                            cutoff_epoch=args.cutoff_epoch)
+                                            cutoff_epoch=args.cutoff_epoch, max_attempts=args.max_attempts)
             _emit(payload)
             return 0 if payload["run"]["status"] == "completed" else 1
         if action == "stop":
@@ -201,6 +238,6 @@ def run(root: Path, args: argparse.Namespace) -> int:
             _emit(ops.export_run(run_root, args.manifest, args.destination))
             return 0
         raise ops.OperatorError(f"unsupported university-gpu action: {action}")
-    except (ops.OperatorError, ManifestError, OSError, ValueError, KeyError, TypeError) as exc:
+    except (ops.OperatorError, ManifestError, SchedulerError, OSError, ValueError, KeyError, TypeError) as exc:
         _emit({"status": "BLOCKED", "error_type": type(exc).__name__, "error": str(exc), "scientific_evidence": False})
         return 1

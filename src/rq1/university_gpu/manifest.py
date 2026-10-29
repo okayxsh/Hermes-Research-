@@ -383,6 +383,16 @@ def validate_manifest(manifest: Mapping[str, Any], *, require_frozen: bool = Fal
         if stage == "confirmatory" and (not isinstance(approval, Mapping)
                                          or approval.get("previous_task_outcomes_acknowledged") is not True):
             problems.append("confirmatory manifest lacks historical outcome exposure acknowledgment")
+        if stage == "confirmatory" and isinstance(approval, Mapping):
+            for field in ("eligibility_verified", "blinded_relevance_verified", "leakage_review_complete",
+                          "pilot_go_approved", "precision_power_review_complete"):
+                if approval.get(field) is not True:
+                    problems.append(f"confirmatory approval lacks {field}")
+            for name in ("power_report_sha256", "pilot_validation_sha256"):
+                try:
+                    _digest(approval.get(name), name)
+                except ManifestError as exc:
+                    problems.append(str(exc))
     return problems
 
 
@@ -396,6 +406,14 @@ def freeze_manifest(manifest: Mapping[str, Any], approval: Mapping[str, Any], de
         raise ManifestError("approval is not bound to this exact manifest hash")
     if manifest.get("stage") == "confirmatory" and approval.get("previous_task_outcomes_acknowledged") is not True:
         raise ManifestError("confirmatory approval must acknowledge that these task outcomes were observed historically")
+    confirmatory_fields = ("eligibility_verified", "blinded_relevance_verified", "leakage_review_complete",
+                           "pilot_go_approved", "precision_power_review_complete")
+    if manifest.get("stage") == "confirmatory":
+        missing = [name for name in confirmatory_fields if approval.get(name) is not True]
+        if missing:
+            raise ManifestError("confirmatory approval lacks: " + ", ".join(missing))
+        _digest(approval.get("power_report_sha256"), "power_report_sha256")
+        _digest(approval.get("pilot_validation_sha256"), "pilot_validation_sha256")
     frozen = dict(manifest)
     frozen["status"] = "frozen"
     frozen["approval"] = {
@@ -405,5 +423,9 @@ def freeze_manifest(manifest: Mapping[str, Any], approval: Mapping[str, Any], de
         "approved_at": str(approval.get("approved_at") or datetime.now(timezone.utc).isoformat()),
         "previous_task_outcomes_acknowledged": approval.get("previous_task_outcomes_acknowledged") is True,
     }
+    if manifest.get("stage") == "confirmatory":
+        frozen["approval"].update({field: True for field in confirmatory_fields})
+        frozen["approval"]["power_report_sha256"] = approval["power_report_sha256"]
+        frozen["approval"]["pilot_validation_sha256"] = approval["pilot_validation_sha256"]
     atomic_write_json(destination, frozen, overwrite=False)
     return frozen

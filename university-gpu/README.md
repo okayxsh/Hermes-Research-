@@ -55,4 +55,4 @@ Run the existing offline test suite separately where its declared test dependenc
 - Confirmatory approval also records that the selected task outcomes were historically observed.
 - The scheduler records unique physical attempts and retries. It offers resumable result writes and one authoritative result per unit; it does not promise exactly-once physical execution.
 - Stop requests let active episodes finish and prevent new assignments. Cutoff times prevent starting a cell too close to the cutoff.
-- A merge or export requires a complete, hash-valid run. A failed or interrupted run is retained for diagnosis and is not silently merged.
+- Merge and the complete-only `export` require a complete, hash-valid run. `export-progress` can preserve a stopped incomplete run and marks its missing units explicitly.

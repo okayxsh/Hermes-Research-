@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -15,10 +20,15 @@ from rq1.university_gpu.interventions import intervene
 from rq1.university_gpu.manifest import CONDITIONS, build_manifest, freeze_manifest, validate_manifest
 from rq1.university_gpu.models import GPUDevice, content_hash, sha256_file
 from rq1.university_gpu.ollama import server_environment, worker_specs
-from rq1.university_gpu.ops import directory_sha256, export_run
+from rq1.university_gpu.ops import OperatorError, _input_checks, directory_sha256, export_run, run_design_launch
 from rq1.university_gpu.relevance import RelevanceError, parse_relevance_csv
 from rq1.university_gpu.scheduler import Coordinator, RunStore, SchedulerError
-from rq1.university_gpu.hardware import parse_compute_processes, parse_nvidia_smi_csv, verify_worker_placements
+from rq1.university_gpu.snapshot import SnapshotError, backup_checkpoint, export_progress, verify_progress
+from rq1.university_gpu.benchmark import report as benchmark_report
+from rq1.university_gpu.worker_process import WorkerProcessClient
+from rq1.university_gpu.progress import report as progress_report
+from rq1.university_gpu.figures import write_artifacts
+from rq1.university_gpu.hardware import machine_report, parse_compute_processes, parse_nvidia_smi_csv, verify_worker_placements
 
 
 def _task(stage: str, family: str, index: int) -> dict[str, Any]:
@@ -54,6 +64,10 @@ def freeze(manifest: Mapping[str, Any], *, acknowledge: bool = False) -> dict[st
                 "manifest_sha256": manifest["manifest_sha256"]}
     if acknowledge:
         approval["previous_task_outcomes_acknowledged"] = True
+        approval.update({"eligibility_verified": True, "blinded_relevance_verified": True,
+                         "leakage_review_complete": True, "pilot_go_approved": True,
+                         "precision_power_review_complete": True, "power_report_sha256": "b" * 64,
+                         "pilot_validation_sha256": "c" * 64})
     with tempfile.TemporaryDirectory() as temporary:
         return freeze_manifest(manifest, approval, Path(temporary) / "frozen.json")
 
@@ -101,6 +115,14 @@ class UniversityGpuManifestTests(unittest.TestCase):
             freeze(manifest)
         frozen = freeze(manifest, acknowledge=True)
         self.assertEqual(validate_manifest(frozen, require_frozen=True), [])
+
+    def test_confirmatory_freeze_requires_pilot_leakage_and_power_review(self) -> None:
+        manifest = make_manifest("confirmatory")
+        approval = {"approved": True, "approved_by": "test", "approval_reference": "test",
+                    "manifest_sha256": manifest["manifest_sha256"], "previous_task_outcomes_acknowledged": True}
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "eligibility_verified"):
+                freeze_manifest(manifest, approval, Path(temporary) / "manifest.json")
 
     def test_manifest_rejects_identity_tampering_even_with_recomputed_hash(self) -> None:
         manifest = make_manifest()
@@ -177,6 +199,11 @@ class UniversityGpuManifestTests(unittest.TestCase):
                                   retrieval_top=top, skill_texts=texts, selected_skill_ids=selected,
                                   tokenizer=tokenizer, gate_threshold=0.5, filler_unit=filler)
         self.assertEqual(d18, raw)
+        gate_all, gate_meta = intervene(arm="Gate", task_id="valid_seen:family:0", raw_memory=raw,
+                                        retrieval_top=top, skill_texts=texts, selected_skill_ids=selected,
+                                        tokenizer=tokenizer, gate_threshold=-1, filler_unit=filler)
+        self.assertEqual(gate_all, raw)
+        self.assertEqual(gate_meta["token_count"], d18_meta["token_count"])
         self.assertEqual(d18_meta["token_count"], len(tokenizer.encode(json.dumps(raw["recovery_memory"],
                                                                                   ensure_ascii=False, sort_keys=True))))
         d0, _ = intervene(arm="D0", task_id="valid_seen:family:0", raw_memory={"recovery_memory": {
@@ -229,6 +256,21 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         changed["approval"]["approved_by"] = "different-operator"
         with self.assertRaisesRegex(SchedulerError, "approval record"):
             RunStore(self.run_root, changed).initialize()
+
+    def test_launch_rejects_blank_approver_without_touching_gpu(self) -> None:
+        approval = {"gpu_inference": True, "scientific_run": True, "manifest_sha256": self.manifest["manifest_sha256"],
+                    "approved_by": "", "approval_reference": ""}
+        with self.assertRaisesRegex(OperatorError, "approver and reference"):
+            run_design_launch(Path(__file__).parents[1], {}, self.manifest, approval=approval, yes=True)
+        approval.update({"approved_by": "operator", "approval_reference": "record"})
+        with self.assertRaisesRegex(OperatorError, "access deadline is required"):
+            run_design_launch(Path(__file__).parents[1], {}, self.manifest, approval=approval, yes=True)
+        with self.assertRaisesRegex(OperatorError, "access deadline is required"):
+            run_design_launch(Path(__file__).parents[1], {}, self.manifest, approval=approval, yes=True,
+                              cutoff_epoch=float("nan"))
+        with self.assertRaisesRegex(OperatorError, "30-minute"):
+            run_design_launch(Path(__file__).parents[1], {}, self.manifest, approval=approval, yes=True,
+                              cutoff_epoch=time.time() + 60)
 
     def test_mocked_four_worker_run_records_heartbeats_and_merges(self) -> None:
         workers = [FakeWorker(f"w{index}", delay=0.62 if index == 0 else 0) for index in range(4)]
@@ -285,6 +327,14 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         with self.assertRaises(SchedulerError):
             self.store.completed()
 
+    def test_missing_binary_outcome_cannot_become_an_authoritative_result(self) -> None:
+        self.store.initialize()
+        unit = self.manifest["units"][0]
+        result = FakeWorker("worker").execute(unit, self.root, "attempt")
+        result["recovery_success"] = None
+        with self.assertRaises(SchedulerError):
+            self.store.record_result(unit, result, attempt_id="attempt", worker_id="worker")
+
     def test_analysis_is_paired_clustered_and_rater_sensitive(self) -> None:
         rows = []
         labels = {}
@@ -308,6 +358,11 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         self.assertFalse(report["analysis"]["power_or_sample_sufficiency_established"])
         self.assertNotEqual(report["retrieval_noise_sensitivity"]["adjudicated"],
                             report["retrieval_noise_sensitivity"]["rater_b"])
+        analysis_path = self.root / "analysis.json"
+        analysis_path.write_text(json.dumps(report), encoding="utf-8")
+        artifacts = write_artifacts(analysis_path, self.root / "analysis-artifacts")
+        self.assertEqual(artifacts["status"], "PASS")
+        self.assertIn("Rel", (self.root / "analysis-artifacts" / "conditions.svg").read_text(encoding="utf-8"))
         with self.assertRaises(AnalysisError):
             analyze(rows[:-1], self.manifest, bootstrap_replicates=1000)
 
@@ -326,6 +381,20 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         result = export_run(self.run_root, manifest_path, self.root / "export")
         self.assertEqual(result["status"], "PASS")
         self.assertTrue((self.root / "export" / "EXPORT-MANIFEST.json").is_file())
+        portable = self.root / "portable"
+        self.assertTrue(export_progress(Path(__file__).parents[1], self.run_root, manifest_path, portable)["complete"])
+        self.assertTrue(verify_progress(portable)["complete"])
+        env = dict(os.environ, PYTHONPATH=str(portable / "analysis-src"))
+        analyzed = subprocess.run([sys.executable, "-B", "-m", "rq1.cli", "university-gpu", "analyze",
+                                   "--results", str(portable / "results.jsonl"), "--manifest", str(portable / "run/manifest.json"),
+                                   "--output", str(self.root / "analysis.json"), "--bootstrap-replicates", "1000"],
+                                  cwd=portable / "analysis-src", env=env, capture_output=True, text=True)
+        self.assertEqual(analyzed.returncode, 0, analyzed.stdout + analyzed.stderr)
+        rendered = subprocess.run([sys.executable, "-B", "-m", "rq1.cli", "university-gpu", "analysis-artifacts",
+                                   "--analysis", str(self.root / "analysis.json"), "--output-dir", str(self.root / "figures")],
+                                  cwd=portable / "analysis-src", env=env, capture_output=True, text=True)
+        self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
+        self.assertTrue((self.root / "figures" / "conditions.svg").is_file())
         self.assertEqual(sha256_file(frozen_config), before)
 
     def test_dataset_tree_digest_changes_with_file_content(self) -> None:
@@ -337,6 +406,104 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         first = directory_sha256(dataset)
         data_file.write_text("different bytes", encoding="utf-8")
         self.assertNotEqual(first, directory_sha256(dataset))
+
+    def test_partial_export_is_verified_and_corruption_is_detected(self) -> None:
+        coordinator = Coordinator(self.store, [FakeWorker("slow", delay=0.2)])
+        timer = threading.Timer(0.05, coordinator.request_stop)
+        timer.start()
+        outcome = coordinator.run()
+        timer.join()
+        self.assertEqual(outcome["completed_units"], 1)
+        dest = self.root / "partial-export"
+        exported = export_progress(Path(__file__).parents[1], self.run_root, self.store.manifest_path, dest)
+        self.assertFalse(exported["complete"])
+        self.assertEqual(verify_progress(dest)["missing"], 35)
+        self.assertEqual(progress_report(dest / "run", dest / "run" / "manifest.json")["status"], "INCOMPLETE")
+        env = dict(os.environ, PYTHONPATH=str(dest / "analysis-src"))
+        checked = subprocess.run([sys.executable, "-B", "-m", "rq1.cli", "university-gpu", "verify-export",
+                                  "--destination", str(dest)], cwd=dest / "analysis-src", env=env, capture_output=True, text=True)
+        self.assertEqual(checked.returncode, 0, checked.stderr + checked.stdout)
+        (dest / "results.jsonl").write_text("corrupt\n", encoding="utf-8")
+        with self.assertRaises(SnapshotError):
+            verify_progress(dest)
+
+    def test_interrupted_export_does_not_publish_a_partial_destination(self) -> None:
+        self.store.initialize()
+        dest = self.root / "export"
+        with patch("rq1.university_gpu.snapshot.shutil.copy2", side_effect=OSError("simulated interruption")):
+            with self.assertRaises(OSError):
+                export_progress(Path(__file__).parents[1], self.run_root, self.store.manifest_path, dest)
+        self.assertFalse(dest.exists())
+        self.assertTrue(list(self.root.glob(".export.incomplete-*")))
+        export_progress(Path(__file__).parents[1], self.run_root, self.store.manifest_path, dest)
+        self.assertFalse(verify_progress(dest)["complete"])
+
+    def test_failed_worker_is_quarantined_while_other_workers_continue(self) -> None:
+        class DeadWorker(FakeWorker):
+            quarantine_on_failure = True
+
+            def execute(self, unit, attempt_dir, attempt_id):
+                raise RuntimeError("simulated model service failure")
+
+        outcome = Coordinator(self.store, [DeadWorker("dead"), FakeWorker("healthy")]).run()
+        self.assertEqual(outcome["completed_units"], 35)
+        self.assertEqual(len(outcome["failures"]), 1)
+        self.assertTrue(list((self.run_root / "backups").glob("checkpoint-*")))
+
+    def test_backup_failure_stops_new_work_without_losing_completed_unit(self) -> None:
+        with patch("rq1.university_gpu.snapshot.backup_checkpoint", side_effect=OSError("disk full")):
+            outcome = Coordinator(self.store, [FakeWorker("worker")]).run()
+        self.assertEqual(outcome["completed_units"], 10)
+        self.assertEqual(outcome["failures"][0]["failure_class"], "backup")
+        self.assertTrue((self.run_root / "STOP").exists())
+
+    def test_interrupted_checkpoint_is_never_published_as_complete(self) -> None:
+        self.store.initialize()
+        self.store.append_event({"event": "attempt_started", "unit_key": self.manifest["units"][0]["unit_key"], "attempt_id": "test"})
+        real_copy = shutil.copy2
+        copied = []
+        def interrupt_second(source, target):
+            if copied:
+                raise OSError("interrupted after first file")
+            copied.append(str(source))
+            return real_copy(source, target)
+        with patch("rq1.university_gpu.snapshot.shutil.copy2", side_effect=interrupt_second):
+            with self.assertRaises(OSError):
+                backup_checkpoint(self.store)
+        self.assertFalse(list((self.run_root / "backups").glob("checkpoint-*")))
+        self.assertTrue(list((self.run_root / "backups").glob(".partial-*")))
+
+    def test_low_storage_and_corrupt_input_are_blocked(self) -> None:
+        from types import SimpleNamespace
+        runner = lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "GPU-A, 0, Mock, 32768, 32768\n", "")
+        with patch("rq1.university_gpu.hardware.shutil.disk_usage", return_value=SimpleNamespace(free=1)):
+            checks = machine_report(output_dir=self.root, runner=runner)["checks"]
+        self.assertEqual(next(row["status"] for row in checks if row["name"] == "output_storage"), "FAIL")
+        with patch("rq1.university_gpu.scheduler.shutil.disk_usage", return_value=SimpleNamespace(free=1)):
+            result = Coordinator(self.store, [FakeWorker("worker")]).run()
+        self.assertEqual(result["attempts_started"], 0)
+        self.assertEqual(result["failures"][0]["failure_class"], "storage")
+        bad = self.root / "tokenizer.json"
+        bad.write_text("corrupted", encoding="utf-8")
+        checks = _input_checks({"tokenizer_path": str(bad)}, self.manifest)
+        self.assertEqual(next(row["status"] for row in checks if row["name"] == "tokenizer_sha256"), "FAIL")
+
+    def test_four_worker_benchmark_stops_and_resumes(self) -> None:
+        workers = [FakeWorker(f"worker-{i}", delay=0.03) for i in range(4)]
+        coordinator = Coordinator(self.store, workers)
+        result = coordinator.run(max_attempts=4)
+        self.assertEqual(result["completed_units"], 4)
+        self.assertEqual(benchmark_report(self.run_root, self.store.manifest_path)["status"], "PASS")
+        result = coordinator.run(resume=True, max_attempts=4)
+        self.assertEqual(result["completed_units"], 8)
+
+    def test_frozen_worker_stream_times_out(self) -> None:
+        class FrozenStream:
+            def readline(self):
+                time.sleep(0.2)
+                return ""
+        with self.assertRaisesRegex(SchedulerError, "timed out"):
+            WorkerProcessClient._readline(FrozenStream(), timeout=0.01, label="mock")
 
 
 if __name__ == "__main__":

@@ -40,8 +40,8 @@ The existing follow-up tasks are previously observed by RQ1 even though their sp
 - A single writer owns the run lock. Each assignment has a unique attempt ID and preserved attempt directory. Heartbeats are append-only events.
 - A completed result is written once to its unit-key path, has a canonical result hash, and must match manifest task, seed, condition, and unit identity.
 - An interrupted or failed unit is not counted as an outcome. A retry gets a new physical attempt; no exactly-once claim is made.
-- A result written just before a process crash is recovered from its hash-valid unit record. Duplicate, unknown, hash-mismatched, or incomplete results block validation, merge, and export.
-- A safe stop/cutoff does not kill an active episode. Partial paired cells remain incomplete and cannot be exported as a completed matrix.
+- A result written just before a process crash is recovered from its hash-valid unit record. Duplicate, unknown or hash-mismatched results block export. Incomplete results block complete-run validation, merge and the complete-only `export` command.
+- A safe stop/cutoff does not kill an active episode. Partial paired cells remain incomplete; `export-progress` preserves and explicitly marks them incomplete.
 - Run output is required outside the source checkout; no source freeze or archived run is edited.
 
 ## Scientific gates before confirmatory execution
