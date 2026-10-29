@@ -123,3 +123,20 @@ py -3.11 -B -m rq1.cli university-gpu analysis-artifacts --analysis ..\..\rq1-an
 ```
 
 Incomplete results are descriptive only. Before leaving, confirm no active workers, check the missing-unit and failed-attempt counts, verify the independent copy, retain the original run directory and approvals, and obtain permission for any later continuation.
+
+## Overnight preparation update (30 October)
+
+- **Pilot: BLOCKED.** No ALFWorld `json_2.1.1` data tree is present locally, so no `valid_seen` task could be discovered, six tasks could not be selected, and no expert routes, checkpoints, detours or controlled-failure files were produced or validated. See `PILOT_READINESS.md`.
+- **Ratings.** The `friday-rating-package` exists in `experiment/university-friday-preparation-20261029/friday-rating-package/` with blank copies of the confirmatory forms, a README, a 28-pair historical conflict listing (`historical-conflicts-28.csv`, values copied verbatim from the historical join) and a blank `historical-reuse-decision.md`. `university-gpu/validate_rating_package.py` on the blank package exits 1; 540 missing per file; "outstanding ratings: 1620" = 3 files x 540 pairs. The confirmatory set alone requires 1,080 individual ratings (Yash 540 + Hani 540) plus 540 adjudications. No labels were generated. The historical reuse decision is **not** made.
+- **Scientific prerequisites.** `university-gpu/check_scientific_prerequisites.py` exits 1: 0 PASS, 8 BLOCKED, 1 NOT_IMPLEMENTED (prospective power). See `SCIENTIFIC_PREREQUISITES.md`.
+- **Workstation.** `university-gpu check --json` on this laptop is BLOCKED (16.78 GB RAM < 64 GB required; one RTX 3050 Laptop GPU, not four RTX 5000 Ada). This is the local machine, not the university host. See `WORKSTATION_SETUP.md`, `TRANSFER_CHECKLIST.md` and `FRIDAY_COMMAND_SHEET.md`.
+- **Offline tests.** `python -m unittest discover -s tests` -> Ran 342 tests, OK (skipped=4), run with `.venv\Scripts\python.exe`.
+- **Not done tonight.** No GPU run, no model or ALFWorld install, no pilot launch, no confirmatory launch, no human approvals signed.
+- **Launch status.** Pilot launch tomorrow: NO. Confirmatory 540-episode launch: NO. Both remain blocked.
+- **Yash and Hani must personally** complete their ratings in their own worksheets (blinded from each other), adjudicate, decide the historical reuse option and sign it, and supply/sign approvals.
+- **University IT/staff must provide** confirmation of four RTX 5000 Ada GPUs and their placement, >=64 GB RAM, Ollama with `gemma4:12b` (verify, do not pull without authorization), ALFWorld 0.4.2 `json_2.1.1` data, the frozen `all-mpnet-base-v2` snapshot, a hash-pinned Gemma tokenizer, storage, the access end time, and written permission for model/data transfer.
+- **First command on the workstation (read-only):**
+
+```bash
+PYTHONPATH=src python3.11 -m rq1.cli university-gpu check --json
+```
