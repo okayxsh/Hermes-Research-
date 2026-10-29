@@ -10,7 +10,7 @@ The scientific retrieval mechanism is **Sentence-BERT embeddings + cosine simila
 
 ## Hard constraints
 
-- Do not use DeepSeek or DeepSeek-R1 derivatives.
+- DeepSeek and DeepSeek-R1 derivatives must not be used as experimental backbones, candidate models, fallback models, or other evaluated LLM components in the RQ1 research pipeline. They may be used as development subagents for repository exploration, coding, debugging, testing, and code review. Development agents must not change the experimental model selection, protocol, or scientific methodology without explicit approval.
 - The RQ1 backbone is `gemma4:12b` (Decision 010). Do not substitute, add, or fall back to another model.
 - Scientific retrieval is Sentence-BERT (`all-mpnet-base-v2`) → cosine → top-3. Hermes-native skill loading is compatibility/diagnostic evidence only and must never feed Precision@3 or Retrieval Noise. Do not add LangChain, LangGraph, or a vector database.
 - Use ALFWorld text tasks: `train` for acquisition, `valid_seen` for pilots, and untouched `valid_unseen` only for final evaluation.
