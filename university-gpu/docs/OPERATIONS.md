@@ -28,6 +28,20 @@ All input files are SHA-256-bound into the manifest. The ALFWorld data directory
 
 ## Calibrate and freeze Gate
 
+Prepare a UTF-8 JSON array of exactly six reviewed pilot contexts. Each object has `task_id`, `task_instruction`, `observation`, `inventory` (a JSON string array), and `failure_message`. Use only observed post-detour information, with the frozen canonical failure message. The `gate-scores` command below checks valid-seen task identity, the frozen post-detour observation, complete rater coverage, and the local Sentence-BERT snapshot hash. It performs **CPU embedding inference** with local files only; it does not call Gemma or the GPUs. The exact task instruction and inventory still need human review; compare each recorded query hash in `SCORE-EVIDENCE.json` with observed pilot retrieval query hashes before confirmatory approval.
+
+```bash
+PYTHONPATH=src python3.11 -m rq1.cli university-gpu gate-scores \
+  --tasks "$RQ1_PILOT_TASKS" --failures "$RQ1_PILOT_FAILURES" --contexts "$RQ1_PILOT_CONTEXTS" \
+  --library "$RQ1_ACCUM18_LIBRARY" --relevance "$RQ1_PILOT_RELEVANCE" \
+  --sbert-cache "$RQ1_HUGGINGFACE_CACHE" --output-dir "$RQ1_EVIDENCE/gate-scores"
+export RQ1_GATE_SCORES="$RQ1_EVIDENCE/gate-scores/scores.csv"
+export RQ1_GATE_LABELS="$RQ1_EVIDENCE/gate-scores/labels.csv"
+export RQ1_VALID_SEEN_GATE_SCORES_CSV="$RQ1_GATE_SCORES"
+export RQ1_VALID_SEEN_GATE_LABELS_CSV="$RQ1_GATE_LABELS"
+export RQ1_TASK_SKILL_RELEVANCE_CSV="$RQ1_PILOT_RELEVANCE"
+```
+
 The Gate proposal fits only the predeclared valid-seen score/label rule and includes source hashes. It is a proposal until human review and approval:
 
 ```bash
@@ -40,6 +54,7 @@ PYTHONPATH=src python3.11 -m rq1.cli university-gpu gate-calibration freeze \
   --calibration "$RQ1_EVIDENCE/gate-proposal.json" \
   --approval-file "$RQ1_EVIDENCE/gate-approval.json" \
   --output "$RQ1_EVIDENCE/gate-frozen.json"
+export RQ1_GATE_CALIBRATION_FROZEN="$RQ1_EVIDENCE/gate-frozen.json"
 ```
 
 Gate approval JSON binds the exact `calibration_sha256` and includes `approved=true`, `approved_by`, and `approval_reference`. Calibration quality on a small validation split is itself uncertain; report its metrics and do not tune the threshold against recovery outcomes.

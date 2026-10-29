@@ -46,6 +46,15 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--scores", type=Path, required=True)
     item.add_argument("--labels", type=Path, required=True)
     item.add_argument("--output", type=Path, required=True)
+
+    item = actions.add_parser("gate-scores", help="Use the existing frozen Sentence-BERT snapshot on CPU to prepare Gate inputs.")
+    item.add_argument("--tasks", type=Path, required=True)
+    item.add_argument("--failures", type=Path, required=True)
+    item.add_argument("--contexts", type=Path, required=True)
+    item.add_argument("--library", type=Path, required=True)
+    item.add_argument("--relevance", type=Path, required=True)
+    item.add_argument("--sbert-cache", type=Path, required=True)
+    item.add_argument("--output-dir", type=Path, required=True)
     item = calibration_actions.add_parser("validate")
     item.add_argument("--calibration", type=Path, required=True)
     item.add_argument("--require-frozen", action="store_true")
@@ -117,6 +126,12 @@ def run(root: Path, args: argparse.Namespace) -> int:
 
     try:
         action = args.university_gpu_command
+        if action == "gate-scores":
+            from rq1.university_gpu.gate_scores import prepare_scores
+            _emit(prepare_scores(tasks_path=args.tasks, failures_path=args.failures, contexts_path=args.contexts,
+                                 library_path=args.library, relevance_path=args.relevance,
+                                 cache=args.sbert_cache, output=args.output_dir))
+            return 0
         if action == "analysis-artifacts":
             from rq1.university_gpu.figures import write_artifacts
             _emit(write_artifacts(args.analysis, args.output_dir))

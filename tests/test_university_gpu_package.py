@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -28,6 +29,8 @@ from rq1.university_gpu.benchmark import report as benchmark_report
 from rq1.university_gpu.worker_process import WorkerProcessClient
 from rq1.university_gpu.progress import report as progress_report
 from rq1.university_gpu.figures import write_artifacts
+from rq1.university_gpu.gate_scores import compute_scores, prepare_scores
+from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE
 from rq1.university_gpu.hardware import machine_report, parse_compute_processes, parse_nvidia_smi_csv, verify_worker_placements
 
 
@@ -183,6 +186,65 @@ class UniversityGpuManifestTests(unittest.TestCase):
             self.assertEqual(validate_gate_calibration(proposal), [])
             with self.assertRaises(CalibrationError):
                 propose_gate_calibration(scores, labels.with_name("missing.csv"))
+
+    def test_gate_score_preparation_uses_frozen_query_and_blocks_unseen_contexts(self) -> None:
+        class FakeEmbedder:
+            def encode(self, values):
+                self.values = values
+                return [[1.0, 0.0] for _ in values]
+        contexts = [{"task_id": f"valid_seen:task-{i}", "task_instruction": "do the task",
+                     "observation": "observed state", "inventory": [],
+                     "failure_message": CANONICAL_FAILURE_MESSAGE} for i in range(6)]
+        skills = {f"skill-{i:02d}": f"skill text {i}" for i in range(18)}
+        embedder = FakeEmbedder()
+        rows = compute_scores(contexts, skills, embedder)
+        self.assertEqual(len(rows), 108)
+        self.assertTrue(all(row["cosine_similarity"] == 1 for row in rows))
+        self.assertIn("TASK:\ndo the task\nOBSERVATION:\nobserved state", embedder.values[0])
+        class ZeroEmbedder:
+            def encode(self, values):
+                return [[0.0, 0.0] for _ in values]
+        with self.assertRaisesRegex(ValueError, "invalid embedding"):
+            compute_scores(contexts, skills, ZeroEmbedder())
+        contexts[0]["task_id"] = "valid_unseen:forbidden"
+        with self.assertRaisesRegex(ValueError, "valid-seen"):
+            compute_scores(contexts, skills, embedder)
+
+    def test_gate_score_pipeline_with_mock_cpu_model_and_frozen_inputs(self) -> None:
+        from rq1.evaluation.amended_protocol import SBERT_SNAPSHOT_SHA256
+        tasks = make_manifest()["tasks"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tasks.json").write_text(json.dumps({"status": "frozen", "tasks": tasks}), encoding="utf-8")
+            failures = [{**task, "post_detour_observation": "observed state", "oracle": {"validated": True}} for task in tasks]
+            (root / "failures.json").write_text(json.dumps({"tasks": failures}), encoding="utf-8")
+            skills = [{"skill_id": f"skill-{i:02d}", "text": f"skill text {i}"} for i in range(18)]
+            (root / "library.json").write_text(json.dumps({"Accum-18": {"skills": skills}}), encoding="utf-8")
+            contexts = [{"task_id": task["task_id"], "task_instruction": "do task", "observation": "observed state",
+                         "inventory": [], "failure_message": CANONICAL_FAILURE_MESSAGE} for task in tasks]
+            (root / "contexts.json").write_text(json.dumps(contexts), encoding="utf-8")
+            lines = ["task_id,skill_id,rater_a,rater_b,adjudicated"]
+            for task in tasks:
+                for i, skill in enumerate(skills):
+                    label = "RELEVANT" if i == 0 else "IRRELEVANT"
+                    lines.append(f"{task['task_id']},{skill['skill_id']},{label},{label},{label}")
+            (root / "relevance.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            captured = {}
+            class FakeSentenceTransformer:
+                def __init__(self, model, **kwargs):
+                    captured.update(kwargs)
+                def encode(self, values, **kwargs):
+                    return type("Vectors", (), {"tolist": lambda self: [[1.0] + [0.0] * 767 for _ in values]})()
+            fake = types.ModuleType("sentence_transformers")
+            fake.SentenceTransformer = FakeSentenceTransformer
+            with patch("rq1.acquisition.environment.sbert_snapshot_sha256", return_value=SBERT_SNAPSHOT_SHA256), patch.dict(sys.modules, {"sentence_transformers": fake}):
+                evidence = prepare_scores(tasks_path=root / "tasks.json", failures_path=root / "failures.json",
+                                          contexts_path=root / "contexts.json", library_path=root / "library.json",
+                                          relevance_path=root / "relevance.csv", cache=root, output=root / "scores")
+            self.assertEqual(evidence["pairs"], 108)
+            self.assertEqual(captured["device"], "cpu")
+            self.assertTrue(captured["local_files_only"])
+            self.assertEqual(len((root / "scores/scores.csv").read_text().splitlines()), 109)
 
     def test_memory_controls_preserve_baseline_and_match_budget(self) -> None:
         tokenizer = CharacterTokenizer()
