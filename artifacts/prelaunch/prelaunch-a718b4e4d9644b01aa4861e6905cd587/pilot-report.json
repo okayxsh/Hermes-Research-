@@ -1,0 +1,69 @@
+{
+  "acquisition": {
+    "candidate_created": true,
+    "log_paths": [
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/acquisition/result/acquisition_episode.jsonl"
+    ],
+    "retrieval_count": 0,
+    "success": true
+  },
+  "checkpoint": {
+    "prefix_actions": [
+      "look",
+      "go to sidetable 1",
+      "go to shelf 1",
+      "take pencil 3 from shelf 1"
+    ],
+    "prefix_length": 4
+  },
+  "generated_at": "2026-10-30T09:48:29Z",
+  "memory_recovery": {
+    "invalid_action_selections": 0,
+    "log_paths": [
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-memory/result/retrieval.jsonl",
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-memory/result/failure.json",
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-memory/result/recovery_steps.jsonl"
+    ],
+    "no_retrieval": false,
+    "post_failure_actions": 2,
+    "retrieval_count": 1,
+    "success": true,
+    "task_goal": "put some pencil on desk."
+  },
+  "mode": "non_scientific_prelaunch",
+  "model_inference": {
+    "action_selection_protocol": "action-index-history-v3",
+    "max_selection_attempts": 3,
+    "model": "gemma4:12b",
+    "output_token_cap": 2048,
+    "seed": 42,
+    "temperature": 0
+  },
+  "nolib_recovery": {
+    "invalid_action_selections": 0,
+    "log_paths": [
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-nolib/result/retrieval.jsonl",
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-nolib/result/failure.json",
+      "/home/researcher/Hermes-Research-/artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/recovery-nolib/result/recovery_steps.jsonl"
+    ],
+    "no_retrieval": true,
+    "post_failure_actions": 2,
+    "retrieval_count": 1,
+    "success": true,
+    "task_goal": "put some pencil on desk."
+  },
+  "reference_action_count": 6,
+  "reference_actions": [
+    "look",
+    "go to sidetable 1",
+    "go to shelf 1",
+    "take pencil 3 from shelf 1",
+    "go to desk 1",
+    "move pencil 3 to desk 1"
+  ],
+  "run_id": "prelaunch-a718b4e4d9644b01aa4861e6905cd587",
+  "schema_version": 1,
+  "seed": 11,
+  "train_task_id": "train:look_at_obj_in_light-Bowl-None-DeskLamp-304/trial_T20190907_232204_574574",
+  "valid_seen_task_id": "valid_seen:pick_and_place_simple-Pencil-None-Desk-310/trial_T20190909_113054_894334"
+}
