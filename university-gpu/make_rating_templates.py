@@ -4,6 +4,8 @@ import csv
 import json
 from pathlib import Path
 
+from rq1.university_gpu.pilot_readiness import budget_problems
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -37,6 +39,13 @@ def main():
                 goals[task_id] = goal
     if any(t["task_id"] not in definitions or definitions[t["task_id"]].get("oracle", {}).get("validated") is not True for t in tasks_list):
         raise SystemExit("task is missing an oracle-validated failure definition")
+    for task in tasks_list:
+        definition = definitions[task["task_id"]]
+        issues = budget_problems(definition)
+        if issues:
+            raise SystemExit(f"scientific-budget ineligible context: {task['task_id']}: {issues}")
+        if not goals.get(task["task_id"], "").strip() or not str(definition.get("post_detour_observation", "")).strip():
+            raise SystemExit("complete task instructions and post-detour observation are required before creating rating materials")
     args.output.mkdir(parents=True)
     for name in ("rater_a.csv", "rater_b.csv"):
         with (args.output / name).open("x", encoding="utf-8", newline="") as handle:

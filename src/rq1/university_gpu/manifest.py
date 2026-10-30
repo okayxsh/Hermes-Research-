@@ -52,7 +52,11 @@ def _validate_tasks(stage: str, tasks: Sequence[Mapping[str, Any]]) -> None:
     expected_per_family = 1 if stage == "pilot" else 5
     if any(family_counts[family] != expected_per_family for family in TASK_FAMILIES):
         raise ManifestError(f"{stage} requires {expected_per_family} task(s) per family")
+    from rq1.university_gpu.pilot_readiness import budget_problems
     for task in tasks:
+        issues = budget_problems(dict(task))
+        if issues:
+            raise ManifestError(f"{task.get('task_id')}: " + "; ".join(issues))
         if not task.get("checkpoint_id") or not task.get("prefix_actions"):
             raise ManifestError(f"task lacks frozen checkpoint/prefix: {task.get('task_id')}")
         _digest(task.get("checkpoint_digest"), f"{task.get('task_id')} checkpoint_digest")

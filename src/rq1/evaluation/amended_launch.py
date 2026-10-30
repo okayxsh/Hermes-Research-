@@ -34,7 +34,7 @@ from rq1.acquisition.environment import (
 )
 from rq1.acquisition.extension_launch import _os_release
 from rq1.acquisition.gates import _approved, load_task_manifest, queue_identity_sha256
-from rq1.acquisition.launch import HERMES_PYTHON, PRODUCTION_BACKUP_DIR, _read_request, _writable, attempt_lineage, scientific_acquisition_allocation
+from rq1.acquisition.launch import PRODUCTION_BACKUP_DIR, _read_request, _writable, attempt_lineage, scientific_acquisition_allocation
 from rq1.acquisition.reporting import write_report
 from rq1.acquisition.skill_creation import prompt_hashes
 from rq1.bridge.adapters.capabilities import default_data_dir, probe_alfworld_capabilities
@@ -134,6 +134,7 @@ from rq1.tasks.models import TaskManifest
 from rq1.tasks.reporting import write_immutable
 from rq1.tasks.validation import validate_manifest
 from rq1.utils.hashing import sha256_file
+from rq1.hermes.runtime import hermes_runtime_available
 from rq1.utils.time import utc_now
 
 CHECK_TASK_ID = "valid_seen:look_at_obj_in_light-AlarmClock-None-DeskLamp-323/trial_T20190909_044715_250790"
@@ -1076,7 +1077,7 @@ def evaluation_preflight(root: Path, args: argparse.Namespace) -> dict[str, Any]
     checks["evaluation_check_evidence_passed_at_commit"] = (evidence_payload.get("mode") == EVALUATION_EVIDENCE_MODE and evidence_payload.get("passed") is True
                                                             and evidence_payload.get("repository_commit") == commit and sha256_file(evidence_path) == evidence.get("sha256"))
     checks["real_alfworld_adapter_ready"] = probe_alfworld_capabilities(default_data_dir()).real_adapter_ready
-    checks["hermes_runtime_present"] = HERMES_PYTHON.is_file()
+    checks["hermes_runtime_present"] = hermes_runtime_available()
     run_dirs = [root / "results" / "final" / shard_run_id(shard) for shard in range(1, SHARD_COUNT + 1)]
     checks["shard_result_paths_unused"] = not any(path.exists() for path in run_dirs)
     checks["results_final_writable"] = _writable(root / "results" / "final")

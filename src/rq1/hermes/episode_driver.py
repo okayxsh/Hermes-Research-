@@ -383,10 +383,11 @@ class _RegistryWorker:
     @staticmethod
     def _hermes_python() -> str:
         """Use Hermes's interpreter, never the repository virtual environment."""
-        candidate = Path("/usr/local/lib/hermes-agent/venv/bin/python")
-        if candidate.is_file():
-            return str(candidate)
-        raise EpisodeDriverError("Installed Hermes Python runtime was not found")
+        from rq1.hermes.runtime import checked_hermes_python, HermesRuntimeError
+        try:
+            return str(checked_hermes_python())
+        except HermesRuntimeError as exc:
+            raise EpisodeDriverError(str(exc)) from exc
 
     def start(self) -> None:
         home = self.output_dir / "hermes-home"

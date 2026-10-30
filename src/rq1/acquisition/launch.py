@@ -65,6 +65,7 @@ from rq1.skills.leakage import find_leakage
 from rq1.tasks.discovery import CANONICAL_FAMILIES, discover_tasks
 from rq1.tasks.selection import ACQUISITION_HARD_CAP, ACQUISITION_HARD_CAP_PER_FAMILY, ACQUISITION_INITIAL_TASKS
 from rq1.utils.hashing import sha256_file
+from rq1.hermes.runtime import hermes_runtime_available
 from rq1.utils.time import utc_now
 
 CHECK_BASE = Path("artifacts") / "prelaunch" / "acquisition-check"
@@ -642,7 +643,6 @@ def prepare_approvals(root: Path, proposal_path: Path, evidence_path: Path) -> d
 PRODUCTION_RUN_ID = "rq1-acquisition-gemma4-12b"
 PRODUCTION_BACKUP_DIR = "/workspace/persistent/backups"
 PREFLIGHT_BASE = Path("artifacts") / "prelaunch" / "production-preflight"
-HERMES_PYTHON = Path("/usr/local/lib/hermes-agent/venv/bin/python")
 APPROVAL_REQUEST_NAMES = ("task-freeze", "acquisition-environment", "acquisition-protocol")
 # Gate reasons that only mean the human-approved freezes do not exist yet.
 APPROVAL_PENDING_REASONS = frozenset({
@@ -758,7 +758,7 @@ def production_preflight(root: Path, args: argparse.Namespace) -> dict[str, Any]
         proposal is not None and live_data_identity == proposal.data_root_identity == environment_inputs.get("alfworld_data_identity")
     )
     checks["real_alfworld_adapter_ready"] = probe_alfworld_capabilities(default_data_dir()).real_adapter_ready
-    checks["hermes_runtime_present"] = HERMES_PYTHON.is_file()
+    checks["hermes_runtime_present"] = hermes_runtime_available()
     checks["ollama_serves_frozen_digest"] = (
         bool(environment_inputs.get("model_digest")) and model_digest(ACQUISITION_MODEL) == environment_inputs.get("model_digest")
     )

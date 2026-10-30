@@ -136,17 +136,11 @@ def verify_real_hermes_integration(root: Path) -> dict[str, Any]:
 
 def _hermes_python(executable: str | None) -> str | None:
     """Resolve Hermes's own interpreter from the installed launcher, never this project's venv."""
-    if not executable:
-        return None
+    from rq1.hermes.runtime import checked_hermes_python, HermesRuntimeError
     try:
-        source = Path(executable).resolve().read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        return str(checked_hermes_python())
+    except HermesRuntimeError:
         return None
-    match = re.search(r'exec\s+["\']([^"\']*python[^"\']*)["\']', source)
-    if not match:
-        return None
-    candidate = Path(match.group(1))
-    return str(candidate) if candidate.is_file() else None
 
 
 _REGISTRY_EXERCISE = r'''

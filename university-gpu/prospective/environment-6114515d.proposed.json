@@ -1,0 +1,26 @@
+{
+  "schema": "rq1-prospective-environment-proposal-v1",
+  "status": "BLOCKED_UNVERIFIED_TOKENIZER",
+  "approved": false,
+  "historical_replica": false,
+  "identity_source": "user-provided university workstation report, 2026-10-30; not independently probed by this checkout",
+  "model_tag": "gemma4:12b",
+  "model_digest": "6114515d63c17436a7c0417d82820ac65ad643e2806c5a3c89cb62846436ed0b",
+  "quantization": "Q4_K_M",
+  "historical_digest": "4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c",
+  "sbert_snapshot_sha256_reported_verified": "bbfecb04a834241144af31e9200a3dd0df83ff0fbb2453d56a4bb383a6bfbe11",
+  "hermes_version_reported": "0.22.5",
+  "alfworld_version_reported": "0.4.2",
+  "tokenizer_revision": null,
+  "tokenizer_sha256": null,
+  "ollama_manifest_sha256_verified": false,
+  "referenced_blobs_verified": false,
+  "runtime_probe_report_sha256": null,
+  "required_before_freeze": [
+    "Preserve exact current Ollama manifest bytes and verify digest and every referenced blob",
+    "Identify tokenizer bytes, provenance, library/version and special-token/template handling; validate token counts against Ollama",
+    "Capture Hermes interpreter/import probe and actual project registry dispatch evidence",
+    "Capture endpoint model identity, runtime versions and UUID placement evidence",
+    "Review a separately versioned prospective protocol and explicit launcher identity support; existing historical launcher intentionally rejects this digest"
+  ]
+}

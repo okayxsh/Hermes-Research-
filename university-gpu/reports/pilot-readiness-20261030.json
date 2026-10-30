@@ -1,0 +1,98 @@
+{
+  "schema": "rq1-pilot-readiness-audit-v1",
+  "generated_at": "2026-10-30T09:59:48.126245+00:00",
+  "status": "BLOCKED",
+  "initial_commit": "7d65e47a15b958e81e8e8a1be8cab54a882563dc",
+  "initial_checkout_clean": true,
+  "verified_origin": "https://github.com/okayxsh/Hermes-Research-",
+  "remote_feature_head_at_start": "7d65e47a15b958e81e8e8a1be8cab54a882563dc",
+  "scientific_inference_started": false,
+  "historical_identity_checks": [
+    {
+      "path": "configs/models/gemma4-12b.yaml",
+      "base_checkout_sha256": "9a62efdd7ea5fa5d8e3552e6b60fa5d16f1dc985796877c75a36fd362050cab4",
+      "current_sha256": "9a62efdd7ea5fa5d8e3552e6b60fa5d16f1dc985796877c75a36fd362050cab4",
+      "unchanged": true
+    },
+    {
+      "path": "configs/evaluation/amended.yaml",
+      "base_checkout_sha256": "9336e7f8fe3c55b0c3f8d880efe0cba7c027c99218c839de19d236740bcc7f11",
+      "current_sha256": "9336e7f8fe3c55b0c3f8d880efe0cba7c027c99218c839de19d236740bcc7f11",
+      "unchanged": true
+    },
+    {
+      "path": "configs/acquisition/extension.yaml",
+      "base_checkout_sha256": "766c6db30f334e5703b8fe023d54cc41aa1158705ed3c80f26d9d3d64f3d7d8c",
+      "current_sha256": "766c6db30f334e5703b8fe023d54cc41aa1158705ed3c80f26d9d3d64f3d7d8c",
+      "unchanged": true
+    },
+    {
+      "path": "src/rq1/evaluation/amended_protocol.py",
+      "base_checkout_sha256": "75cb7c0574a7d4d6b3a165157df63278e04dbda4f13d46ea710a943ecc1513e5",
+      "current_sha256": "75cb7c0574a7d4d6b3a165157df63278e04dbda4f13d46ea710a943ecc1513e5",
+      "unchanged": true
+    }
+  ],
+  "hash_method": "SHA256 of working bytes compared to base commit with Git checkout filters (CRLF on Windows); raw Git blob hashes differ due line endings",
+  "checkpoint_logs_inspected": false,
+  "candidate_proposal_available_locally": false,
+  "human_labels_created": false,
+  "scientific_total_action_budget": 50,
+  "reported_combinations": [
+    {
+      "family": "clean_and_place",
+      "source": "user_report_not_raw_logs",
+      "route_length": 92,
+      "prefix": 48,
+      "recovery_budget": 1,
+      "continuation": 44,
+      "status": "BLOCKED"
+    },
+    {
+      "family": "pick_two_and_place",
+      "source": "user_report_not_raw_logs",
+      "route_length": 109,
+      "prefix": 74,
+      "recovery_budget": -25,
+      "continuation": 35,
+      "status": "BLOCKED"
+    }
+  ],
+  "other_four_task_budgets": "UNVERIFIED_MISSING_SOURCE_EVIDENCE",
+  "validated_real_pilot_package_created": false,
+  "tests": {
+    "full_unittest_discovery": {
+      "run": 349,
+      "skipped": 4,
+      "failures": 0,
+      "errors": 0,
+      "note": "before final additional rating-context test; final targeted suite separate"
+    },
+    "focused_readiness": {
+      "run": 9,
+      "failures": 0,
+      "errors": 0
+    },
+    "pytest": "unavailable in Python 3.11; no package installation attempted",
+    "compilation": "PASS",
+    "git_diff_check": "PASS",
+    "final_targeted_readiness_and_gpu_package": {
+      "run": 38,
+      "skipped": 0,
+      "failures": 0,
+      "errors": 0
+    }
+  },
+  "blockers": [
+    "Missing raw six checkpoint records and original proposal",
+    "Replacements require original selection and route inventory",
+    "50-action real oracle eligibility for each task",
+    "New model manifest, blobs, tokenizer and runtime evidence",
+    "Separate prospective protocol and launcher identity path",
+    "108 pairs rated independently twice and adjudicated",
+    "Gate, relevance coverage, filler and token matching",
+    "Human freezes and launch approval",
+    "University durability and off-host backup verification",
+    "Legitimate remote Git author identity and artifact publication permissions"
+  ]
+}

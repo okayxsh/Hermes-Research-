@@ -41,7 +41,7 @@ def _task(stage: str, family: str, index: int) -> dict[str, Any]:
         "checkpoint_id": f"cp-{family}-{index}", "checkpoint_digest": f"{index:064x}",
         "post_detour_digest": f"{index + 1:064x}", "detour_action": "go to kitchen",
         "expected_next_action": "go to bedroom", "prefix_actions": ["go to hallway"],
-        "reference_actions": ["go to hallway", "go to bedroom"], "recovery_action_budget": 12,
+        "reference_actions": ["go to hallway", "go to bedroom"], "recovery_action_budget": 48,
     }
 
 

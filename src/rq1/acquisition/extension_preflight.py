@@ -43,7 +43,7 @@ from rq1.acquisition.extension_protocol import (
     extension_protocol_sha256,
 )
 from rq1.acquisition.gates import ENVIRONMENT_FREEZE, PROTOCOL_FREEZE, load_task_manifest, queue_identity_sha256
-from rq1.acquisition.launch import CHECK_PREFIX, HERMES_PYTHON, PRODUCTION_BACKUP_DIR, _read_request, _writable, hard_cap_status
+from rq1.acquisition.launch import CHECK_PREFIX, PRODUCTION_BACKUP_DIR, _read_request, _writable, hard_cap_status
 from rq1.acquisition.protocol import ACQUISITION_ACTION_BUDGET, ACQUISITION_MODEL, ACQUISITION_TEMPERATURE, protocol_sha256
 from rq1.acquisition.runner import AcquisitionError, AcquisitionRunner
 from rq1.acquisition.skill_creation import prompt_hashes
@@ -63,6 +63,7 @@ from rq1.hermes.episode_driver import (
 from rq1.skills.library import TASK_FAMILIES
 from rq1.tasks.discovery import discover_tasks
 from rq1.utils.hashing import sha256_file
+from rq1.hermes.runtime import hermes_runtime_available
 from rq1.utils.time import utc_now
 
 # Scientific identities the extension environment must share with the approved
@@ -244,7 +245,7 @@ def extension_preflight(root: Path, args: argparse.Namespace, parent: ParentRefe
         and discovery.data_root_identity == proposal.data_root_identity == environment_inputs.get("alfworld_data_identity") == state.manifest.data_root_identity
     )
     checks["real_alfworld_adapter_ready"] = probe_alfworld_capabilities(default_data_dir()).real_adapter_ready
-    checks["hermes_runtime_present"] = HERMES_PYTHON.is_file() and bool(environment_inputs.get("hermes_version")) and bool(environment_inputs.get("hermes_commit"))
+    checks["hermes_runtime_present"] = hermes_runtime_available() and bool(environment_inputs.get("hermes_version")) and bool(environment_inputs.get("hermes_commit"))
     checks["ollama_serves_frozen_digest"] = model_digest(ACQUISITION_MODEL) == FROZEN_MODEL_DIGEST == environment_inputs.get("model_digest")
 
     plan = None

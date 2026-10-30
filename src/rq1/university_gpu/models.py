@@ -44,7 +44,12 @@ def atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> No
             os.fsync(handle.fileno())
         if not overwrite and path.exists():
             raise FileExistsError(f"refusing to overwrite immutable output: {path}")
-        os.replace(temporary, path)
+        if overwrite:
+            os.replace(temporary, path)
+        else:
+            # Atomic create-only publication: os.replace could overwrite a concurrent winner.
+            os.link(temporary, path)
+            temporary.unlink()
         try:
             directory_fd = os.open(path.parent, os.O_RDONLY)
         except OSError:
