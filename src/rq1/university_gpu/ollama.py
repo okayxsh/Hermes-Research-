@@ -57,7 +57,8 @@ def _request(endpoint: str, path: str, payload: Mapping[str, Any] | None = None,
     return value
 
 
-def probe_endpoint(endpoint: str, *, expected_model: str = MODEL_TAG, expected_digest: str = MODEL_DIGEST) -> dict[str, Any]:
+def probe_endpoint(endpoint: str, *, expected_model: str = MODEL_TAG, expected_digest: str = MODEL_DIGEST,
+                   expected_quantization: str | None = None) -> dict[str, Any]:
     try:
         version = _request(endpoint, "/api/version")
         tags = _request(endpoint, "/api/tags")
@@ -71,9 +72,12 @@ def probe_endpoint(endpoint: str, *, expected_model: str = MODEL_TAG, expected_d
                     "expected_digest": expected_digest, "ollama_version": version.get("version")}
         details = model.get("details") if isinstance(model.get("details"), dict) else {}
         quantization = details.get("quantization_level")
-        if expected_model == MODEL_TAG and quantization != MODEL_QUANTIZATION:
+        quantization_required = expected_quantization if expected_quantization is not None else (
+            MODEL_QUANTIZATION if expected_model == MODEL_TAG and expected_digest == MODEL_DIGEST else None
+        )
+        if quantization_required is not None and quantization != quantization_required:
             return {"status": "FAIL", "reason": "installed model quantization differs from the frozen identity",
-                    "observed_quantization": quantization, "expected_quantization": MODEL_QUANTIZATION,
+                    "observed_quantization": quantization, "expected_quantization": quantization_required,
                     "observed_digest": digest, "ollama_version": version.get("version")}
         return {"status": "PASS", "model": expected_model, "digest": digest, "quantization": quantization,
                 "ollama_version": version.get("version"), "inference_run": False}

@@ -18,13 +18,15 @@ class WorkerProcessClient:
     # A failed subprocess or model connection is quarantined for operator review.
     quarantine_on_failure = True
     def __init__(self, worker_id: str, config_path: Path, *, python: str = sys.executable, cwd: Path,
-                 gpu_uuid: str, response_timeout: float = 3600) -> None:
+                 gpu_uuid: str, response_timeout: float = 3600,
+                 module: str = "rq1.university_gpu.worker") -> None:
         self.worker_id = worker_id
         self.config_path = config_path
         self.python = python
         self.cwd = cwd
         self.gpu_uuid = gpu_uuid
         self.response_timeout = response_timeout
+        self.module = module
         self.process: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
         self._stderr_handle: Any = None
@@ -50,7 +52,7 @@ class WorkerProcessClient:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self._stderr_handle = (self.config_path.parent / f"{self.worker_id}.stderr.log").open("ab")
         self.process = subprocess.Popen(
-            [self.python, "-m", "rq1.university_gpu.worker", "--config", str(self.config_path)],
+            [self.python, "-m", self.module, "--config", str(self.config_path)],
             cwd=self.cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr_handle,
             text=True, encoding="utf-8", bufsize=1,
         )

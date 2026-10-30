@@ -1,5 +1,15 @@
 # Prospective six-arm protocol freeze
 
+## Separate engineering feasibility profile (not a scientific protocol amendment)
+
+`rq1-feasibility-200-v1` is a separate, explicitly non-scientific pathway for the six existing valid-seen candidate contexts. It runs only D0 and the original Accum-18 top-3 condition (D18), for 12 engineering episodes total. The maximum allowance is 200 total actions per episode: the frozen prefix, one controlled detour, and `200 - prefix_length - 1` recovery actions. The six computed recovery allowances are 151, 193, 193, 194, 195, and 125. This is not the 36-episode six-arm pilot.
+
+The existing candidate task IDs, expert routes, checkpoint digests, detour actions, post-detour digests, and task-file hashes are carried forward unchanged. The prior pick-and-place Gemma memory/no-memory demonstration is recorded as outcome exposure; the six-task batch is engineering/development evidence only. No task replacement, relevance rating, human label, scientific claim, or Option B author approval is inferred by this profile.
+
+The profile identifies the user-reported current `gemma4:12b` digest `6114515d63c17436a7c0417d82820ac65ad643e2806c5a3c89cb62846436ed0b` and Q4_K_M separately from the historical frozen digest `4eb23ef187e2c5462566d6a1d3bbbc2f1346d0b4327cbb66d58fffbcc9b2b05c`. It uses temperature 0, think false, `num_predict=2048`, `num_ctx=32768`, and paired episode seed 11. The seed-42 four-worker smoke requests are operational checks, not episode outcomes. Model manifest/blobs, tokenizer linkage, the local ALFWorld identity, and the original frozen Accum-18 reference must pass separate evidence gates before the profile can be frozen.
+
+`university-gpu feasibility launch` and `resume` accept only an engineering-frozen profile and a separate candidate-bound approval with `scientific_run=false`. The historical 50-action protocol, model constants, scientific manifest validation, and scientific launcher remain unchanged. For exact workstation steps, use `NEXT_VISIT_RUNBOOK.md`.
+
 ## Scope and source protocol
 
 This package uses the amended RQ1 controlled-recovery executor in the verified scientific checkout, with the Gemma 4 12B digest and Sentence-BERT snapshot already recorded there. It does not modify the historical Oct 20 evaluation. The new intervention is a separate prospective follow-up. Its results must not be merged with the historical evaluation or relabeled as a replication of an untouched holdout.

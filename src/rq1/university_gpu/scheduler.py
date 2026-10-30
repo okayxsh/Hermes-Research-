@@ -21,6 +21,55 @@ class SchedulerError(RuntimeError):
     pass
 
 
+def _validate_run_manifest(manifest: Mapping[str, Any]) -> list[str]:
+    if manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        from rq1.university_gpu.feasibility import validate_feasibility_manifest
+
+        return validate_feasibility_manifest(manifest, require_frozen=True)
+    return validate_manifest(manifest, require_frozen=True)
+
+
+def _validate_feasibility_result(result: Mapping[str, Any], expected: Mapping[str, Any],
+                                 manifest: Mapping[str, Any]) -> list[str]:
+    """Keep engineering-only records from being reinterpreted as scientific results."""
+    if manifest.get("schema") != "rq1-feasibility-execution-manifest-v1":
+        return []
+    profile = "rq1-feasibility-200-v1"
+    measurements = result.get("measurements")
+    problems = []
+    if (result.get("scientific_evidence") is not False or result.get("profile_id") != profile
+            or result.get("model_tag") != manifest.get("model", {}).get("tag")
+            or result.get("model_digest") != manifest.get("model", {}).get("digest")
+            or result.get("model_quantization") != manifest.get("model", {}).get("quantization")
+            or result.get("total_action_budget") != expected.get("total_action_budget")):
+        problems.append("feasibility result top-level identity differs from its non-scientific manifest")
+    if not isinstance(measurements, Mapping):
+        problems.append("feasibility result lacks recorded episode measurements")
+    else:
+        if (measurements.get("scientific_evidence") is not False
+                or measurements.get("evaluation_profile") != profile
+                or measurements.get("result_schema") != "rq1-feasibility-episode-result-v1"
+                or measurements.get("model") != manifest.get("model", {}).get("tag")
+                or measurements.get("model_digest") != manifest.get("model", {}).get("digest")
+                or measurements.get("condition") != expected.get("condition")
+                or measurements.get("seed") != expected.get("seed")
+                or measurements.get("inference_seed") != expected.get("seed")
+                or measurements.get("inference_settings") != manifest.get("inference_settings")
+                or measurements.get("total_action_budget") != expected.get("total_action_budget")
+                or measurements.get("recovery_action_budget") != expected.get("recovery_action_budget")
+                or measurements.get("checkpoint_digest") != expected.get("checkpoint_digest")
+                or measurements.get("perturbation_digest") != expected.get("post_detour_digest")):
+            problems.append("feasibility episode measurements do not preserve model, action, or perturbation identity")
+    retrieved = result.get("retrieved_skill_ids")
+    scores = result.get("retrieval_similarity_scores")
+    if not isinstance(retrieved, list) or (expected.get("condition") == "D0" and retrieved) \
+            or (expected.get("condition") == "D18" and len(retrieved) != 3):
+        problems.append("feasibility result retrieval does not match D0 or top-3 D18")
+    if not isinstance(scores, list) or not isinstance(retrieved, list) or len(scores) != len(retrieved):
+        problems.append("feasibility result retrieval score records do not match retrieved skill IDs")
+    return problems
+
+
 class EpisodeWorker(Protocol):
     worker_id: str
 
@@ -105,7 +154,7 @@ class RunStore:
         self._next_event_sequence: int | None = None
 
     def initialize(self) -> None:
-        problems = validate_manifest(self.manifest, require_frozen=True)
+        problems = _validate_run_manifest(self.manifest)
         if problems:
             raise SchedulerError("frozen manifest failed validation: " + "; ".join(problems))
         self.root.mkdir(parents=True, exist_ok=True)
@@ -192,6 +241,11 @@ class RunStore:
                 or body.get("task_family") != expected.get("task_family")
                 or not isinstance(body.get("recovery_success"), bool)):
             raise SchedulerError("worker result status or scientific identity differs from the frozen assignment")
+        if self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            result_problems = _validate_feasibility_result(body, expected, self.manifest)
+            if result_problems:
+                raise SchedulerError("feasibility worker result differs from its non-scientific profile: "
+                                      + "; ".join(result_problems))
         envelope = {"unit_key": unit_key, "attempt_id": attempt_id, "worker_id": worker_id,
                     "result_sha256": content_hash(body), "result": body}
         atomic_write_json(path, envelope, overwrite=False)
@@ -330,7 +384,9 @@ class Coordinator:
                             self.store.append_event({"event": "unit_completed", "unit_key": key, "attempt_id": attempt_id,
                                                      "worker_id": worker.worker_id, "result_sha256": sha256_file(output_path)})
                             free_workers.append(worker)
-                            if not backup_failed and len(self.store.completed()) % 10 == 0:
+                            done_count = len(self.store.completed())
+                            planned_count = len(self.store.manifest["units"])
+                            if not backup_failed and (done_count % 10 == 0 or done_count == planned_count):
                                 try:
                                     from rq1.university_gpu.snapshot import backup_checkpoint
                                     backup_checkpoint(self.store)
@@ -364,7 +420,11 @@ class Coordinator:
                     "worker_ids": [worker.worker_id for worker in self.workers]}
 
     def validate(self) -> dict[str, Any]:
-        problems = validate_manifest(self.store.manifest, require_frozen=True)
+        problems = _validate_run_manifest(self.store.manifest)
+        try:
+            self.store.event_rows()
+        except (OSError, ValueError, TypeError, SchedulerError) as exc:
+            problems.append(f"invalid attempt event log: {type(exc).__name__}: {exc}")
         completed = self.store.completed()
         expected = {str(unit["unit_key"]): unit for unit in self.store.manifest["units"]}
         if set(completed) - set(expected):
@@ -378,6 +438,8 @@ class Coordinator:
                     or result.get("task_family") != expected[key].get("task_family")
                     or result.get("condition") != expected[key].get("condition")
                     or result.get("seed") != expected[key].get("seed")):
+                bad.append(key)
+            if _validate_feasibility_result(result, expected[key], self.store.manifest):
                 bad.append(key)
         if bad:
             problems.append(f"invalid result identity/status for {len(set(bad))} units")

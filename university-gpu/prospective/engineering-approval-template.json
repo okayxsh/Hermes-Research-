@@ -1,0 +1,12 @@
+{
+  "schema": "rq1-engineering-feasibility-approval-v1",
+  "approval_scope": "engineering_feasibility_only",
+  "candidate_manifest_sha256": "",
+  "gpu_inference": false,
+  "scientific_run": false,
+  "not_for_scientific_claims": true,
+  "prior_pick_place_exposure_acknowledged": false,
+  "approved_by": "",
+  "approval_reference": "",
+  "approved_at_utc": ""
+}

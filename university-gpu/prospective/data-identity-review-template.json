@@ -1,0 +1,9 @@
+{
+  "schema": "rq1-data-identity-review-v1",
+  "decision": "UNREVIEWED",
+  "reviewed_report_sha256": "",
+  "reviewed_by": "",
+  "review_reference": "",
+  "reviewed_at_utc": "",
+  "notes": "Review all identity digests, scopes, candidate source hashes, and record-level differences. Do not coerce the two identities to equality."
+}

@@ -1,0 +1,23 @@
+{
+  "worker_count": 4,
+  "min_gpu_free_mib": 16384,
+  "ollama_base_port": 11534,
+  "ollama_binary": "ollama",
+  "ollama_models_dir": "${RQ1_OLLAMA_MODELS_DIR}",
+  "ollama_manifest_path": "${RQ1_MODEL_MANIFEST}",
+  "ollama_blobs_dir": "${RQ1_MODEL_BLOBS}",
+  "model_tokenizer_link_evidence_path": "${RQ1_MODEL_TOKENIZER_LINK_EVIDENCE}",
+  "tokenizer_provenance_path": "${RQ1_TOKENIZER_PROVENANCE}",
+  "tokenizer_revision": "${RQ1_TOKENIZER_REVISION}",
+  "tokenizer_path": "${RQ1_GEMMA_TOKENIZER_JSON}",
+  "model_identity_report_path": "${RQ1_PROSPECTIVE_IDENTITY_REPORT}",
+  "model_identity_review_path": "${RQ1_PROSPECTIVE_IDENTITY_REVIEW}",
+  "data_reconciliation_report_path": "${RQ1_FEASIBILITY_DATA_REPORT}",
+  "data_identity_review_path": "${RQ1_FEASIBILITY_DATA_REVIEW}",
+  "oracle_replay_report_path": "${RQ1_FEASIBILITY_ORACLE_REPORT}",
+  "accum18_library_path": "${RQ1_ACCUM18_LIBRARY}",
+  "accum18_reference_manifest_path": "${RQ1_ACCUM18_REFERENCE}",
+  "alfworld_data_dir": "${RQ1_ALFWORLD_DATA_DIR}",
+  "sbert_cache": "${RQ1_HUGGINGFACE_CACHE}",
+  "run_output_dir": "${RQ1_FEASIBILITY_RUN_ROOT}"
+}

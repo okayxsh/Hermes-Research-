@@ -60,6 +60,11 @@ class AmendedEvaluationExecutor:
         split: str,
         provenance: Mapping[str, Any],
         memory_intervention: Callable[[ExperimentUnit, EvaluationTask, Any, Mapping[str, Any]], tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
+        evaluation_profile: str = EVALUATION_PROFILE,
+        evaluation_policy_version: str = EVALUATION_POLICY_VERSION,
+        model_digest: str = MODEL_DIGEST,
+        result_schema: str = RESULT_SCHEMA,
+        total_action_budget: int | None = None,
     ) -> None:
         self.driver = driver
         self.tasks = dict(tasks)
@@ -69,6 +74,11 @@ class AmendedEvaluationExecutor:
         self.split = split
         self.provenance = dict(provenance)
         self.memory_intervention = memory_intervention
+        self.evaluation_profile = evaluation_profile
+        self.evaluation_policy_version = evaluation_policy_version
+        self.model_digest = model_digest
+        self.result_schema = result_schema
+        self.total_action_budget = total_action_budget
 
     def __call__(self, unit: ExperimentUnit, context: RunExecutionContext) -> RunOutcome:
         task = self.tasks[unit.task_id]
@@ -76,10 +86,16 @@ class AmendedEvaluationExecutor:
         seed = int(unit.seed)
         # Decision 012: the replicate seed is the inference seed, identical across conditions.
         self.driver.inference_seed = seed
+        computed_total_budget = len(task.prefix_actions) + 1 + task.recovery_action_budget
+        if self.total_action_budget is not None and computed_total_budget != self.total_action_budget:
+            raise RunFailure("task action accounting differs from the explicitly versioned total budget",
+                             safe_to_continue=False, mutation_state_known=True,
+                             details={"computed_total_action_budget": computed_total_budget,
+                                      "expected_total_action_budget": self.total_action_budget})
         harness = RealRecoveryHarness(
             self.driver, output_dir=context.output_dir / "episode", run_id=context.experiment_id, attempt_id=context.attempt_id,
-            reference_actions=task.reference_actions, total_action_limit=len(task.prefix_actions) + 1 + task.recovery_action_budget,
-            allowed_split=self.split, profile_prefix=EVALUATION_PROFILE, frozen_perturbation=task.frozen_perturbation(),
+            reference_actions=task.reference_actions, total_action_limit=self.total_action_budget or computed_total_budget,
+            allowed_split=self.split, profile_prefix=self.evaluation_profile, frozen_perturbation=task.frozen_perturbation(),
         )
         boundary = build_retrieval_boundary(
             library.retrieval_documents(), self.embedder, embedding_model=SBERT_MODEL, top_k=RETRIEVAL_TOP_K,
@@ -143,9 +159,10 @@ class AmendedEvaluationExecutor:
             termination = "environment_terminated_without_success"
         timing = recovery_timing(_events(events_log))
         measurements = {
-            "result_schema": RESULT_SCHEMA,
+            "result_schema": self.result_schema,
             "scientific_evidence": self.scientific,
-            "evaluation_policy_version": EVALUATION_POLICY_VERSION,
+            "evaluation_profile": self.evaluation_profile,
+            "evaluation_policy_version": self.evaluation_policy_version,
             **self.provenance,
             "task_id": task.task_id,
             "task_family": task.task_family,
@@ -157,7 +174,7 @@ class AmendedEvaluationExecutor:
             "library_hash": library.content_sha256,
             "library_core_sha256": library.core_sha256 if library.size else None,
             "model": self.driver.model_name,
-            "model_digest": MODEL_DIGEST,
+            "model_digest": self.model_digest,
             "matrix_unit": dict(unit.payload),
             "checkpoint_id": task.checkpoint_id,
             "checkpoint_prefix_length": len(task.prefix_actions),
@@ -174,6 +191,7 @@ class AmendedEvaluationExecutor:
             "eligible": True,
             "post_failure_budget_complete": True,
             "recovery_action_budget": task.recovery_action_budget,
+            "total_action_budget": self.total_action_budget or computed_total_budget,
             "post_failure_actions": len(recovery_records),
             "recovery_success": success,
             "task_completed": success,

@@ -17,14 +17,23 @@ class SnapshotError(ValueError):
 
 
 def backup_checkpoint(store: RunStore) -> Path:
-    """Copy immutable authority files while the coordinator is the sole writer."""
+    """Copy immutable authority files while the coordinator is the sole writer.
+
+    Interrupted copies stay under a visibly incomplete `.partial-*` name for
+    diagnosis. They are never promoted to a checkpoint and are excluded from
+    verified exports.
+    """
     parent = store.root / "backups"
     parent.mkdir(exist_ok=True)
     token = uuid4().hex
     temporary = parent / f".partial-{token}"
     temporary.mkdir()
     files = []
-    sources = [store.manifest_path, *sorted(store.events_dir.glob("*.json")), *sorted(store.results_dir.glob("*.json"))]
+    if any(path.is_symlink() for path in store.attempts_dir.rglob("*")):
+        raise SnapshotError("attempt directory contains a symlink")
+    sources = [store.manifest_path, *sorted(store.events_dir.glob("*.json")),
+               *sorted(store.results_dir.glob("*.json")),
+               *sorted(path for path in store.attempts_dir.rglob("*") if path.is_file())]
     for source in sources:
         if source.is_symlink() or not source.is_file():
             raise SnapshotError(f"invalid checkpoint source: {source}")

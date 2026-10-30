@@ -113,6 +113,69 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--seed", type=int, default=20261026)
     item.add_argument("--bootstrap-replicates", type=int, default=10_000)
 
+    feasibility = actions.add_parser("feasibility", help="Separate non-scientific six-task, 200-action engineering pathway.")
+    feasibility_actions = feasibility.add_subparsers(dest="feasibility_command", required=True)
+    item = feasibility_actions.add_parser("propose", help="Create the immutable, unapproved 12-episode candidate manifest.")
+    item.add_argument("--candidate", type=Path, required=True)
+    item.add_argument("--proposal", type=Path, required=True)
+    item.add_argument("--transferred-audit", type=Path, required=True)
+    item.add_argument("--model-proposal", type=Path, required=True)
+    item.add_argument("--output", type=Path, required=True)
+    item = feasibility_actions.add_parser("reference-library", help="Verify the exact Accum-18 file against a genuine frozen manifest.")
+    item.add_argument("--library", type=Path, required=True)
+    item.add_argument("--frozen-manifest", type=Path, required=True)
+    item.add_argument("--output", type=Path, required=True)
+    item = feasibility_actions.add_parser("validate", help="Validate the candidate or reviewed engineering-frozen manifest.")
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--require-frozen", action="store_true")
+    item = feasibility_actions.add_parser("reconcile-data", help="Recompute both ALFWorld identities and list all record differences.")
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--data-root", type=Path, required=True)
+    item.add_argument("--output", type=Path, required=True)
+    item = feasibility_actions.add_parser("replay-oracles", help="Replay the six unchanged expert witnesses at cap 200; no model/GPU use.")
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--data-root", type=Path, required=True)
+    item.add_argument("--evidence-dir", type=Path, required=True)
+    item.add_argument("--output", type=Path, required=True)
+    item = feasibility_actions.add_parser("freeze", help="Bind reviewed assets and human approvals into an engineering-only manifest.")
+    for flag in ("candidate", "data-report", "data-review", "oracle-report", "identity-report", "identity-review",
+                 "accum18-library", "accum18-reference", "sbert-cache", "tokenizer", "engineering-approval", "output"):
+        item.add_argument("--" + flag, type=Path, required=True)
+    item.add_argument("--run-id", required=True)
+    item = feasibility_actions.add_parser("preflight", help="Rehash every frozen input without GPU access or inference.")
+    item.add_argument("--config", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("benchmark", help="Run four approved concurrent smoke requests and verify GPU UUID placement; no episodes.")
+    item.add_argument("--config", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--approval-file", type=Path, required=True)
+    item.add_argument("--yes", action="store_true")
+    item.add_argument("--output", type=Path, required=True)
+    for name in ("launch", "resume"):
+        item = feasibility_actions.add_parser(name, help="Run the 12-episode engineering matrix after all separate gates pass.")
+        item.add_argument("--config", type=Path, required=True)
+        item.add_argument("--manifest", type=Path, required=True)
+        item.add_argument("--approval-file", type=Path, required=True)
+        item.add_argument("--yes", action="store_true")
+        item.add_argument("--retry-failed", action="store_true")
+        item.add_argument("--cutoff-epoch", type=float, required=True)
+    item = feasibility_actions.add_parser("status", help="Read feasibility run progress.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("stop", help="Request cooperative stop after active episodes finish.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--reason", default="operator requested safe stop")
+    for name in ("validate-run", "merge"):
+        item = feasibility_actions.add_parser(name, help="Validate stored feasibility results or write canonical merged results.")
+        item.add_argument("--run-root", type=Path, required=True)
+        item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("export-progress", help="Export a checksummed partial or complete engineering run.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--destination", type=Path, required=True)
+    item = feasibility_actions.add_parser("verify-export", help="Verify a copied feasibility export offline.")
+    item.add_argument("--destination", type=Path, required=True)
+
 
 def _emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str))
@@ -126,6 +189,105 @@ def run(root: Path, args: argparse.Namespace) -> int:
 
     try:
         action = args.university_gpu_command
+        if action == "feasibility":
+            from rq1.university_gpu import feasibility
+            subcommand = args.feasibility_command
+            if subcommand == "propose":
+                value = feasibility.build_candidate_manifest(args.candidate, args.proposal, args.transferred_audit, args.model_proposal)
+                atomic_write_json(args.output, value, overwrite=False)
+                _emit({"status": "CANDIDATE_UNAPPROVED", "path": args.output,
+                       "manifest_sha256": value["manifest_sha256"], "tasks": len(value["tasks"]),
+                       "episodes": len(value["units"]), "scientific_evidence": False})
+                return 0
+            if subcommand == "reference-library":
+                value = feasibility.build_accum18_reference(args.library, args.frozen_manifest)
+                atomic_write_json(args.output, value, overwrite=False)
+                _emit({"status": "VERIFIED_AGAINST_FROZEN_MANIFEST", "path": args.output,
+                       "reference_sha256": value["reference_sha256"],
+                       "library_file_sha256": value["library_file_sha256"], "skill_count": value["skill_count"]})
+                return 0
+            if subcommand == "validate":
+                value = load_json(args.manifest)
+                problems = feasibility.validate_feasibility_manifest(value, require_frozen=args.require_frozen)
+                _emit({"status": "PASS" if not problems else "BLOCKED", "problems": problems,
+                       "profile_id": value.get("profile_id"), "manifest_sha256": value.get("manifest_sha256"),
+                       "episode_count": value.get("episode_count"), "scientific_evidence": False})
+                return 0 if not problems else 1
+            if subcommand == "reconcile-data":
+                value = load_json(args.manifest)
+                report = feasibility.write_reconciliation_report(args.data_root, value, args.output)
+                _emit({"status": report["status"], "path": args.output,
+                       "report_sha256": report["report_sha256"], "identity_digest_equal": report["identity_digest_equal"],
+                       "comparisons": report["comparisons"], "authoritative_freeze": False})
+                return 0 if report["status"] == "REVIEW_REQUIRED" else 1
+            if subcommand == "replay-oracles":
+                report = feasibility.replay_candidate_oracles(root, args.data_root, load_json(args.manifest),
+                                                              evidence_dir=args.evidence_dir, output=args.output)
+                _emit({"status": report["status"], "path": args.output, "report_sha256": report["report_sha256"],
+                       "task_count": report["task_count"], "model_calls": 0, "scientific_evidence": False})
+                return 0 if report["status"] == "PASS" else 1
+            if subcommand == "freeze":
+                value = feasibility.freeze_engineering_manifest(
+                    root, load_json(args.candidate), run_id=args.run_id,
+                    data_report=load_json(args.data_report), data_review=load_json(args.data_review),
+                    oracle_report=load_json(args.oracle_report), identity_report=load_json(args.identity_report),
+                    identity_review=load_json(args.identity_review), accum18_library_path=args.accum18_library,
+                    accum18_reference_path=args.accum18_reference, sbert_cache=args.sbert_cache,
+                    tokenizer_path=args.tokenizer, engineering_approval=load_json(args.engineering_approval),
+                )
+                atomic_write_json(args.output, value, overwrite=False)
+                _emit({"status": "ENGINEERING_FROZEN", "path": args.output,
+                       "manifest_sha256": value["manifest_sha256"], "run_id": value["run_id"],
+                       "scientific_evidence": False, "option_b_author_decision_status": "pending"})
+                return 0
+            if subcommand == "preflight":
+                result = feasibility.verify_frozen_feasibility_assets(
+                    root, ops.load_external_config(args.config), load_json(args.manifest))
+                _emit(result)
+                return 0
+            if subcommand == "benchmark":
+                result = feasibility.run_feasibility_benchmark(
+                    root, ops.load_external_config(args.config), load_json(args.manifest),
+                    approval=load_json(args.approval_file), yes=args.yes, output=args.output)
+                _emit(result)
+                return 0 if result["status"] == "PASS" else 1
+            if subcommand in {"launch", "resume"}:
+                value = feasibility.run_feasibility_launch(
+                    root, ops.load_external_config(args.config), load_json(args.manifest),
+                    approval=load_json(args.approval_file), yes=args.yes, resume=subcommand == "resume",
+                    retry_failed=args.retry_failed, cutoff_epoch=args.cutoff_epoch,
+                )
+                _emit(value)
+                return 0 if value["run"]["status"] == "completed" else 1
+            if subcommand == "status":
+                _emit(ops.status(args.run_root, args.manifest))
+                return 0
+            if subcommand == "stop":
+                from rq1.university_gpu.models import atomic_write_bytes
+                run_root = args.run_root.resolve()
+                if not run_root.is_dir() or not (run_root / "manifest.json").is_file():
+                    raise ops.OperatorError("feasibility run directory does not exist; refusing to create a stop marker")
+                atomic_write_bytes(run_root / "STOP", (args.reason.strip() + "\n").encode("utf-8"))
+                _emit({"status": "STOP_REQUESTED", "run_root": run_root, "scientific_evidence": False})
+                return 0
+            if subcommand in {"validate-run", "merge"}:
+                manifest_value = load_json(args.manifest)
+                store = RunStore(args.run_root, manifest_value)
+                coordinator = Coordinator(store, [type("OfflineWorker", (), {"worker_id": "feasibility-offline"})()])
+                if subcommand == "validate-run":
+                    value = coordinator.validate()
+                    _emit(value)
+                    return 0 if value["passed"] else 1
+                _emit(coordinator.merge())
+                return 0
+            if subcommand == "export-progress":
+                from rq1.university_gpu.snapshot import export_progress
+                _emit(export_progress(root, args.run_root, args.manifest, args.destination))
+                return 0
+            if subcommand == "verify-export":
+                from rq1.university_gpu.snapshot import verify_progress
+                _emit(verify_progress(args.destination))
+                return 0
         if action == "gate-scores":
             from rq1.university_gpu.gate_scores import prepare_scores
             _emit(prepare_scores(tasks_path=args.tasks, failures_path=args.failures, contexts_path=args.contexts,
