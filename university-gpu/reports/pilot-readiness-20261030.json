@@ -94,5 +94,26 @@
     "Human freezes and launch approval",
     "University durability and off-host backup verification",
     "Legitimate remote Git author identity and artifact publication permissions"
-  ]
+  ],
+  "reviewed_remote_pushed_report": {
+    "commit": "2ba4ea8eb10a5eeb38d231441a6b99f57e0abd5b",
+    "path": "artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/pilot-report.json",
+    "sha256": "0a326f6abbc1ca80c42fb392c729fec78a830f54d1c96e219eb541a7cdc38170",
+    "task_id": "valid_seen:pick_and_place_simple-Pencil-None-Desk-310/trial_T20190909_113054_894334",
+    "reference_actions": 6,
+    "prefix_actions": 4,
+    "reference_continuation": 2,
+    "budget_remaining_if_protocol_50": 45,
+    "reported_non_scientific_recovery_actions": 2,
+    "status": "REQUIRES_REVIEW",
+    "limitations": [
+      "report mode is non_scientific_prelaunch",
+      "no controlled detour action recorded",
+      "no checkpoint/post-detour digest",
+      "no 50-action budget-bounded oracle evidence",
+      "referenced raw log paths remain on remote workstation"
+    ]
+  },
+  "remote_pushed_summary_inspected": true,
+  "ssh_push": "BLOCKED_HOST_KEY_VERIFICATION"
 }
