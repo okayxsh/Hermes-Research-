@@ -1,6 +1,6 @@
 # Next university visit runbook
 
-**Current state: do not start the scientific pilot.** The local feature branch includes an audit commit not yet pushed, and the deployed host's Gemma digest `6114515d…` differs from the frozen launch identity `4eb23ef…`. The first reported task and all pilot-context logs still need source-level review. This runbook separates no-inference checks from launch gates.
+**Current state: do not start the scientific pilot.** The transferred archive is now verified and audited; see `TRANSFERRED_EVIDENCE_REVIEW_20261030.md` for the six-task findings. The evidence-copy instructions below are historical workstation preservation steps, not a claim that the transfer is still missing.  The local feature branch includes an audit commit not yet pushed, and the deployed host's Gemma digest `6114515d…` differs from the frozen launch identity `4eb23ef…`. The first reported task and all pilot-context logs still need source-level review. This runbook separates no-inference checks from launch gates.
 
 ## 1. Verify workstation and checkout
 
@@ -46,8 +46,8 @@ Keep config, proposals, approvals, run roots and reports outside the Git checkou
 After authorized prospective compatibility code exists and all frozen inputs/config are complete:
 
 ```bash
-export RQ1_CONFIG=/path/to/access-controlled/rq1-pilot-config.json
-export RQ1_EVIDENCE=/path/to/new/evidence-directory
+: "${RQ1_CONFIG:?Set to the actual reviewed config file outside the checkout}"
+: "${RQ1_EVIDENCE:?Set to the actual dated evidence directory outside the checkout}"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu preflight \
   --config "$RQ1_CONFIG" --manifest "$RQ1_EVIDENCE/pilot-frozen.json"
 ```
@@ -59,7 +59,7 @@ Require all checks to pass, including model digest, tokenizer and source/input h
 Only after eligible tasks, all human rating/adjudication, tokenizer/filler/Gate inputs, prospective model amendment, frozen manifest and signed human scientific/GPU launch approval have passed review:
 
 ```bash
-export RQ1_ACCESS_END_EPOCH=ACTUAL_UNIX_UTC_DEADLINE
+: "${RQ1_ACCESS_END_EPOCH:?Set to the university access deadline in Unix UTC seconds}"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu launch \
   --config "$RQ1_CONFIG" --manifest "$RQ1_EVIDENCE/pilot-frozen.json" \
   --approval-file "$RQ1_EVIDENCE/pilot-launch-approval.json" \
@@ -101,8 +101,8 @@ PYTHONPATH=src python3.11 -m rq1.cli university-gpu resume \
 After the run stops, validate and export partial progress to a new path outside the run tree. Verify the archive on the destination copy:
 
 ```bash
-export RQ1_RUN_ROOT=/path/to/external/run-root
-export RQ1_EXPORT=/path/to/new/off-host-transfer/rq1-pilot-export
+: "${RQ1_RUN_ROOT:?Read the actual run root from the reviewed config and run ID}"
+: "${RQ1_EXPORT:?Choose a new export path outside the run tree on approved storage}"
 PYTHONPATH=src python3.11 -m rq1.cli university-gpu export-progress \
   --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_EVIDENCE/pilot-frozen.json" \
   --destination "$RQ1_EXPORT"
@@ -127,3 +127,9 @@ Transfer the tarball and checksum through university-approved storage, verify SH
 | Git author identity and approved public artifact policy | Repository owner/authors |
 
 No scientific inference is authorized by this runbook. The engineering recovery demonstration, historical study, and prospective pilot remain distinct evidence sets.
+
+## Laptop Git handoff
+
+The laptop origin is HTTPS; the university deploy-key setup must not be assumed to exist here. An SSH port-443 read probe failed host-key verification. Do not bypass verification or copy a private university key. The owner can configure a separate authorized laptop key and verify GitHub's published host fingerprint through an official trusted source, then run `git ls-remote ssh://git@ssh.github.com:443/okayxsh/Hermes-Research-.git refs/heads/feat/rq1-university-4gpu`. Only after that succeeds, push the preserved feature history with `git push ssh://git@ssh.github.com:443/okayxsh/Hermes-Research-.git HEAD:refs/heads/feat/rq1-university-4gpu` and read back its head. Never force push.
+
+For a short future coordinator exercise, the real launch/resume CLI supports `--max-attempts 4`. It still requires every scientific/model/input and GPU approval gate; adding this flag does not turn an unapproved pilot into an engineering smoke run. A separate engineering-only manifest/approval path is not currently implemented. Continue independent per-device engineering checks under their existing explicit authorization; do not fake a pilot freeze to benchmark the coordinator.
