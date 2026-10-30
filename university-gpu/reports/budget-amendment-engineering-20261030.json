@@ -1,0 +1,31 @@
+{
+  "status": "UNAPPROVED_PROPOSALS",
+  "recommended": "A_with_narrowed_claims",
+  "activation": false,
+  "tests": {
+    "targeted_total": 44,
+    "failures": 0,
+    "skipped": 0,
+    "final_identity_rerun": 6
+  },
+  "historical_files_changed": false,
+  "scientific_inference": false,
+  "original_unpushed_commits": [
+    "b1a57c2",
+    "1087bfb",
+    "1a13bee",
+    "6971094",
+    "85f32c0"
+  ],
+  "remote_head_verified": "2ba4ea8eb10a5eeb38d231441a6b99f57e0abd5b",
+  "ssh": "BLOCKED_UNKNOWN_HOST_KEY_STRICT_CHECKING",
+  "actual_tokenizer_verified": false,
+  "prospective_identity_launch_support": "NOT_ACTIVATED_PENDING_REVIEWED_PROTOCOL_VERSION",
+  "remaining": [
+    "Author budget/selection decision",
+    "Task and model/tokenizer local assets",
+    "Approved versioned launch path",
+    "Human ratings and calibration",
+    "Live four-worker and backup validation"
+  ]
+}

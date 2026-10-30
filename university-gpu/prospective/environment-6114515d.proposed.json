@@ -22,5 +22,14 @@
     "Capture Hermes interpreter/import probe and actual project registry dispatch evidence",
     "Capture endpoint model identity, runtime versions and UUID placement evidence",
     "Review a separately versioned prospective protocol and explicit launcher identity support; existing historical launcher intentionally rejects this digest"
-  ]
+  ],
+  "runtime_settings_proposed": {
+    "temperature": 0,
+    "seed": 42,
+    "think": false,
+    "num_predict": 2048,
+    "num_ctx": 32768
+  },
+  "amendment_decision_document": "university-gpu/docs/BUDGET_AMENDMENT_DECISION.md",
+  "launch_identity_activated": false
 }
