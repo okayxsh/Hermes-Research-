@@ -40,7 +40,8 @@ def make_fake_frozen_manifest(candidate: dict) -> dict:
     value = copy.deepcopy(candidate)
     candidate_sha = value["manifest_sha256"]
     value.update({"status": "engineering_frozen", "run_id": f"{PROFILE_ID}-offline-test",
-                  "source_commit": "a" * 40, "candidate_manifest_sha256": candidate_sha})
+                  "source_commit": "a" * 40, "candidate_manifest_sha256": candidate_sha,
+                  "candidate_manifest": copy.deepcopy(candidate)})
     value["model"]["identity_status"] = "REVIEWED_PROSPECTIVE_IDENTITY"
     value["retrieval"]["status"] = "VERIFIED_LOCAL_SNAPSHOT"
     value["accum18_library"] = {"condition": "D18", "skill_count": 18, "sha256": "b" * 64,
@@ -98,8 +99,12 @@ class FakeWorker:
             "recovery_action_budget": unit["recovery_action_budget"],
             "checkpoint_digest": unit["checkpoint_digest"],
             "perturbation_digest": unit["post_detour_digest"],
+            "post_failure_actions": 0, "checkpoint_prefix_length": 199 - unit["recovery_action_budget"],
+            "recovery_actions": [], "recovery_success": False, "task_completed": False,
+            "termination_reason": "environment_terminated_without_success",
+            "retrieval_events": 0 if condition == "D0" else 1, "no_retrieval": condition == "D0",
         }
-        return {
+        result = {
             "unit_key": unit["unit_key"], "attempt_id": attempt_id, "status": "completed",
             "profile_id": PROFILE_ID, "scientific_evidence": False, "model_tag": MODEL_TAG,
             "model_digest": MODEL_DIGEST,
@@ -110,6 +115,29 @@ class FakeWorker:
             "actions": 0, "steps": 0, "invalid_actions": 0, "latency_ms": 1,
             "runtime_seconds": 0.01, "log_paths": [], "measurements": measurements,
         }
+
+        # Explicit offline fixture in the same raw formats emitted by the executor.
+        (attempt_dir / "result").mkdir(exist_ok=True)
+        (attempt_dir / "episode").mkdir(exist_ok=True)
+        (attempt_dir / "result/retrieval.jsonl").write_text(json.dumps({
+            "attempt_id": attempt_id, "task_id": unit["task_id"], "condition": condition,
+            "episode_id": unit["unit_key"], "run_id": f"{PROFILE_ID}-offline-test",
+            "retrieved": condition == "D18", "top": [{"skill_id": x, "score": 0.5} for x in ids]}) + "\n")
+        (attempt_dir / "result/recovery_steps.jsonl").write_text("")
+        (attempt_dir / "result/failure.json").write_text(json.dumps({"failure": {"post_state_digest": unit["post_detour_digest"]}}))
+        task = next(t for t in candidate_manifest()["tasks"] if t["task_id"] == unit["task_id"])
+        events = [{"event": "tool_result", "payload": {"tool": "alfworld_start", "request": {
+            "task_id": unit["task_id"], "split": "valid_seen", "seed": unit["seed"], "action_limit": 200},
+            "response": {"episode_id": "offline-fixture-episode"}}}]
+        events += [{"event": "tool_result", "payload": {"tool": "alfworld_step", "request": {"action": a}, "response": {
+            "episode_id": "offline-fixture-episode", "action_valid": True, "done": False, "success": False, "observation": "fixture"}}}
+                   for a in task["prefix_actions"] + [task["detour_action"]]]
+        events.append({"event": "recovery_memory_injected", "payload": {"fixture_only": True}})
+        (attempt_dir / "episode/episode-events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        from rq1.university_gpu.evidence import inventory_attempt, REQUIRED_LOGS
+        result["log_paths"] = list(REQUIRED_LOGS)
+        result["raw_evidence"] = inventory_attempt(attempt_dir, result)
+        return result
 
 
 class FakeOracleSession:

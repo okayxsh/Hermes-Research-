@@ -138,7 +138,7 @@ class FeasibilityEpisodeWorkerRuntime:
         context = RunExecutionContext(str(self.config["run_id"]), str(assignment["attempt_id"]), 1,
                                       attempt_dir, lambda: False)
         outcome = self.executor(unit, context)
-        return {
+        result = {
             "unit_key": str(raw_unit["unit_key"]), "attempt_id": str(assignment["attempt_id"]),
             "status": "completed", "profile_id": PROFILE_ID, "scientific_evidence": False,
             "model_tag": MODEL_TAG,
@@ -153,6 +153,11 @@ class FeasibilityEpisodeWorkerRuntime:
             "latency_ms": outcome.latency_ms, "runtime_seconds": outcome.runtime_seconds,
             "log_paths": list(outcome.log_paths), "measurements": dict(outcome.measurements),
         }
+
+        from rq1.university_gpu.evidence import inventory_attempt, REQUIRED_LOGS
+        result["log_paths"] = list(REQUIRED_LOGS)
+        result["raw_evidence"] = inventory_attempt(attempt_dir, result)
+        return result
 
     def close(self) -> None:
         self.driver.__exit__(None, None, None)

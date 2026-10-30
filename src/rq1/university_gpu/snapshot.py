@@ -29,11 +29,35 @@ def backup_checkpoint(store: RunStore) -> Path:
     temporary = parent / f".partial-{token}"
     temporary.mkdir()
     files = []
-    if any(path.is_symlink() for path in store.attempts_dir.rglob("*")):
-        raise SnapshotError("attempt directory contains a symlink")
+    # Only the coordinator publishes terminal events. Active workers may still
+    # append traces, so do not traverse their directories at all.
+    events = store.event_rows()
+    closed_ids = {str(row["attempt_id"]) for row in events
+                  if row.get("event") in {"unit_completed", "recovered_authoritative_result"}}
+    completed = store.completed()
+    closed_ids.update(str(row["attempt_id"]) for row in completed.values())
+    starts = {str(row["attempt_id"]): row for row in events if row.get("event") == "attempt_started"}
+    closed_sources = []
+    for attempt_id in sorted(closed_ids):
+        start = starts.get(attempt_id)
+        if start is None or not start.get("attempt_dir"):
+            # Historical authority-only fixtures may not carry raw attempt paths.
+            continue
+        unit_key = str(start.get("unit_key", ""))
+        matches = [p for p in (store.attempts_dir / unit_key).iterdir()
+                   if p.name == attempt_id or p.name.endswith("-" + attempt_id)]
+        if len(matches) != 1:
+            raise SnapshotError("closed attempt directory missing or ambiguous")
+        attempt_dir = matches[0]
+        if (attempt_dir.is_symlink() or store.attempts_dir.resolve() not in attempt_dir.resolve().parents):
+            raise SnapshotError("closed attempt directory escapes the run")
+        for path in sorted(attempt_dir.rglob("*")):
+            if path.is_symlink():
+                raise SnapshotError("closed attempt directory contains a symlink")
+            if path.is_file():
+                closed_sources.append(path)
     sources = [store.manifest_path, *sorted(store.events_dir.glob("*.json")),
-               *sorted(store.results_dir.glob("*.json")),
-               *sorted(path for path in store.attempts_dir.rglob("*") if path.is_file())]
+               *sorted(store.results_dir.glob("*.json")), *closed_sources]
     for source in sources:
         if source.is_symlink() or not source.is_file():
             raise SnapshotError(f"invalid checkpoint source: {source}")
@@ -46,11 +70,33 @@ def backup_checkpoint(store: RunStore) -> Path:
             raise SnapshotError(f"checkpoint copy changed: {rel}")
         files.append({"path": rel.as_posix(), "sha256": digest, "bytes": target.stat().st_size})
     report = {"schema": "rq1-authority-checkpoint-v1", "run_id": store.run_id,
-              "completed": len(store.completed()), "files": files, "files_sha256": content_hash(files)}
+              "completed": len(completed), "files": files, "files_sha256": content_hash(files),
+              "attempt_evidence_scope": "completed_attempts_only",
+              "limitations": ["Failed attempts may still have live timed-out writers; retained in stopped export only"],
+              "closed_attempt_ids": sorted(closed_ids),
+              "omitted_open_attempt_ids": sorted(set(starts) - closed_ids)}
     atomic_write_json(temporary / "CHECKPOINT-MANIFEST.json", report, overwrite=False)
     destination = parent / f"checkpoint-{report['completed']:04d}-{token}"
     temporary.rename(destination)
     return destination
+
+
+def _attempt_states(store: RunStore) -> list[dict]:
+    """Describe unresolved attempts without claiming mid-episode restoration."""
+    rows = store.event_rows()
+    states = {}
+    for row in rows:
+        attempt_id = str(row["attempt_id"])
+        if row["event"] == "attempt_started":
+            states[attempt_id] = {"attempt_id": attempt_id, "unit_key": str(row["unit_key"]),
+                                  "state": "nonterminal_at_export"}
+        elif row["event"] in {"attempt_failed", "unit_completed", "recovered_authoritative_result"}:
+            states[attempt_id] = {"attempt_id": attempt_id, "unit_key": str(row["unit_key"]),
+                                  "state": "failed" if row["event"] == "attempt_failed" else "completed"}
+    for row in store.completed().values():
+        states[str(row["attempt_id"])] = {"attempt_id": str(row["attempt_id"]),
+                                            "unit_key": str(row["unit_key"]), "state": "completed"}
+    return [states[key] for key in sorted(states)]
 
 
 def export_progress(root: Path, run_root: Path, manifest_path: Path, destination: Path, relevance_path: Path | None = None) -> dict:
@@ -110,6 +156,10 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
         report = {"schema": "rq1-progress-export-v1", "created_at": datetime.now(timezone.utc).isoformat(),
                   "run_id": store.run_id, "manifest_sha256": manifest["manifest_sha256"],
                   "complete": validation["passed"], "planned": validation["expected"],
+                  "execution_status": "completed" if validation["passed"] else "incomplete",
+                  "export_status": "verified_local_copy",
+                  "independent_copy_status": "not_verified",
+                  "attempt_states": _attempt_states(store),
                   "completed": validation["completed"], "missing_unit_keys": validation["missing"],
                   "source_commit": manifest["source_commit"], "files": sorted(files, key=lambda row: row["path"])}
         try:
@@ -123,7 +173,9 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
         atomic_write_json(staging / "EXPORT-MANIFEST.json", report, overwrite=False)
         staging.rename(destination)
     return {"status": "EXPORTED", "destination": str(destination), "complete": report["complete"],
-            "completed": report["completed"], "planned": report["planned"], "files": len(files)}
+            "completed": report["completed"], "planned": report["planned"], "files": len(files),
+            "execution_status": report["execution_status"], "export_status": report["export_status"],
+            "independent_copy_status": "not_verified"}
 
 
 def verify_progress(destination: Path) -> dict:
@@ -152,6 +204,8 @@ def verify_progress(destination: Path) -> dict:
             or validation["completed"] != report["completed"] or validation["missing"] != report["missing_unit_keys"]
             or manifest["manifest_sha256"] != report["manifest_sha256"]):
         raise SnapshotError("export contents disagree with the recorded run status")
+    if report.get("attempt_states") is not None and report["attempt_states"] != _attempt_states(store):
+        raise SnapshotError("export attempt states differ from preserved event evidence")
     rows = [json.loads(line) for line in (destination / "results.jsonl").read_text(encoding="utf-8").splitlines()]
     completed = store.completed()
     expected = [completed[str(unit["unit_key"])]["result"] for unit in manifest["units"]

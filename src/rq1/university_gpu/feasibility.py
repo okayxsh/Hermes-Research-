@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import copy
 import json
+import math
+import tarfile
 import re
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from rq1.bridge.adapters.task_index import build_task_index
 from rq1.evaluation.amended_protocol import SBERT_MODEL, SBERT_REVISION, SBERT_SNAPSHOT_SHA256
 from rq1.skills.library import TASK_FAMILIES
 from rq1.tasks.discovery import discover_tasks
+from rq1.university_gpu.interventions import LocalGemmaTokenizer, TokenizerIdentity
 from rq1.university_gpu.models import atomic_write_json, content_hash, load_json, sha256_file
 
 PROFILE_ID = "rq1-feasibility-200-v1"
@@ -48,6 +51,9 @@ MODEL_SETTINGS = {
 EXPECTED_DISCOVERY_IDENTITY = "43be7c24c054c3b2299b5054f293c21eaca08734554310094c5654783a8d7aa1"
 EXPECTED_ADAPTER_IDENTITY = "5fd5b9193ea361d62e877e93157ab567e63a95cf2dece0859db36cf4f534a0c0"
 EXPECTED_ARCHIVE_SHA256 = "11c8ca453ef4ceaef5dce189c976ffc09636fdc218e40e22a0803deac9e429e2"
+HISTORICAL_EVALUATION_ARCHIVE_SHA256 = "d52ed82e01a073f8c3382711d03f65916cb41ca89bc0b773e6845817bd37e4fd"
+HISTORICAL_LIBRARY_MEMBER = "rq1-evaluation-360-final/repo/artifacts/evaluation-libraries/libraries-0030f89e76c6bc4c.json"
+_RUN_ID = re.compile(r"rq1-feasibility-200-v1-[A-Za-z0-9][A-Za-z0-9._-]{2,80}\Z")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -363,7 +369,7 @@ def validate_feasibility_manifest(manifest: Mapping[str, Any], *, require_frozen
 
 def _validate_engineering_freeze(manifest: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
-    if not isinstance(manifest.get("run_id"), str) or not manifest.get("run_id"):
+    if not isinstance(manifest.get("run_id"), str) or not _RUN_ID.fullmatch(manifest["run_id"]):
         problems.append("engineering-frozen manifest needs a run_id")
     commit = manifest.get("source_commit")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -383,6 +389,15 @@ def _validate_engineering_freeze(manifest: Mapping[str, Any]) -> list[str]:
     candidate_sha = manifest.get("candidate_manifest_sha256")
     if not isinstance(candidate_sha, str) or not _HEX64.fullmatch(candidate_sha):
         problems.append("engineering-frozen manifest is not bound to its candidate manifest")
+    candidate = manifest.get("candidate_manifest")
+    if not isinstance(candidate, Mapping):
+        problems.append("engineering-frozen manifest lacks original candidate records")
+    elif (candidate.get("status") != "candidate_unapproved"
+          or _manifest_digest(candidate) != candidate_sha
+          or candidate.get("manifest_sha256") != candidate_sha
+          or validate_feasibility_manifest(candidate)
+          or candidate.get("tasks") != manifest.get("tasks")):
+        problems.append("frozen candidate ancestry or original task records differ")
     if manifest.get("tokenizer", {}).get("status") != "REVIEWED_PROSPECTIVE_TOKENIZER":
         problems.append("engineering-frozen manifest lacks reviewed prospective tokenizer provenance")
     if manifest.get("model", {}).get("identity_status") != "REVIEWED_PROSPECTIVE_IDENTITY":
@@ -468,6 +483,7 @@ def freeze_engineering_manifest(
             or identity_review.get("model_digest") != MODEL_DIGEST
             or identity_review.get("quantization") != MODEL_QUANTIZATION
             or identity_review.get("tokenizer_sha256") != tokenizer_sha
+            or identity_review.get("tokenizer_revision") != identity_report.get("tokenizer_revision")
             or not re.fullmatch(r"[0-9a-f]{40}", str(identity_review.get("tokenizer_revision", "")))
             or identity_review.get("model_tokenizer_link_confirmed") is not True
             or not identity_review.get("reviewed_by") or not identity_review.get("review_reference")):
@@ -495,6 +511,7 @@ def freeze_engineering_manifest(
             or reference.get("skill_count") != 18
             or reference.get("skill_ids") != sorted(skill_ids)):
         raise FeasibilityError("Accum-18 does not match its independently supplied frozen reference manifest")
+    verify_accum18_reference(library_path, reference)
     reference_sha = sha256_file(reference_path)
 
     from rq1.acquisition.environment import sbert_snapshot_sha256
@@ -502,7 +519,7 @@ def freeze_engineering_manifest(
     if observed_sbert != SBERT_SNAPSHOT_SHA256:
         raise FeasibilityError("local Sentence-BERT snapshot is missing or differs from the pinned revision")
 
-    if (not isinstance(run_id, str) or not re.fullmatch(r"rq1-feasibility-200-v1-[A-Za-z0-9][A-Za-z0-9._-]{2,80}", run_id)):
+    if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
         raise FeasibilityError("run_id must be unique and scoped to rq1-feasibility-200-v1")
     try:
         commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
@@ -528,6 +545,7 @@ def freeze_engineering_manifest(
     frozen["run_id"] = run_id
     frozen["source_commit"] = commit
     frozen["candidate_manifest_sha256"] = candidate_sha
+    frozen["candidate_manifest"] = copy.deepcopy(dict(candidate))
     frozen["model"]["identity_status"] = "REVIEWED_PROSPECTIVE_IDENTITY"
     frozen["retrieval"]["status"] = "VERIFIED_LOCAL_SNAPSHOT"
     frozen["accum18_library"] = {"condition": "D18", "skill_count": 18, "sha256": library_sha,
@@ -556,10 +574,17 @@ def freeze_engineering_manifest(
     return frozen
 
 
-def build_accum18_reference(library_path: Path, frozen_manifest_path: Path) -> dict[str, Any]:
+def build_accum18_reference(library_path: Path, frozen_manifest_path: Path | None = None, *,
+                            archive_path: Path | None = None, archive_manifest_path: Path | None = None) -> dict[str, Any]:
     """Bind a supplied library to a genuinely frozen repository manifest."""
     from rq1.university_gpu.manifest import validate_manifest
 
+    if archive_path is not None or archive_manifest_path is not None:
+        if frozen_manifest_path is not None or archive_path is None or archive_manifest_path is None:
+            raise FeasibilityError("supply either frozen manifest or both historical archive and member ledger")
+        return _historical_accum18_reference(library_path, archive_path, archive_manifest_path)
+    if frozen_manifest_path is None:
+        raise FeasibilityError("authentic historical archive/member ledger or frozen manifest is required")
     source_manifest = load_json(frozen_manifest_path)
     issues = validate_manifest(source_manifest, require_frozen=True)
     if issues:
@@ -574,12 +599,66 @@ def build_accum18_reference(library_path: Path, frozen_manifest_path: Path) -> d
     reference: dict[str, Any] = {
         "schema": "rq1-accum18-frozen-reference-v1", "status": "verified_frozen",
         "library_file_sha256": observed, "skill_count": len(ids), "skill_ids": sorted(ids),
+        "source_kind": "university_manifest",
+        "source_frozen_manifest_path": str(frozen_manifest_path.resolve()),
         "source_frozen_manifest": frozen_manifest_path.name,
         "source_frozen_manifest_sha256": sha256_file(frozen_manifest_path),
         "source_commit": source_manifest.get("source_commit"),
     }
     reference["reference_sha256"] = content_hash(reference)
     return reference
+
+
+def verify_accum18_reference(library_path: Path, reference: Mapping[str, Any]) -> None:
+    if reference.get("source_kind") == "historical_archive":
+        actual = build_accum18_reference(library_path, archive_path=Path(str(reference.get("archive_path", ""))),
+                                         archive_manifest_path=Path(str(reference.get("archive_manifest_path", ""))))
+    elif reference.get("source_kind") == "university_manifest":
+        actual = build_accum18_reference(library_path, Path(str(reference.get("source_frozen_manifest_path", ""))))
+    else:
+        raise FeasibilityError("Accum-18 reference lacks authenticated source ancestry")
+    if actual != reference:
+        raise FeasibilityError("Accum-18 reference differs from reverified source ancestry")
+
+
+def _historical_accum18_reference(library_path: Path, archive_path: Path, ledger_path: Path) -> dict[str, Any]:
+    """Verify exact library bytes against pinned historical archive and its member ledger."""
+    if any(path.is_symlink() or not path.is_file() for path in (library_path, archive_path, ledger_path)):
+        raise FeasibilityError("historical library/archive/ledger must be existing regular files")
+    if sha256_file(archive_path) != HISTORICAL_EVALUATION_ARCHIVE_SHA256:
+        raise FeasibilityError("historical evaluation archive hash differs from frozen reference")
+    ledger = load_json(ledger_path)
+    if ledger.get("archive_sha256") != HISTORICAL_EVALUATION_ARCHIVE_SHA256:
+        raise FeasibilityError("historical archive ledger identity differs")
+    rows = [r for r in ledger.get("members", []) if r.get("path") == HISTORICAL_LIBRARY_MEMBER]
+    if len(rows) != 1:
+        raise FeasibilityError("historical ledger must contain exactly one original library member")
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = [m for m in archive.getmembers() if m.name == HISTORICAL_LIBRARY_MEMBER]
+        if len(members) != 1 or not members[0].isfile():
+            raise FeasibilityError("historical library member is missing, duplicate or not regular")
+        stream = archive.extractfile(members[0])
+        if stream is None:
+            raise FeasibilityError("historical library member is unreadable")
+        data = stream.read()
+    from rq1.university_gpu.models import sha256_bytes
+    digest = sha256_bytes(data)
+    if (digest != rows[0].get("sha256") or len(data) != rows[0].get("size")
+            or digest != sha256_file(library_path) or data != library_path.read_bytes()):
+        raise FeasibilityError("library bytes differ from authenticated historical archive/member ledger")
+    payload = json.loads(data)
+    skills = payload.get("libraries", payload).get("Accum-18", {}).get("skills", [])
+    ids = [s.get("skill_id") for s in skills if isinstance(s, Mapping)]
+    if (len(skills) != 18 or len(ids) != 18 or any(not isinstance(i, str) or not i for i in ids)
+            or len(set(ids)) != 18 or any(not str(s.get("text", "")).strip() for s in skills)):
+        raise FeasibilityError("authenticated historical Accum-18 must have 18 distinct IDs and nonempty texts")
+    result = {"schema": "rq1-accum18-frozen-reference-v1", "status": "verified_frozen",
+              "source_kind": "historical_archive", "library_file_sha256": digest,
+              "skill_count": 18, "skill_ids": sorted(ids), "archive_sha256": HISTORICAL_EVALUATION_ARCHIVE_SHA256,
+              "archive_member": HISTORICAL_LIBRARY_MEMBER, "archive_path": str(archive_path.resolve()),
+              "archive_manifest_path": str(ledger_path.resolve()), "archive_manifest_sha256": sha256_file(ledger_path)}
+    result["reference_sha256"] = content_hash(result)
+    return result
 
 
 def check_selected_task_sources(data_root: Path, tasks: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -711,7 +790,7 @@ def write_reconciliation_report(data_root: Path, manifest: Mapping[str, Any], ou
 
 def validate_oracle_report(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     problems: list[str] = []
-    if report.get("schema") != "rq1-feasibility-oracle-replay-v1" or report.get("manifest_sha256") != manifest.get("manifest_sha256"):
+    if report.get("schema") != "rq1-feasibility-oracle-replay-v1" or report.get("manifest_sha256") != (manifest.get("candidate_manifest_sha256") if manifest.get("status") == "engineering_frozen" else manifest.get("manifest_sha256")):
         problems.append("oracle report schema or candidate manifest binding differs")
     rows = report.get("tasks")
     expected = {str(task["task_id"]): task for task in manifest.get("tasks", [])}
@@ -937,6 +1016,7 @@ def verify_frozen_feasibility_assets(root: Path, config: Mapping[str, Any], mani
     if observed_library != inputs["accum18_library_sha256"]:
         raise FeasibilityError("Accum-18 file hash differs from frozen run identity")
     reference = load_json(library_ref_path)
+    verify_accum18_reference(library_path, reference)
     if (sha256_file(library_ref_path) != inputs["accum18_reference_manifest_sha256"]
             or reference.get("library_file_sha256") != observed_library
             or reference.get("skill_ids") != manifest["accum18_library"].get("skill_ids")):
@@ -951,10 +1031,14 @@ def verify_frozen_feasibility_assets(root: Path, config: Mapping[str, Any], mani
     if observed_tokenizer != inputs["tokenizer_sha256"] or observed_tokenizer != manifest["tokenizer"].get("sha256"):
         raise FeasibilityError("local tokenizer file differs from the reviewed frozen identity")
     revision = str(config.get("tokenizer_revision", ""))
-    if revision != manifest["tokenizer"].get("revision"):
+    if (revision != manifest["tokenizer"].get("revision")
+            or revision != identity_report.get("tokenizer_revision")
+            or revision != identity_review.get("tokenizer_revision")):
         raise FeasibilityError("tokenizer revision differs from the reviewed frozen identity")
     tokenizer = LocalGemmaTokenizer(TokenizerIdentity(tokenizer_path, observed_tokenizer, revision))
     provenance = load_json(Path(str(config["tokenizer_provenance_path"])))
+    if provenance.get("revision") != revision:
+        raise FeasibilityError("tokenizer provenance revision differs from runtime/review/report")
     from rq1.university_gpu.prospective_identity import verify_candidate
     evidence_report = verify_candidate(
         Path(str(config["ollama_manifest_path"])), Path(str(config["ollama_blobs_dir"])), tokenizer_path,
@@ -1142,6 +1226,17 @@ def run_feasibility_benchmark(
     return report
 
 
+def bounded_run_root(output_root: Path, run_id: str) -> Path:
+    if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
+        raise FeasibilityError("unsafe feasibility run_id")
+    parent = output_root.expanduser().resolve()
+    raw = parent / run_id
+    resolved = raw.resolve()
+    if raw.is_symlink() or parent not in resolved.parents:
+        raise FeasibilityError("run directory escapes approved output root")
+    return resolved
+
+
 def run_feasibility_launch(
     root: Path,
     config: Mapping[str, Any],
@@ -1167,7 +1262,7 @@ def run_feasibility_launch(
     if validate_feasibility_manifest(manifest, require_frozen=True):
         raise FeasibilityError("engineering manifest failed validation")
     _validate_engineering_approval(manifest, approval, yes=yes)
-    if cutoff_epoch is None or not isinstance(cutoff_epoch, (int, float)) or cutoff_epoch <= time.time() + 1800:
+    if cutoff_epoch is None or type(cutoff_epoch) not in (int, float) or not math.isfinite(cutoff_epoch) or cutoff_epoch <= time.time() + 1800:
         raise FeasibilityError("a real university access cutoff at least 30 minutes away is required")
     if int(config.get("worker_count", 0)) != 4:
         raise FeasibilityError("feasibility launch requires four isolated GPU workers")
@@ -1193,7 +1288,7 @@ def run_feasibility_launch(
         pass
     else:
         raise FeasibilityError("run_output_dir must be outside the Git checkout")
-    run_root = output_root / str(manifest["run_id"])
+    run_root = bounded_run_root(output_root, str(manifest["run_id"]))
     if run_root.exists() and any(run_root.iterdir()) and not resume:
         raise FeasibilityError("existing run data requires explicit --resume; it will never be overwritten")
     run_root.mkdir(parents=True, exist_ok=True)

@@ -123,7 +123,9 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--output", type=Path, required=True)
     item = feasibility_actions.add_parser("reference-library", help="Verify the exact Accum-18 file against a genuine frozen manifest.")
     item.add_argument("--library", type=Path, required=True)
-    item.add_argument("--frozen-manifest", type=Path, required=True)
+    item.add_argument("--frozen-manifest", type=Path)
+    item.add_argument("--archive", type=Path)
+    item.add_argument("--archive-manifest", type=Path)
     item.add_argument("--output", type=Path, required=True)
     item = feasibility_actions.add_parser("validate", help="Validate the candidate or reviewed engineering-frozen manifest.")
     item.add_argument("--manifest", type=Path, required=True)
@@ -200,9 +202,10 @@ def run(root: Path, args: argparse.Namespace) -> int:
                        "episodes": len(value["units"]), "scientific_evidence": False})
                 return 0
             if subcommand == "reference-library":
-                value = feasibility.build_accum18_reference(args.library, args.frozen_manifest)
+                value = feasibility.build_accum18_reference(args.library, args.frozen_manifest,
+                                                            archive_path=args.archive, archive_manifest_path=args.archive_manifest)
                 atomic_write_json(args.output, value, overwrite=False)
-                _emit({"status": "VERIFIED_AGAINST_FROZEN_MANIFEST", "path": args.output,
+                _emit({"status": "VERIFIED_HISTORICAL_ANCESTRY" if value.get("source_kind") == "historical_archive" else "VERIFIED_AGAINST_FROZEN_MANIFEST", "path": args.output,
                        "reference_sha256": value["reference_sha256"],
                        "library_file_sha256": value["library_file_sha256"], "skill_count": value["skill_count"]})
                 return 0

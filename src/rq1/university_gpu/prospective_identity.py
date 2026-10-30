@@ -55,6 +55,7 @@ def verify_candidate(manifest_path: Path, blobs: Path, tokenizer: Path, provenan
               "model_digest": expected_model_digest,
               "quantization": PROSPECTIVE_MODEL_QUANTIZATION if expected_model_digest else None,
               "checked_blobs": checked, "tokenizer_sha256": tokenizer_hash,
+              "tokenizer_revision": provenance["revision"],
               "provenance_sha256": content_hash(provenance), "reference_sample_count": len(samples),
               "limitations": ["Sample/source authenticity and tokenizer-model linkage require review",
                               "Finite sample agreement is not proof of all-input equivalence",

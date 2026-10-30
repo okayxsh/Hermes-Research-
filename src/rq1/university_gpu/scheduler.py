@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import socket
@@ -67,6 +68,35 @@ def _validate_feasibility_result(result: Mapping[str, Any], expected: Mapping[st
         problems.append("feasibility result retrieval does not match D0 or top-3 D18")
     if not isinstance(scores, list) or not isinstance(retrieved, list) or len(scores) != len(retrieved):
         problems.append("feasibility result retrieval score records do not match retrieved skill IDs")
+    if isinstance(retrieved, list):
+        allowed = set(manifest.get("accum18_library", {}).get("skill_ids", []))
+        if any(not isinstance(x, str) for x in retrieved) or len(set(map(str, retrieved))) != len(retrieved) or any(x not in allowed for x in retrieved):
+            problems.append("retrieved IDs must be unique frozen-library members")
+    if isinstance(scores, list) and any(type(x) not in (int, float) or not math.isfinite(x) or not -1.0000001 <= x <= 1.0000001 for x in scores):
+        problems.append("retrieval scores must be finite cosine values")
+    counts = [result.get(k) for k in ("actions", "steps", "invalid_actions")]
+    if any(type(x) is not int or x < 0 for x in counts):
+        problems.append("invalid recovery counts")
+    elif isinstance(measurements, Mapping):
+        actions, steps, invalid = counts
+        budget = expected["recovery_action_budget"]
+        if (actions > budget or not actions <= steps <= actions + 1 or invalid > steps
+                or measurements.get("post_failure_actions") != actions
+                or measurements.get("checkpoint_prefix_length") != expected["total_action_budget"] - budget - 1
+                or not isinstance(measurements.get("recovery_actions"), list)
+                or len(measurements.get("recovery_actions", [])) != actions):
+            problems.append("recovery action/step accounting differs from frozen budget")
+        success = result.get("recovery_success")
+        reason = measurements.get("termination_reason")
+        if (type(success) is not bool or result.get("success") is not success
+                or measurements.get("recovery_success") is not success
+                or measurements.get("task_completed") is not success
+                or reason not in {"success", "action_selection_exhausted", "recovery_budget_exhausted", "environment_terminated_without_success"}
+                or (reason == "success") != success
+                or (reason == "recovery_budget_exhausted" and actions != budget)
+                or measurements.get("retrieval_events") != (0 if expected["condition"] == "D0" else 1)
+                or measurements.get("no_retrieval") is not (expected["condition"] == "D0")):
+            problems.append("unsupported termination/retrieval state")
     return problems
 
 
@@ -221,8 +251,25 @@ class RunStore:
             payload = value.get("result")
             if not isinstance(payload, dict) or value.get("result_sha256") != content_hash(payload):
                 raise SchedulerError(f"result hash mismatch: {path}")
+            if self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+                expected = next(u for u in self.manifest["units"] if u["unit_key"] == unit_key)
+                issues = _validate_feasibility_result(payload, expected, self.manifest)
+                issues.extend(self.validate_evidence(payload, str(value.get("attempt_id", ""))))
+                if issues:
+                    raise SchedulerError("invalid authoritative evidence: " + "; ".join(issues))
             completed[unit_key] = value
         return completed
+
+    def validate_evidence(self, result: Mapping[str, Any], attempt_id: str) -> list[str]:
+        from rq1.university_gpu.evidence import validate_attempt_evidence
+        if result.get("attempt_id") != attempt_id or not attempt_id.isalnum():
+            return ["result attempt identity mismatch"]
+        parent = self.attempts_dir / str(result["unit_key"])
+        matches = list(parent.glob("*-" + attempt_id))
+        if len(matches) != 1 or matches[0].is_symlink() or self.attempts_dir.resolve() not in matches[0].resolve().parents:
+            return ["attempt directory missing, ambiguous or unsafe"]
+        task = next(t for t in self.manifest["tasks"] if t["task_id"] == result["task_id"])
+        return validate_attempt_evidence(matches[0], result, task, self.run_id)
 
     def record_result(self, unit: Mapping[str, Any], result: Mapping[str, Any], *, attempt_id: str, worker_id: str) -> Path:
         unit_key = str(unit["unit_key"])
@@ -243,6 +290,7 @@ class RunStore:
             raise SchedulerError("worker result status or scientific identity differs from the frozen assignment")
         if self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
             result_problems = _validate_feasibility_result(body, expected, self.manifest)
+            result_problems.extend(self.validate_evidence(body, attempt_id))
             if result_problems:
                 raise SchedulerError("feasibility worker result differs from its non-scientific profile: "
                                       + "; ".join(result_problems))
@@ -327,6 +375,7 @@ class Coordinator:
             interrupted_by_cutoff = False
             failures: list[dict[str, Any]] = []
             backup_failed = False
+            backup_succeeded = False
             storage_failed = False
             with ThreadPoolExecutor(max_workers=len(self.workers), thread_name_prefix="rq1-gpu-scheduler") as pool:
                 while pending or active:
@@ -390,6 +439,7 @@ class Coordinator:
                                 try:
                                     from rq1.university_gpu.snapshot import backup_checkpoint
                                     backup_checkpoint(self.store)
+                                    backup_succeeded = True
                                 except Exception as exc:
                                     backup_failed = True
                                     failures.append({"failure_class": "backup", "error_type": type(exc).__name__, "error": str(exc)})
@@ -414,7 +464,15 @@ class Coordinator:
                         interrupted_by_cutoff = False
                         pending.clear()
             completed_now = self.store.completed()
-            return {"run_id": self.store.run_id, "status": "completed" if len(completed_now) == len(self.store.manifest["units"]) else "paused" if not failures else "incomplete",
+            execution_status = ("completed" if len(completed_now) == len(self.store.manifest["units"])
+                                else "incomplete" if failures else "paused")
+            backup_status = "failed" if backup_failed else "succeeded" if backup_succeeded else "not_attempted"
+            # Episode authority survives backup failure; callers cannot mistake
+            # successful execution for verified durability.
+            return {"run_id": self.store.run_id,
+                    "status": "durability_failed" if backup_failed else execution_status,
+                    "execution_status": execution_status, "backup_status": backup_status,
+                    "export_status": "not_performed", "independent_copy_status": "not_verified",
                     "planned_units": len(self.store.manifest["units"]), "completed_units": len(completed_now), "attempts_started": attempted,
                     "failures": failures, "cutoff_reached": interrupted_by_cutoff, "active_workers_at_return": len(active),
                     "worker_ids": [worker.worker_id for worker in self.workers]}

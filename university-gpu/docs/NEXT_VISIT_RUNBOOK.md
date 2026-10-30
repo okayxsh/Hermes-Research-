@@ -9,6 +9,9 @@ Use this only for `rq1-feasibility-200-v1`: six existing valid-seen tasks, D0/D1
 ```bash
 set -euo pipefail
 cd ~/Hermes-Research-
+export RQ1_PY="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/src"
+test -x "$RQ1_PY"
 test "$(git branch --show-current)" = "feat/rq1-university-4gpu"
 test -z "$(git status --porcelain)"
 git fetch origin refs/heads/feat/rq1-university-4gpu:refs/remotes/origin/feat/rq1-university-4gpu
@@ -24,6 +27,8 @@ else
 fi
 git status --short --branch
 git log -1 --format='%H %s'
+: "${RQ1_APPROVED_SOURCE_COMMIT:?Set the reviewed full commit from the handoff}"
+test "$(git rev-parse HEAD)" = "$RQ1_APPROVED_SOURCE_COMMIT"
 ```
 
 If the reviewed commit arrives as an approved bundle, follow the bundle verification and fast-forward instructions in `BUDGET_AMENDMENT_DECISION.md`. Never bypass SSH host verification.
@@ -35,18 +40,21 @@ Choose a new external evidence directory for this visit; do not reuse an old run
 ```bash
 set -euo pipefail
 cd ~/Hermes-Research-
+export RQ1_PY="$PWD/.venv/bin/python"
+export PYTHONPATH="$PWD/src"
+test -x "$RQ1_PY"
 export RQ1_EVIDENCE="$HOME/rq1-evidence/feasibility-2026-11-02"
 mkdir -p "$(dirname "$RQ1_EVIDENCE")"
 mkdir "$RQ1_EVIDENCE"
 git status --short --branch
-python3.11 --version
-python3.11 -m pip check
+"$RQ1_PY" -c 'import sys; assert sys.version_info[:2] == (3,11); import rq1, alfworld, sentence_transformers, tokenizers; print(sys.executable); print(rq1.__file__)'
+"$RQ1_PY" -m pip check
 nvidia-smi -L
 nvidia-smi
 ollama --version
 ollama list
 ollama ps
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility validate \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility validate \
   --manifest university-gpu/prospective/feasibility-200-candidate.json
 ```
 
@@ -67,26 +75,28 @@ set -euo pipefail
 : "${RQ1_MODEL_TOKENIZER_LINK_EVIDENCE:?Set model-tokenizer linkage evidence}"
 : "${RQ1_TOKENIZER_REVISION:?Set the verified full tokenizer revision}"
 : "${RQ1_ACCUM18_LIBRARY:?Set the original frozen Accum-18 JSON}"
-: "${RQ1_FROZEN_MANIFEST:?Set the authentic frozen university-GPU source manifest}"
+: "${RQ1_HISTORICAL_ARCHIVE:?Set the authentic archived evaluation tar.gz}"
+: "${RQ1_HISTORICAL_ARCHIVE_MANIFEST:?Set its authentic member ledger}"
 export RQ1_ALFWORLD_DATA_DIR RQ1_MODEL_MANIFEST RQ1_MODEL_BLOBS RQ1_OLLAMA_MODELS_DIR
 export RQ1_GEMMA_TOKENIZER_JSON RQ1_TOKENIZER_PROVENANCE RQ1_MODEL_TOKENIZER_LINK_EVIDENCE
-export RQ1_TOKENIZER_REVISION RQ1_ACCUM18_LIBRARY RQ1_FROZEN_MANIFEST
+export RQ1_TOKENIZER_REVISION RQ1_ACCUM18_LIBRARY RQ1_HISTORICAL_ARCHIVE RQ1_HISTORICAL_ARCHIVE_MANIFEST
 export RQ1_FEASIBILITY_DATA_REPORT="$RQ1_EVIDENCE/data-reconciliation.json"
 export RQ1_PROSPECTIVE_IDENTITY_REPORT="$RQ1_EVIDENCE/prospective-identity.json"
 export RQ1_ACCUM18_REFERENCE="$RQ1_EVIDENCE/accum18-reference.json"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility reconcile-data \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility reconcile-data \
   --manifest university-gpu/prospective/feasibility-200-candidate.json \
   --data-root "$RQ1_ALFWORLD_DATA_DIR" --output "$RQ1_FEASIBILITY_DATA_REPORT"
-PYTHONPATH=src python3.11 -m rq1.university_gpu.prospective_identity \
+PYTHONPATH=src "$RQ1_PY" -m rq1.university_gpu.prospective_identity \
   --manifest "$RQ1_MODEL_MANIFEST" --blobs "$RQ1_MODEL_BLOBS" \
   --tokenizer "$RQ1_GEMMA_TOKENIZER_JSON" --provenance "$RQ1_TOKENIZER_PROVENANCE" \
   --link-evidence "$RQ1_MODEL_TOKENIZER_LINK_EVIDENCE" --output "$RQ1_PROSPECTIVE_IDENTITY_REPORT"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility reference-library \
-  --library "$RQ1_ACCUM18_LIBRARY" --frozen-manifest "$RQ1_FROZEN_MANIFEST" \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility reference-library \
+  --library "$RQ1_ACCUM18_LIBRARY" --archive "$RQ1_HISTORICAL_ARCHIVE" \
+  --archive-manifest "$RQ1_HISTORICAL_ARCHIVE_MANIFEST" \
   --output "$RQ1_ACCUM18_REFERENCE"
 ```
 
-Inspect the data report's three scoped digests, complete record differences, exclusions, and six selected-file hashes. `REVIEW_REQUIRED` means expected scoped identities reproduced and a human must review them; it does not mean they are equal or frozen. Bind the report hash in a new human data-review JSON. The prospective identity tool only emits `CANDIDATE_REVIEW_REQUIRED`; inspect all blob hashes and the tokenizer link, then bind its `content_sha256` in a new human identity-review JSON. The library reference command passes only if the exact 18-skill file hash and skill IDs match the genuine frozen source manifest. Stop if any source, reference, or expected digest is missing or mismatched.
+Inspect the data report's three scoped digests, complete record differences, exclusions, and six selected-file hashes. `REVIEW_REQUIRED` means expected scoped identities reproduced and a human must review them; it does not mean they are equal or frozen. Bind the report hash in a new human data-review JSON. The prospective identity tool only emits `CANDIDATE_REVIEW_REQUIRED`; inspect all blob hashes and the tokenizer link, then bind its `content_sha256` in a new human identity-review JSON. The library reference command passes only if the exact library file hash, 18 skill IDs and text match the authentic historical archive/member ledger. Stop if any source, reference, or expected digest is missing or mismatched.
 
 ### 4. Replay the exact expert witnesses under cap 200
 
@@ -95,7 +105,7 @@ This is a CPU ALFWorld oracle replay with no model or GPU inference. It preserve
 ```bash
 set -euo pipefail
 export RQ1_FEASIBILITY_ORACLE_REPORT="$RQ1_EVIDENCE/oracle-replay.json"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility replay-oracles \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility replay-oracles \
   --manifest university-gpu/prospective/feasibility-200-candidate.json \
   --data-root "$RQ1_ALFWORLD_DATA_DIR" --evidence-dir "$RQ1_EVIDENCE/oracle-raw" \
   --output "$RQ1_FEASIBILITY_ORACLE_REPORT"
@@ -124,7 +134,7 @@ Edit that external config to use actual data/model/library/tokenizer paths and t
 ```bash
 export RQ1_FEASIBILITY_CONFIG="$RQ1_EVIDENCE/feasibility-config.json"
 export RQ1_FEASIBILITY_MANIFEST="$RQ1_EVIDENCE/feasibility-200-frozen.json"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility freeze \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility freeze \
   --candidate university-gpu/prospective/feasibility-200-candidate.json \
   --data-report "$RQ1_FEASIBILITY_DATA_REPORT" --data-review "$RQ1_EVIDENCE/data-review.json" \
   --oracle-report "$RQ1_FEASIBILITY_ORACLE_REPORT" \
@@ -141,9 +151,9 @@ The frozen feasibility manifest must retain `option_b_author_decision_status=pen
 
 ```bash
 set -euo pipefail
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility preflight \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility preflight \
   --config "$RQ1_FEASIBILITY_CONFIG" --manifest "$RQ1_FEASIBILITY_MANIFEST"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility benchmark \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility benchmark \
   --config "$RQ1_FEASIBILITY_CONFIG" --manifest "$RQ1_FEASIBILITY_MANIFEST" \
   --approval-file "$RQ1_EVIDENCE/engineering-approval.json" --yes \
   --output "$RQ1_EVIDENCE/four-gpu-benchmark.json"
@@ -156,7 +166,7 @@ Preflight rehashes selected task files, both data-identity methods, model manife
 ```bash
 set -euo pipefail
 : "${RQ1_ACCESS_END_EPOCH:?Set the real university GPU access deadline in Unix UTC seconds}"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility launch \
+PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility launch \
   --config "$RQ1_FEASIBILITY_CONFIG" --manifest "$RQ1_FEASIBILITY_MANIFEST" \
   --approval-file "$RQ1_EVIDENCE/engineering-approval.json" --yes \
   --cutoff-epoch "$RQ1_ACCESS_END_EPOCH"
@@ -164,33 +174,62 @@ PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility launch \
 
 This runs exactly the 12 D0/D18 units. It is not the 36-episode scientific pilot. Retries receive distinct attempt IDs; completed authoritative results are immutable.
 
-### 8. Monitor, stop, resume, export, and verify an independent backup
+### 8. Monitor and interrupt cooperatively
+
+These are separate operator procedures. Do not paste monitor, stop and resume as one script.
 
 ```bash
-set -euo pipefail
 export RQ1_RUN_ROOT="$RQ1_FEASIBILITY_RUN_ROOT/rq1-feasibility-200-v1-university-20261102"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility status \
-  --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility status --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
 nvidia-smi
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility stop \
-  --run-root "$RQ1_RUN_ROOT" --reason "scheduled access cutoff"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility resume \
+```
+
+To interrupt, request STOP, then wait for the coordinator to return and active work to finish:
+
+```bash
+"$RQ1_PY" -m rq1.cli university-gpu feasibility stop --run-root "$RQ1_RUN_ROOT" --reason "scheduled access cutoff"
+```
+
+The cutoff stops assignments 30 minutes early; it does not forcibly terminate active episodes. Reject nonfinite/expired deadlines. Set a measured reserve for active work and backup; a one-hour response timeout can exceed the assignment reserve. If time is insufficient, stop earlier. WSL/RDP persistence and process ownership remain university-only checks. Never kill another user's processes.
+
+### 9. Complete run versus partial/failed run
+
+For a complete run only:
+
+```bash
+"$RQ1_PY" -m rq1.cli university-gpu feasibility validate-run --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility merge --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+```
+
+For interrupted runs, failed workers or backup failures, skip complete-run validation/merge and proceed directly to the verified partial export below after all writers stop. Inspect execution and backup status separately. Preserve failed/partial attempts. Missing authoritative logs or corrupt accepted results must block export; partial export is not permission to suppress corruption.
+
+For either complete or incomplete stopped runs, choose a new destination every time:
+
+```bash
+export RQ1_EXPORT="$RQ1_EVIDENCE/feasibility-export-$(date -u +%Y%m%dT%H%M%SZ)"
+test ! -e "$RQ1_EXPORT"
+test ! -e "$RQ1_EXPORT.tar.gz"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility export-progress --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --destination "$RQ1_EXPORT"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility verify-export --destination "$RQ1_EXPORT"
+(set -o noclobber; tar -czf - -C "$(dirname "$RQ1_EXPORT")" "$(basename "$RQ1_EXPORT")" > "$RQ1_EXPORT.tar.gz")
+(set -o noclobber; sha256sum "$RQ1_EXPORT.tar.gz" > "$RQ1_EXPORT.tar.gz.sha256")
+```
+
+Copy archive and checksum to university-approved independent storage and verify the copied checksum and export manifest there. Local checkpoint/export success does not prove independent-copy verification. GitHub is supplementary backup.
+
+### 10. Resume after a worker failure or interruption
+
+After preserving a verified partial export, inspect failed attempts and ports/owned processes. Resolve the actual infrastructure error, recheck unchanged assets, set a new finite authorized deadline and explicitly resume:
+
+```bash
+: "${RQ1_ACCESS_END_EPOCH:?Set the actual authorized future Unix UTC deadline}"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility resume \
   --config "$RQ1_FEASIBILITY_CONFIG" --manifest "$RQ1_FEASIBILITY_MANIFEST" \
   --approval-file "$RQ1_EVIDENCE/engineering-approval.json" --yes \
   --retry-failed --cutoff-epoch "$RQ1_ACCESS_END_EPOCH"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility validate-run \
-  --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility merge \
-  --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
-export RQ1_EXPORT="$RQ1_EVIDENCE/feasibility-export"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility export-progress \
-  --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --destination "$RQ1_EXPORT"
-PYTHONPATH=src python3.11 -m rq1.cli university-gpu feasibility verify-export --destination "$RQ1_EXPORT"
-tar -czf "$RQ1_EXPORT.tar.gz" -C "$(dirname "$RQ1_EXPORT")" "$(basename "$RQ1_EXPORT")"
-sha256sum "$RQ1_EXPORT.tar.gz" | tee "$RQ1_EXPORT.tar.gz.sha256"
 ```
 
-Copy the archive and checksum to university-approved independent storage and verify the copied checksum and export manifest. A GitHub push is optional for run-data integrity; push failures must never interrupt, replace, or delete the local checkpoints and verified backup.
+Retries have new attempts and may consume more physical work; accepted results are never overwritten. Do not discard checkpoints, edit frozen inputs, or fabricate approvals to unblock resume.
 
 ## Current status and remaining blockers
 
@@ -201,7 +240,7 @@ The 200-action pathway is engineering-only. It does not amend or replace the fro
 | Rehash the original ALFWorld task/game files; reproduce both scoped identities and review every difference | Workstation operator + data reviewer |
 | Replay all six exact prefix/detour/unchanged-continuation witnesses under cap 200 and verify terminal success | Workstation operator + task reviewer; raw logs stay outside Git |
 | Verify local Ollama manifest and blobs, Q4_K_M, tokenizer revision/hash, sample tokenization, and model-tokenizer linkage | Model owner + independent reviewer |
-| Recover the genuine frozen Accum-18 library and verify its hash/18 skill IDs against the frozen manifest | Workstation operator + research engineer |
+| Recover the genuine frozen Accum-18 library and verify its hash/18 skill IDs against the authentic archive and member ledger | Workstation operator + research engineer |
 | Rehash the pinned Sentence-BERT snapshot and validate Python/ALFWorld runtime without installing unapproved software | Workstation operator |
 | Complete the candidate-bound engineering-only GPU approval; this is not scientific Option B approval | Authorized authors |
 | Verify four isolated Ollama workers and actual process-to-GPU UUID placement; smoke test before episode scheduling | Workstation operator |
