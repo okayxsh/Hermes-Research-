@@ -121,7 +121,7 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--transferred-audit", type=Path, required=True)
     item.add_argument("--model-proposal", type=Path, required=True)
     item.add_argument("--output", type=Path, required=True)
-    item = feasibility_actions.add_parser("reference-library", help="Verify the exact Accum-18 file against a genuine frozen manifest.")
+    item = feasibility_actions.add_parser("reference-library", help="Verify Accum-18 against the pinned historical archive and original member ledger.")
     item.add_argument("--library", type=Path, required=True)
     item.add_argument("--frozen-manifest", type=Path)
     item.add_argument("--archive", type=Path)

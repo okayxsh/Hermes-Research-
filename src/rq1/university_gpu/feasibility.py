@@ -577,45 +577,18 @@ def freeze_engineering_manifest(
 
 def build_accum18_reference(library_path: Path, frozen_manifest_path: Path | None = None, *,
                             archive_path: Path | None = None, archive_manifest_path: Path | None = None) -> dict[str, Any]:
-    """Bind a supplied library to a genuinely frozen repository manifest."""
-    from rq1.university_gpu.manifest import validate_manifest
-
+    """Bind Accum-18 only to the pinned historical archive and member ledger."""
     if archive_path is not None or archive_manifest_path is not None:
         if frozen_manifest_path is not None or archive_path is None or archive_manifest_path is None:
             raise FeasibilityError("supply either frozen manifest or both historical archive and member ledger")
         return _historical_accum18_reference(library_path, archive_path, archive_manifest_path)
-    if frozen_manifest_path is None:
-        raise FeasibilityError("authentic historical archive/member ledger or frozen manifest is required")
-    source_manifest = load_json(frozen_manifest_path)
-    issues = validate_manifest(source_manifest, require_frozen=True)
-    if issues:
-        raise FeasibilityError("source manifest is not an approved frozen university-GPU manifest: " + "; ".join(issues))
-    ids, _texts, _library = __import__("rq1.university_gpu.ops", fromlist=["_library_payload"])._library_payload(library_path)
-    observed = sha256_file(library_path)
-    expected = source_manifest.get("inputs", {}).get("library_sha256")
-    if observed != expected:
-        raise FeasibilityError("supplied Accum-18 file hash differs from the frozen source manifest")
-    if ids != source_manifest.get("library_skill_ids"):
-        raise FeasibilityError("supplied Accum-18 skill IDs differ from the frozen source manifest")
-    reference: dict[str, Any] = {
-        "schema": "rq1-accum18-frozen-reference-v1", "status": "verified_frozen",
-        "library_file_sha256": observed, "skill_count": len(ids), "skill_ids": sorted(ids),
-        "source_kind": "university_manifest",
-        "source_frozen_manifest_path": str(frozen_manifest_path.resolve()),
-        "source_frozen_manifest": frozen_manifest_path.name,
-        "source_frozen_manifest_sha256": sha256_file(frozen_manifest_path),
-        "source_commit": source_manifest.get("source_commit"),
-    }
-    reference["reference_sha256"] = content_hash(reference)
-    return reference
+    raise FeasibilityError("Accum-18 provenance requires the pinned historical archive and original member ledger")
 
 
 def verify_accum18_reference(library_path: Path, reference: Mapping[str, Any]) -> None:
     if reference.get("source_kind") == "historical_archive":
         actual = build_accum18_reference(library_path, archive_path=Path(str(reference.get("archive_path", ""))),
                                          archive_manifest_path=Path(str(reference.get("archive_manifest_path", ""))))
-    elif reference.get("source_kind") == "university_manifest":
-        actual = build_accum18_reference(library_path, Path(str(reference.get("source_frozen_manifest_path", ""))))
     else:
         raise FeasibilityError("Accum-18 reference lacks authenticated source ancestry")
     if actual != reference:

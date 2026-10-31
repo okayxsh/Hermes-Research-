@@ -215,6 +215,62 @@ class ProvenanceRegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(f.FeasibilityError, "existing regular"):
             f.build_accum18_reference(self.library, archive_path=self.archive, archive_manifest_path=self.ledger)
 
+    def test_self_attested_frozen_manifest_cannot_anchor_library_reference(self):
+        fabricated_manifest = self.base / "fabricated-frozen-manifest.json"
+        self.write(fabricated_manifest, {"status": "engineering_frozen", "inputs": {
+            "library_sha256": sha256_file(self.library)}, "library_skill_ids": [
+                f"fixture-{i:02}" for i in range(18)]})
+        with self.assertRaisesRegex(f.FeasibilityError, "pinned historical archive"):
+            f.build_accum18_reference(self.library, fabricated_manifest)
+        fabricated_reference = {
+            "schema": "rq1-accum18-frozen-reference-v1", "status": "verified_frozen",
+            "source_kind": "university_manifest", "source_frozen_manifest_path": str(fabricated_manifest),
+            "library_file_sha256": sha256_file(self.library), "skill_count": 18,
+            "skill_ids": [f"fixture-{i:02}" for i in range(18)],
+        }
+        fabricated_reference["reference_sha256"] = content_hash(fabricated_reference)
+        with self.assertRaisesRegex(f.FeasibilityError, "lacks authenticated source ancestry"):
+            f.verify_accum18_reference(self.library, fabricated_reference)
+
+    def test_substituted_archive_and_invalid_skill_sets_fail(self):
+        original = load_json(self.library)
+        with patch.object(f, "HISTORICAL_EVALUATION_ARCHIVE_SHA256", ""):
+            with self.assertRaisesRegex(f.FeasibilityError, "archive hash differs"):
+                f.build_accum18_reference(self.library, archive_path=self.archive, archive_manifest_path=self.ledger)
+        for mutation in ("text", "duplicate", "missing"):
+            with self.subTest(mutation=mutation):
+                payload = copy.deepcopy(original)
+                skills = payload["libraries"]["Accum-18"]["skills"]
+                if mutation == "text":
+                    skills[0]["text"] = "altered text"
+                elif mutation == "duplicate":
+                    skills[1]["skill_id"] = skills[0]["skill_id"]
+                else:
+                    skills.pop()
+                self.write(self.library, payload)
+                data = self.library.read_bytes()
+                with tarfile.open(self.archive, "w:gz") as archive:
+                    member = tarfile.TarInfo(f.HISTORICAL_LIBRARY_MEMBER)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+                self.write(self.ledger, {"archive_sha256": sha256_file(self.archive), "members": [
+                    {"path": f.HISTORICAL_LIBRARY_MEMBER, "sha256": sha256_file(self.library), "size": len(data)}]})
+                with self.assertRaisesRegex(f.FeasibilityError, "archive hash differs"):
+                    f.build_accum18_reference(self.library, archive_path=self.archive, archive_manifest_path=self.ledger)
+                if mutation != "text":
+                    with patch.object(f, "HISTORICAL_EVALUATION_ARCHIVE_SHA256", sha256_file(self.archive)):
+                        with self.assertRaisesRegex(f.FeasibilityError, "18 distinct IDs"):
+                            f.build_accum18_reference(self.library, archive_path=self.archive, archive_manifest_path=self.ledger)
+
+    def test_resume_asset_validation_rejects_altered_reference(self):
+        frozen = self.freeze()
+        reference = load_json(self.reference)
+        reference["source_kind"] = "university_manifest"
+        reference["reference_sha256"] = content_hash({k: v for k, v in reference.items() if k != "reference_sha256"})
+        self.write(self.reference, reference)
+        with self.assertRaises(f.FeasibilityError):
+            f.verify_frozen_feasibility_assets(self.repo, self.config, frozen)
+
     def test_tokenizer_revision_mismatch_fails_freeze_and_preflight(self):
         self.identity_review["tokenizer_revision"] = "a" * 40
         with self.assertRaisesRegex(f.FeasibilityError, "review does not bind"):
