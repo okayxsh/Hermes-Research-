@@ -96,7 +96,10 @@ class FakeWorker:
         if self.delay:
             time.sleep(self.delay)
         if self.fail_first and self.attempts[key] == 1:
-            raise RuntimeError("mock infrastructure interruption")
+            error = RuntimeError("mock infrastructure interruption before any mutation")
+            error.safe_to_continue = True
+            error.mutation_state_known = True
+            raise error
         return {"unit_key": key, "attempt_id": attempt_id, "status": "completed", "task_id": unit["task_id"],
                 "task_family": unit["task_family"], "condition": unit["condition"], "seed": unit["seed"],
                 "recovery_success": unit["condition"] in {"D18", "Rel", "Gate"},
@@ -357,6 +360,121 @@ class UniversityGpuExecutionTests(unittest.TestCase):
         self.assertEqual(len(attempts), 72)
         self.assertEqual(len({event["attempt_id"] for event in attempts}), 72)
         self.assertTrue(any(event["event"] == "attempt_failed" and event["task_id"] for event in events))
+
+    def test_resume_requires_explicit_retry_for_nonterminal_attempt(self) -> None:
+        self.store.initialize()
+        unit = self.store.manifest["units"][0]
+        key = str(unit["unit_key"])
+        attempt_id = "orphanattempt0001"
+        attempt_dir = self.store.path(Path("attempts") / key / f"001-{attempt_id}")
+        attempt_dir.mkdir(parents=True)
+        self.store.append_event({
+            "event": "attempt_started", "unit_key": key, "attempt_id": attempt_id,
+            "attempt_number": 1, "worker_id": "orphaned-worker", "task_id": unit.get("task_id"),
+            "task_family": unit.get("task_family"), "seed": unit.get("seed"),
+            "condition": unit.get("condition"), "attempt_dir": str(attempt_dir),
+        })
+        before = self.store.event_rows()
+        worker = FakeWorker("resume")
+        with self.assertRaisesRegex(SchedulerError, "may have physically run.*--retry-failed"):
+            Coordinator(self.store, [worker]).run(
+                resume=True, max_attempts=1, storage_minimum_bytes=0, minimum_start_seconds=0)
+        self.assertEqual(worker.attempts, {})
+        self.assertEqual(self.store.event_rows(), before)
+        self.assertEqual(list(self.store.results_dir.glob("*.json")), [])
+        self.assertTrue(attempt_dir.is_dir())
+
+        retry_worker = FakeWorker("retry")
+        outcome = Coordinator(self.store, [retry_worker]).run(
+            resume=True, retry_failed=True, max_attempts=1,
+            storage_minimum_bytes=0, minimum_start_seconds=0)
+        self.assertEqual(outcome["completed_units"], 1)
+        self.assertEqual(list(retry_worker.attempts), [key])
+        attempts = [event for event in self.store.event_rows()
+                    if event["event"] == "attempt_started" and event["unit_key"] == key]
+        self.assertEqual([event["attempt_number"] for event in attempts], [1, 2])
+        self.assertEqual(len({event["attempt_id"] for event in attempts}), 2)
+
+    def test_retry_failed_requires_known_safe_failure_state(self) -> None:
+        class UnknownMutationWorker(FakeWorker):
+            def __init__(self, worker_id: str, *, safe_to_continue=None, mutation_state_known=None) -> None:
+                super().__init__(worker_id)
+                self.safe_to_continue = safe_to_continue
+                self.mutation_state_known = mutation_state_known
+                self.calls = 0
+
+            def execute(self, unit, attempt_dir, attempt_id):
+                self.calls += 1
+                error = RuntimeError("mock failure with unknown mutation state")
+                if self.safe_to_continue is not None:
+                    error.safe_to_continue = self.safe_to_continue
+                if self.mutation_state_known is not None:
+                    error.mutation_state_known = self.mutation_state_known
+                raise error
+
+        for index, (safe, known) in enumerate(((None, None), (True, None), (None, True),
+                                               (False, True), (True, False), (False, False))):
+            with self.subTest(safe_to_continue=safe, mutation_state_known=known):
+                store = RunStore(self.root / f"unknown-mutation-{index}", self.manifest)
+                first = Coordinator(store, [UnknownMutationWorker("first")]).run(
+                    max_attempts=1, storage_minimum_bytes=0, minimum_start_seconds=0)
+                self.assertEqual(first["completed_units"], 0)
+                started = [event for event in store.event_rows() if event["event"] == "attempt_started"]
+                self.assertEqual(len(started), 1)
+                resume_worker = UnknownMutationWorker("resume")
+                with self.assertRaisesRegex(SchedulerError,
+                                            "safe_to_continue=true and mutation_state_known=true"):
+                    Coordinator(store, [resume_worker]).run(
+                        resume=True, retry_failed=True, max_attempts=1,
+                        storage_minimum_bytes=0, minimum_start_seconds=0)
+                self.assertEqual(resume_worker.calls, 0)
+                self.assertEqual([event for event in store.event_rows()
+                                  if event["event"] == "attempt_started"], started)
+                self.assertEqual(list(store.results_dir.glob("*.json")), [])
+
+    def test_cutoff_during_active_unit_accepts_result_and_starts_no_new_work(self) -> None:
+        class ControlledWorker(FakeWorker):
+            def __init__(self) -> None:
+                super().__init__("controlled")
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.calls = 0
+
+            def execute(self, unit, attempt_dir, attempt_id):
+                self.calls += 1
+                self.started.set()
+                if not self.release.wait(timeout=10):
+                    raise RuntimeError("test worker was not released")
+                return super().execute(unit, attempt_dir, attempt_id)
+
+        clock = {"now": 1000.0}
+        worker = ControlledWorker()
+        captured = {}
+
+        def execute_run():
+            captured["outcome"] = Coordinator(self.store, [worker]).run(
+                cutoff_epoch=3000.0, minimum_start_seconds=1800, storage_minimum_bytes=0,
+                heartbeat_seconds=0.01)
+
+        with patch("rq1.university_gpu.scheduler.time.time", side_effect=lambda: clock["now"]):
+            thread = threading.Thread(target=execute_run)
+            self.addCleanup(lambda: (worker.release.set(), thread.join(5)))
+            thread.start()
+            self.assertTrue(worker.started.wait(5))
+            self.assertEqual(worker.calls, 1)
+            clock["now"] = 3001.0
+            worker.release.set()
+            thread.join(10)
+
+        self.assertFalse(thread.is_alive())
+        outcome = captured["outcome"]
+        self.assertEqual(outcome["completed_units"], 1)
+        self.assertEqual(outcome["attempts_started"], 1)
+        self.assertTrue(outcome["cutoff_reached"])
+        self.assertEqual(outcome["active_workers_at_return"], 0)
+        self.assertEqual(worker.calls, 1)
+        self.assertEqual(len(self.store.completed()), 1)
+        self.assertFalse((self.run_root / "STOP").exists())
 
     def test_safe_stop_waits_for_active_unit_and_cutoff_starts_none(self) -> None:
         coordinator = Coordinator(self.store, [FakeWorker("slow", delay=0.25)])

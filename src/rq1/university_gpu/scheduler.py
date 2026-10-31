@@ -449,12 +449,17 @@ class Coordinator:
             rows = self.store.event_rows()
             attempts: dict[str, int] = {}
             latest: dict[str, str] = {}
+            latest_failure: dict[str, dict[str, Any]] = {}
             for row in rows:
                 if row.get("event") == "attempt_started":
                     key = str(row["unit_key"])
                     attempts[key] = attempts.get(key, 0) + 1
                     latest[key] = "running"
-                elif row.get("event") in {"attempt_failed", "unit_completed", "recovered_authoritative_result"}:
+                elif row.get("event") == "attempt_failed":
+                    key = str(row["unit_key"])
+                    latest[key] = "attempt_failed"
+                    latest_failure[key] = row
+                elif row.get("event") in {"unit_completed", "recovered_authoritative_result"}:
                     latest[str(row["unit_key"])] = str(row["event"])
             completed = self.store.completed()
             completion_events = {str(row["unit_key"]) for row in rows
@@ -511,8 +516,31 @@ class Coordinator:
                 if key in completed:
                     continue
                 state = latest.get(key)
-                if state == "attempt_failed" and not retry_failed:
-                    continue
+                if state == "running" and not retry_failed:
+                    if backup_failed:
+                        # A startup durability error already blocks every start, and the
+                        # coordinator will return its durability_failed outcome with zero
+                        # attempts. Do not mask that outcome with the nonterminal-attempt
+                        # guard, and do not queue this unit.
+                        continue
+                    # Fail closed: an attempt_started event without a terminal event may
+                    # describe an attempt that physically ran. Do not silently reschedule
+                    # it on resume; an operator must inspect and explicitly opt in.
+                    raise SchedulerError(
+                        "latest event for "
+                        f"{key} is attempt_started with no terminal event; the attempt may "
+                        "have physically run and requires inspection plus explicit "
+                        "--retry-failed before it can be scheduled again")
+                if state == "attempt_failed":
+                    if not retry_failed:
+                        continue
+                    failure = latest_failure.get(key) or {}
+                    if (failure.get("safe_to_continue") is not True
+                            or failure.get("mutation_state_known") is not True):
+                        raise SchedulerError(
+                            "retry_failed requires the latest attempt_failed event for "
+                            f"{key} to record safe_to_continue=true and "
+                            "mutation_state_known=true; manual recovery is required")
                 pending.append(unit)
             active: dict[Future[Mapping[str, Any]], tuple[EpisodeWorker, Mapping[str, Any], str, Path, float]] = {}
             free_workers = list(self.workers)

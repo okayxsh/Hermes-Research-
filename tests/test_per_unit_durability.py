@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import errno
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -62,6 +65,29 @@ class PerUnitDurabilityTests(unittest.TestCase):
                 self.assertEqual(first["completed_units"], count)
                 self.assertEqual(first["checkpointed_units"], count)
                 hashes = {key: value["result_sha256"] for key, value in store.completed().items()}
+
+                destination = self.base / f"feasibility-{count}-export"
+                exported = export_progress(ROOT, store.root, store.manifest_path, destination)
+                self.assertFalse(exported["complete"])
+                self.assertEqual(exported["completed"], count)
+                expected_results = [store.completed()[str(unit["unit_key"])]["result"]
+                                    for unit in manifest["units"]
+                                    if str(unit["unit_key"]) in store.completed()]
+                self.assertEqual([json.loads(line) for line in (destination / "results.jsonl")
+                                  .read_text(encoding="utf-8").splitlines()], expected_results)
+                copied_destination = self.base / f"feasibility-{count}-export-copy"
+                shutil.copytree(destination, copied_destination)
+                environment = dict(os.environ, PYTHONPATH=str(copied_destination / "analysis-src"))
+                checked = subprocess.run(
+                    [sys.executable, "-B", "-m", "rq1.cli", "university-gpu", "verify-export",
+                     "--destination", str(copied_destination)],
+                    cwd=copied_destination / "analysis-src", env=environment,
+                    capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                verified_copy = verify_progress(copied_destination)
+                self.assertFalse(verified_copy["complete"])
+                self.assertEqual(verified_copy["completed"], count)
+
                 resumed = coordinator.run(resume=True, max_attempts=1, storage_minimum_bytes=0, minimum_start_seconds=0)
                 self.assertEqual(resumed["completed_units"], count + 1)
                 self.assertEqual(resumed["checkpointed_units"], count + 1)
@@ -234,7 +260,71 @@ class PerUnitDurabilityTests(unittest.TestCase):
         self.assertNotEqual(resumed["status"], "durability_failed")
         self.assertEqual(resumed["execution_status"], "completed")
         self.assertEqual({key: value["result_sha256"] for key, value in store.completed().items()}, before)
-        self.assertEqual(len(list((store.root / "backups").glob("checkpoint-0012-*"))), 1)
+        final_snapshots = list((store.root / "backups").glob("checkpoint-0012-*"))
+        self.assertEqual(len(final_snapshots), 1)
+        final_snapshot = final_snapshots[0]
+        final_manifest = load_json(final_snapshot / "CHECKPOINT-MANIFEST.json")
+
+        again = coordinator.run(
+            resume=True, max_attempts=1, storage_minimum_bytes=0, minimum_start_seconds=0,
+            heartbeat_seconds=0.01,
+        )
+        self.assertEqual(again["attempts_started"], 0)
+        self.assertEqual(again["completed_units"], 12)
+        self.assertEqual(again["full_snapshot_status"], "succeeded")
+        self.assertNotEqual(again["status"], "durability_failed")
+        self.assertEqual({key: value["result_sha256"] for key, value in store.completed().items()}, before)
+        self.assertEqual(list((store.root / "backups").glob("checkpoint-0012-*")), [final_snapshot])
+        self.assertEqual(load_json(final_snapshot / "CHECKPOINT-MANIFEST.json"), final_manifest)
+
+    def test_corrupt_same_count_full_snapshot_fails_closed(self):
+        from rq1.university_gpu.snapshot import backup_checkpoint
+        for index, mutation in enumerate(("metadata", "file")):
+            with self.subTest(mutation=mutation):
+                store = RunStore(self.base / f"corrupt-full-snapshot-{index}", self.manifest)
+                Coordinator(store, [FakeWorker("worker")]).run(
+                    max_attempts=10, storage_minimum_bytes=0, minimum_start_seconds=0)
+                snapshots = list((store.root / "backups").glob("checkpoint-0010-*"))
+                self.assertEqual(len(snapshots), 1)
+                snapshot = snapshots[0]
+                metadata = snapshot / "CHECKPOINT-MANIFEST.json"
+                if mutation == "metadata":
+                    before = metadata.read_bytes()
+                    metadata.write_text("{malformed", encoding="utf-8")
+                else:
+                    report = load_json(metadata)
+                    victim = snapshot / report["files"][0]["path"]
+                    before = victim.read_bytes()
+                    victim.write_bytes(before + b"tampered")
+                with self.assertRaises(SnapshotError):
+                    backup_checkpoint(store)
+                self.assertEqual(list((store.root / "backups").glob("checkpoint-0010-*")), [snapshot])
+                if mutation == "metadata":
+                    self.assertEqual(metadata.read_bytes(), b"{malformed")
+                else:
+                    self.assertEqual((snapshot / report["files"][0]["path"]).read_bytes(),
+                                     before + b"tampered")
+
+    def test_valid_stale_same_count_full_snapshot_is_preserved_beside_new_bundle(self):
+        from rq1.university_gpu.snapshot import backup_checkpoint
+        self.run_limited(10)
+        snapshots = list((self.store.root / "backups").glob("checkpoint-0010-*"))
+        self.assertEqual(len(snapshots), 1)
+        stale = snapshots[0]
+        stale_manifest = load_json(stale / "CHECKPOINT-MANIFEST.json")
+        key, envelope = next(iter(self.store.completed().items()))
+        event_path = self.store.append_event({
+            "event": "attempt_heartbeat", "unit_key": key,
+            "attempt_id": envelope["attempt_id"], "worker_id": envelope["worker_id"]})
+        current = backup_checkpoint(self.store)
+        self.assertNotEqual(current, stale)
+        self.assertEqual(sorted((self.store.root / "backups").glob("checkpoint-0010-*")),
+                         sorted([stale, current]))
+        self.assertEqual(load_json(stale / "CHECKPOINT-MANIFEST.json"), stale_manifest)
+        event_rel = event_path.relative_to(self.store.root).as_posix()
+        self.assertNotIn(event_rel, {row["path"] for row in stale_manifest["files"]})
+        current_manifest = load_json(current / "CHECKPOINT-MANIFEST.json")
+        self.assertIn(event_rel, {row["path"] for row in current_manifest["files"]})
 
     def test_checkpoint_metadata_cannot_omit_a_raw_trace_even_with_rehashed_metadata(self):
         fixture = evidence_fixtures.EvidenceRegressionTests("test_valid_partial_export_is_portable_and_resume_keeps_authority")

@@ -209,22 +209,8 @@ def backup_completed_unit(store: RunStore, unit_key: str) -> Path:
         raise
 
 
-def backup_checkpoint(store: RunStore) -> Path:
-    """Copy immutable authority files while the coordinator is the sole writer.
-
-    Interrupted copies stay under a visibly incomplete `.partial-*` name for
-    diagnosis. They are never promoted to a checkpoint and are excluded from
-    verified exports.
-    """
-    try:
-        parent = store.path("backups")
-    except SchedulerError as exc:
-        raise SnapshotError("backup destination escapes or traverses the run root") from exc
-    parent.mkdir(exist_ok=True)
-    token = uuid4().hex
-    temporary = store.path(Path("backups") / f".partial-{token}")
-    temporary.mkdir()
-    files = []
+def _full_snapshot_inputs(store: RunStore) -> tuple[list[Path], list[str], dict[str, dict], dict[str, dict]]:
+    """Collect the closed immutable sources a full snapshot would contain."""
     # Only the coordinator publishes terminal events. Active workers may still
     # append traces, so do not traverse their directories at all.
     events = store.event_rows()
@@ -254,13 +240,126 @@ def backup_checkpoint(store: RunStore) -> Path:
                 closed_sources.append(path)
     sources = [store.manifest_path, *sorted(store.events_dir.glob("*.json")),
                *sorted(store.results_dir.glob("*.json")), *closed_sources]
+    return sources, sorted(closed_ids), starts, completed
+
+
+def _source_inventory(sources: list[Path], store: RunStore) -> dict[str, dict]:
+    """Hash the current source files that a fresh snapshot would publish."""
+    inventory: dict[str, dict] = {}
     for source in sources:
         if source.is_symlink() or not source.is_file():
             raise SnapshotError(f"invalid checkpoint source: {source}")
+        try:
+            rel = source.relative_to(store.root)
+        except ValueError as exc:
+            raise SnapshotError(f"checkpoint source escapes the run: {source}") from exc
+        key = rel.as_posix()
+        if key in inventory:
+            raise SnapshotError(f"duplicate checkpoint source: {key}")
+        inventory[key] = {"sha256": sha256_file(source), "bytes": source.stat().st_size}
+    return inventory
+
+
+def _verify_full_snapshot(store: RunStore, destination: Path, completed_count: int,
+                          expected_inventory: dict[str, dict]) -> str:
+    """Validate one published full bundle and report whether it is current.
+
+    Internal inconsistency is corruption and fails closed. A bundle whose own
+    inventory is valid but differs from the current closed sources is stale and
+    may remain beside a newly published create-only bundle.
+    """
+    if destination.is_symlink() or not destination.is_dir():
+        raise SnapshotError(f"full snapshot is missing or unsafe: {destination}")
+    manifest_path = destination / "CHECKPOINT-MANIFEST.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise SnapshotError(f"full snapshot manifest is missing or unsafe: {destination}")
+    try:
+        report = load_json(manifest_path)
+    except (OSError, ValueError) as exc:
+        raise SnapshotError(f"full snapshot manifest is malformed: {destination}") from exc
+    if (not isinstance(report, dict) or report.get("schema") != "rq1-authority-checkpoint-v1"
+            or report.get("run_id") != store.run_id or report.get("completed") != completed_count):
+        raise SnapshotError(f"full snapshot identity or completed count mismatch: {destination}")
+    files = report.get("files")
+    if not isinstance(files, list) or report.get("files_sha256") != content_hash(files):
+        raise SnapshotError(f"full snapshot metadata hash mismatch: {destination}")
+    listed: dict[str, dict] = {}
+    for item in files:
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("invalid file row")
+            rel = PurePosixPath(item["path"])
+            if rel.is_absolute() or not rel.parts or any(part in {".", ".."} for part in rel.parts):
+                raise ValueError("unsafe relative path")
+            key = rel.as_posix()
+            if key in listed:
+                raise ValueError("duplicate snapshot path")
+            cursor = destination
+            for part in rel.parts:
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    raise ValueError("symlink in snapshot path")
+            target = destination.joinpath(*rel.parts)
+            target.resolve(strict=True).relative_to(destination.resolve())
+            if (target.is_symlink() or not target.is_file()
+                    or target.stat().st_size != item["bytes"] or sha256_file(target) != item["sha256"]):
+                raise ValueError("missing or corrupt snapshot file")
+            listed[key] = {"sha256": item["sha256"], "bytes": item["bytes"]}
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            raise SnapshotError(f"full snapshot file missing, unsafe or corrupt: {destination}") from exc
+    entries = list(destination.rglob("*"))
+    if any(path.is_symlink() for path in entries):
+        raise SnapshotError(f"full snapshot contains a symlink: {destination}")
+    actual = {path.relative_to(destination).as_posix() for path in entries if path.is_file()}
+    if actual != set(listed) | {"CHECKPOINT-MANIFEST.json"}:
+        raise SnapshotError(f"full snapshot file inventory is incomplete or contains extras: {destination}")
+    return "current" if listed == expected_inventory else "stale"
+
+
+def _reusable_full_snapshot(store: RunStore, parent: Path, completed_count: int,
+                            expected_inventory: dict[str, dict]) -> Path | None:
+    """Verify same-count bundles; reuse a current one, never overwrite any."""
+    prefix = f"checkpoint-{completed_count:04d}-"
+    current = None
+    for candidate in sorted(parent.iterdir()):
+        if not candidate.name.startswith(prefix):
+            continue
+        state = _verify_full_snapshot(store, candidate, completed_count, expected_inventory)
+        if state == "current" and current is None:
+            current = candidate
+    return current
+
+
+def backup_checkpoint(store: RunStore) -> Path:
+    """Copy immutable authority files while the coordinator is the sole writer.
+
+    Interrupted copies stay under a visibly incomplete `.partial-*` name for
+    diagnosis. They are never promoted to a checkpoint and are excluded from
+    verified exports. A valid current bundle for the same run and completed
+    count is reused; a stale bundle is left intact beside a new create-only
+    bundle; a corrupt same-count bundle fails closed.
+    """
+    try:
+        parent = store.path("backups")
+    except SchedulerError as exc:
+        raise SnapshotError("backup destination escapes or traverses the run root") from exc
+    parent.mkdir(exist_ok=True)
+    sources, closed_ids, starts, completed = _full_snapshot_inputs(store)
+    expected_inventory = _source_inventory(sources, store)
+    reusable = _reusable_full_snapshot(store, parent, len(completed), expected_inventory)
+    if reusable is not None:
+        return reusable
+    token = uuid4().hex
+    temporary = store.path(Path("backups") / f".partial-{token}")
+    temporary.mkdir()
+    files = []
+    for source in sources:
         rel = source.relative_to(store.root)
         target = temporary / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         digest = sha256_file(source)
+        if expected_inventory[rel.as_posix()] != {"sha256": digest, "bytes": source.stat().st_size}:
+            raise SnapshotError(f"checkpoint source changed before copy: {rel}")
         shutil.copy2(source, target)
         if sha256_file(source) != digest or sha256_file(target) != digest:
             raise SnapshotError(f"checkpoint copy changed: {rel}")
@@ -269,8 +368,8 @@ def backup_checkpoint(store: RunStore) -> Path:
               "completed": len(completed), "files": files, "files_sha256": content_hash(files),
               "attempt_evidence_scope": "completed_attempts_only",
               "limitations": ["Failed attempts may still have live timed-out writers; retained in stopped export only"],
-              "closed_attempt_ids": sorted(closed_ids),
-              "omitted_open_attempt_ids": sorted(set(starts) - closed_ids)}
+              "closed_attempt_ids": closed_ids,
+              "omitted_open_attempt_ids": sorted(set(starts) - set(closed_ids))}
     atomic_write_json(temporary / "CHECKPOINT-MANIFEST.json", report, overwrite=False)
     destination = store.path(Path("backups") / f"checkpoint-{report['completed']:04d}-{token}")
     _fsync_checkpoint_tree(temporary)
