@@ -28,6 +28,7 @@ from rq1.skills.library import TASK_FAMILIES
 from rq1.tasks.discovery import discover_tasks
 from rq1.university_gpu.interventions import LocalGemmaTokenizer, TokenizerIdentity
 from rq1.university_gpu.models import atomic_write_json, content_hash, load_json, sha256_file
+from rq1.utils.process_safety import require_posix_process_management
 
 PROFILE_ID = "rq1-feasibility-200-v1"
 SCHEMA = "rq1-feasibility-execution-manifest-v1"
@@ -1266,6 +1267,7 @@ def run_feasibility_launch(
         raise FeasibilityError("a real university access cutoff at least 30 minutes away is required")
     if int(config.get("worker_count", 0)) != 4:
         raise FeasibilityError("feasibility launch requires four isolated GPU workers")
+    require_posix_process_management("GPU feasibility launch/resume/stop")
     verified = verify_frozen_feasibility_assets(root, config, manifest)
 
     from rq1.university_gpu.hardware import machine_report as default_machine_report

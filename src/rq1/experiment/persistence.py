@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from rq1.experiment.models import ExperimentUnit, canonical_hash, canonical_json
+from rq1.utils.process_safety import require_posix_process_management
 from rq1.utils.time import utc_now
 
 
@@ -170,6 +171,7 @@ class ExperimentLock(AbstractContextManager["ExperimentLock"]):
         return self
 
     def _stale(self) -> bool:
+        require_posix_process_management("experiment-lock resume")
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if payload.get("hostname") != socket.gethostname():

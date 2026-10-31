@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from rq1.experiment.models import RunFailure
 from rq1.university_gpu.scheduler import SchedulerError
+from rq1.utils.process_safety import require_posix_process_management
 
 
 class WorkerProcessClient:
@@ -45,6 +46,7 @@ class WorkerProcessClient:
             raise SchedulerError(f"timed out waiting for worker {label}") from exc
 
     def start(self, *, timeout: float = 900) -> dict[str, Any]:
+        require_posix_process_management("GPU worker start")
         if self.process is not None and self.process.poll() is None:
             raise SchedulerError(f"worker process already running: {self.worker_id}")
         env = os.environ.copy()
@@ -105,6 +107,7 @@ class WorkerProcessClient:
         if self.process is None:
             return
         if self.process.poll() is None:
+            require_posix_process_management("GPU worker stop")
             try:
                 if self.process.stdin is not None:
                     self.process.stdin.write('{"command":"shutdown"}\n')

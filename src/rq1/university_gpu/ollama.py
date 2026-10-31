@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 
 from rq1.university_gpu.manifest import MODEL_DIGEST, MODEL_QUANTIZATION, MODEL_TAG
 from rq1.university_gpu.models import GPUDevice, WorkerSpec
+from rq1.utils.process_safety import require_posix_process_management
 
 
 class OllamaError(RuntimeError):
@@ -95,6 +96,7 @@ class OllamaServer:
     log_handle: Any = None
 
     def start(self, *, runner: Any = subprocess.Popen) -> dict[str, Any]:
+        require_posix_process_management("Ollama worker start")
         if self.process is not None and self.process.poll() is None:
             raise OllamaError(f"server for {self.spec.worker_id} is already running")
         self.spec.worker_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +119,7 @@ class OllamaServer:
 
     def stop(self, *, timeout: float = 10) -> None:
         if self.process is not None and self.process.poll() is None:
+            require_posix_process_management("Ollama worker stop")
             self.process.terminate()
             try:
                 self.process.wait(timeout=timeout)

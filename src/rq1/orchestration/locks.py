@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from rq1.utils.process_safety import require_posix_process_management
+
 
 class StageLock:
     def __init__(self, path: Path) -> None:
@@ -24,6 +26,7 @@ class StageLock:
 
     def _stale(self) -> bool:
         """Return true only when a recorded local process definitely no longer exists."""
+        require_posix_process_management("stage-lock resume")
         try:
             pid = int(self.path.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):

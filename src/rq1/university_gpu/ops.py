@@ -36,6 +36,7 @@ from rq1.skills.library import TASK_FAMILIES
 from rq1.university_gpu.scheduler import Coordinator, RunLock, RunStore
 from rq1.university_gpu.worker_process import WorkerProcessClient
 from rq1.university_gpu.interventions import LocalGemmaTokenizer, TokenBudgetError, TokenizerIdentity
+from rq1.utils.process_safety import require_posix_process_management
 
 
 class OperatorError(RuntimeError):
@@ -552,6 +553,7 @@ def run_design_launch(
         raise OperatorError("a concrete access deadline is required")
     if cutoff_epoch is not None and time.time() + 1800 >= cutoff_epoch:
         raise OperatorError("access deadline is within the 30-minute assignment reserve")
+    require_posix_process_management("GPU experiment launch/resume/stop")
     checked = preflight(root, config, manifest, check_endpoints=False)
     if checked["status"] != "STATIC_PASS":
         raise OperatorError("launch preflight is blocked: " + "; ".join(checked["problems"]))

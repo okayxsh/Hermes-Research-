@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from rq1.university_gpu.manifest import validate_manifest
 from rq1.university_gpu.models import atomic_write_bytes, atomic_write_json, content_hash, load_json, sha256_file
+from rq1.utils.process_safety import require_posix_process_management
 
 
 class SchedulerError(RuntimeError):
@@ -113,6 +114,7 @@ def _utc() -> str:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    require_posix_process_management("run-lock resume")
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -145,6 +147,7 @@ class RunLock:
             except FileExistsError:
                 if not self.resume:
                     raise SchedulerError(f"run is already locked: {self.path}")
+                require_posix_process_management("run-lock resume")
                 try:
                     existing = load_json(self.path)
                     same_host = existing.get("host") == socket.gethostname()
