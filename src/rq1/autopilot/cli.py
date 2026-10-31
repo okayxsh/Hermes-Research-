@@ -29,7 +29,8 @@ def command(root: Path, args) -> int:
         data=autopilot.create(plan); data=autopilot.run(plan.run_plan_id); print(json.dumps(data,indent=2,sort_keys=True)); return 0 if data["top_status"] in {"PILOT_GO","SUCCESS"} else 1
     if action=="status": print(json.dumps(autopilot.status(args.run_id),indent=2,sort_keys=True)); return 0
     if action=="logs":
-        path=root/"artifacts"/"autopilot"/args.run_id/"contingencies.jsonl"; print(path.read_text(encoding="utf-8") if path.is_file() else ""); return 0
+        from rq1.autopilot.state import contingency_path
+        path=contingency_path(root,args.run_id); print(path.read_text(encoding="utf-8") if path.is_file() else ""); return 0
     if action=="resume": print(json.dumps(autopilot.run(args.run_id),indent=2,sort_keys=True)); return 0
     if action=="stop": print(json.dumps(autopilot.stop(args.run_id),indent=2,sort_keys=True)); return 0
     raise RuntimeError("Unknown autopilot command")

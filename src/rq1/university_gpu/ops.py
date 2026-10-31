@@ -28,6 +28,8 @@ from rq1.university_gpu.manifest import (
     build_manifest,
     freeze_manifest,
     validate_manifest,
+    resolve_run_root,
+    ManifestError,
 )
 from rq1.university_gpu.models import GPUDevice, atomic_write_json, content_hash, load_json, sha256_file
 from rq1.university_gpu.ollama import OllamaServer, probe_endpoint, worker_specs
@@ -554,11 +556,15 @@ def run_design_launch(
     if cutoff_epoch is not None and time.time() + 1800 >= cutoff_epoch:
         raise OperatorError("access deadline is within the 30-minute assignment reserve")
     require_posix_process_management("GPU experiment launch/resume/stop")
+    try:
+        output_root = Path(str(config["run_output_dir"])).expanduser()
+        run_root = resolve_run_root(output_root, manifest.get("run_id"))
+    except (KeyError, ManifestError, OSError, RuntimeError) as exc:
+        raise OperatorError(f"unsafe or invalid run output path: {exc}") from exc
     checked = preflight(root, config, manifest, check_endpoints=False)
     if checked["status"] != "STATIC_PASS":
         raise OperatorError("launch preflight is blocked: " + "; ".join(checked["problems"]))
-    run_root = Path(str(config["run_output_dir"])) / str(manifest["run_id"])
-    resolved_output = Path(str(config["run_output_dir"])).expanduser().resolve()
+    resolved_output = output_root.resolve()
     try:
         resolved_output.relative_to(root.resolve())
     except ValueError:
@@ -726,6 +732,28 @@ def status(run_root: Path, manifest_path: Path) -> dict[str, Any]:
             "failed_attempts": failures, "stop_requested": stop_requested}
     if manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
         result["evidence_anchor_status"] = store.evidence_anchor_status(completed)
+    from rq1.university_gpu.snapshot import verify_unit_checkpoint
+    verified, missing, invalid = [], [], {}
+    for key in sorted(completed):
+        checkpoint = store.path(Path("backups/units") / key)
+        if not checkpoint.exists():
+            missing.append(key)
+            continue
+        try:
+            verify_unit_checkpoint(store, key)
+            verified.append(key)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            invalid[key] = str(exc)
+    checkpoint_dir = store.path("backups/units")
+    orphans = sorted(p.name for p in checkpoint_dir.iterdir()
+                     if not p.name.startswith(".partial-") and p.name not in completed) if checkpoint_dir.exists() else []
+    result["local_unit_checkpoints"] = {"verified": verified, "missing": missing, "invalid": invalid,
+                                         "orphaned": orphans, "independent_backup": "not_verified"}
+    completion_events = {str(row["unit_key"]) for row in events
+                         if row.get("event") in {"unit_completed", "recovered_authoritative_result"}}
+    result["completion_events_without_results"] = sorted(completion_events - set(completed))
+    result["durability_status"] = ("durability_failed" if missing or invalid or orphans or result["completion_events_without_results"] else
+                                   "verified_local" if completed else "not_attempted")
     return result
 
 

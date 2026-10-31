@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -54,7 +54,7 @@ EXPECTED_ADAPTER_IDENTITY = "5fd5b9193ea361d62e877e93157ab567e63a95cf2dece0859db
 EXPECTED_ARCHIVE_SHA256 = "11c8ca453ef4ceaef5dce189c976ffc09636fdc218e40e22a0803deac9e429e2"
 HISTORICAL_EVALUATION_ARCHIVE_SHA256 = "d52ed82e01a073f8c3382711d03f65916cb41ca89bc0b773e6845817bd37e4fd"
 HISTORICAL_LIBRARY_MEMBER = "rq1-evaluation-360-final/repo/artifacts/evaluation-libraries/libraries-0030f89e76c6bc4c.json"
-_RUN_ID = re.compile(r"rq1-feasibility-200-v1-[A-Za-z0-9][A-Za-z0-9._-]{2,80}\Z")
+_RUN_ID = re.compile(r"rq1-feasibility-200-v1-[A-Za-z0-9][A-Za-z0-9._-]{1,79}[A-Za-z0-9_-]\Z")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -1221,12 +1221,47 @@ def run_feasibility_benchmark(
 def bounded_run_root(output_root: Path, run_id: str) -> Path:
     if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
         raise FeasibilityError("unsafe feasibility run_id")
-    parent = output_root.expanduser().resolve()
+    expanded = output_root.expanduser()
+    absolute = expanded.absolute()
+    windows = PureWindowsPath(str(expanded))
+    if (".." in expanded.parts or ".." in windows.parts or (sys.platform != "win32" and windows.drive)
+            or any(path.is_symlink() for path in (absolute, *absolute.parents))):
+        raise FeasibilityError("unsafe or symlinked feasibility output root")
+    parent = expanded.resolve()
     raw = parent / run_id
     resolved = raw.resolve()
     if raw.is_symlink() or parent not in resolved.parents:
         raise FeasibilityError("run directory escapes approved output root")
     return resolved
+
+
+def checked_run_path(output_root: Path, run_root: Path, manifest_path: Path | None = None, *,
+                     require_existing: bool = True) -> Path:
+    """Check an operator-selected run against its explicit output root and frozen identity."""
+    if output_root.expanduser().is_symlink() or not output_root.expanduser().is_dir():
+        raise FeasibilityError("approved output root must be an existing non-symlink directory")
+    raw = run_root.expanduser()
+    if ".." in raw.parts or raw.is_symlink():
+        raise FeasibilityError("unsafe or symlinked feasibility run path")
+    expected = bounded_run_root(output_root, raw.name)
+    if raw.resolve() != expected:
+        raise FeasibilityError("run path is outside the explicitly approved output root")
+    if expected.exists() and not expected.is_dir():
+        raise FeasibilityError("feasibility run path is not a directory")
+    if require_existing and not expected.is_dir():
+        raise FeasibilityError("feasibility run directory does not exist")
+    selected = manifest_path if manifest_path is not None else expected / "manifest.json"
+    if selected.is_symlink() or not selected.is_file():
+        raise FeasibilityError("frozen manifest must be an existing non-symlink file")
+    manifest = load_json(selected)
+    if (not isinstance(manifest, Mapping) or validate_feasibility_manifest(manifest, require_frozen=True)
+            or manifest.get("run_id") != raw.name):
+        raise FeasibilityError("frozen manifest does not validate or match the selected run")
+    recorded = expected / "manifest.json"
+    if expected.is_dir():
+        if recorded.is_symlink() or not recorded.is_file() or load_json(recorded) != manifest:
+            raise FeasibilityError("run's immutable manifest differs from the selected manifest")
+    return expected
 
 
 def run_feasibility_launch(
@@ -1274,9 +1309,9 @@ def run_feasibility_launch(
     probe_fn = probe_fn or default_probe
     smoke_fn = smoke_fn or _feasibility_smoke
     placement_fn = placement_fn or capture_placement
-    output_root = Path(str(config["run_output_dir"])).expanduser().resolve()
+    output_root = Path(str(config["run_output_dir"])).expanduser()
     try:
-        output_root.relative_to(root.resolve())
+        output_root.resolve().relative_to(root.resolve())
     except ValueError:
         pass
     else:

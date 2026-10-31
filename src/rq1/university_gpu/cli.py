@@ -7,6 +7,31 @@ from pathlib import Path
 from typing import Any
 
 
+def _checked_generic_run_path(run_root: Path, manifest_path: Path | None = None, *, require_existing: bool = True) -> Path:
+    """Treat the operator-selected run directory as a boundary; validate its frozen identity."""
+    from rq1.university_gpu.manifest import validate_manifest
+    from rq1.university_gpu.models import load_json
+    raw = run_root.expanduser()
+    absolute = raw.absolute()
+    if ".." in raw.parts or any(path.is_symlink() for path in (absolute, *absolute.parents)):
+        raise ValueError("unsafe or symlinked run path")
+    resolved = raw.resolve()
+    if require_existing and not resolved.is_dir():
+        raise ValueError("run directory does not exist")
+    selected = manifest_path if manifest_path is not None else resolved / "manifest.json"
+    if selected.is_symlink() or not selected.is_file():
+        raise ValueError("run manifest must be an existing non-symlink file")
+    manifest = load_json(selected)
+    if (not isinstance(manifest, dict) or validate_manifest(manifest, require_frozen=True)
+            or manifest.get("run_id") != raw.name or raw.name in {".", ".."}):
+        raise ValueError("frozen manifest does not validate or match the selected run")
+    if resolved.exists():
+        recorded = resolved / "manifest.json"
+        if recorded.is_symlink() or not recorded.is_file() or load_json(recorded) != manifest:
+            raise ValueError("stored run manifest differs from the selected manifest")
+    return resolved
+
+
 def add_parser(subparsers: Any) -> None:
     command = subparsers.add_parser("university-gpu", help="Offline-first RQ1 university GPU execution controls.")
     actions = command.add_subparsers(dest="university_gpu_command", required=True)
@@ -163,16 +188,20 @@ def add_parser(subparsers: Any) -> None:
         item.add_argument("--cutoff-epoch", type=float, required=True)
     item = feasibility_actions.add_parser("status", help="Read feasibility run progress.")
     item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
     item.add_argument("--manifest", type=Path, required=True)
     item = feasibility_actions.add_parser("stop", help="Request cooperative stop after active episodes finish.")
     item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
     item.add_argument("--reason", default="operator requested safe stop")
     for name in ("validate-run", "merge"):
         item = feasibility_actions.add_parser(name, help="Validate stored feasibility results or write canonical merged results.")
         item.add_argument("--run-root", type=Path, required=True)
+        item.add_argument("--output-root", type=Path, required=True)
         item.add_argument("--manifest", type=Path, required=True)
     item = feasibility_actions.add_parser("export-progress", help="Export a checksummed partial or complete engineering run.")
     item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
     item.add_argument("--manifest", type=Path, required=True)
     item.add_argument("--destination", type=Path, required=True)
     item = feasibility_actions.add_parser("verify-export", help="Verify a copied feasibility export offline.")
@@ -263,19 +292,19 @@ def run(root: Path, args: argparse.Namespace) -> int:
                 _emit(value)
                 return 0 if value["run"]["status"] == "completed" else 1
             if subcommand == "status":
-                _emit(ops.status(args.run_root, args.manifest))
+                checked = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest, require_existing=False)
+                _emit(ops.status(checked, args.manifest))
                 return 0
             if subcommand == "stop":
                 from rq1.university_gpu.models import atomic_write_bytes
-                run_root = args.run_root.resolve()
-                if not run_root.is_dir() or not (run_root / "manifest.json").is_file():
-                    raise ops.OperatorError("feasibility run directory does not exist; refusing to create a stop marker")
+                run_root = feasibility.checked_run_path(args.output_root, args.run_root)
                 atomic_write_bytes(run_root / "STOP", (args.reason.strip() + "\n").encode("utf-8"))
                 _emit({"status": "STOP_REQUESTED", "run_root": run_root, "scientific_evidence": False})
                 return 0
             if subcommand in {"validate-run", "merge"}:
+                checked = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest)
                 manifest_value = load_json(args.manifest)
-                store = RunStore(args.run_root, manifest_value)
+                store = RunStore(checked, manifest_value)
                 coordinator = Coordinator(store, [type("OfflineWorker", (), {"worker_id": "feasibility-offline"})()])
                 if subcommand == "validate-run":
                     value = coordinator.validate()
@@ -285,7 +314,8 @@ def run(root: Path, args: argparse.Namespace) -> int:
                 return 0
             if subcommand == "export-progress":
                 from rq1.university_gpu.snapshot import export_progress
-                _emit(export_progress(root, args.run_root, args.manifest, args.destination))
+                checked = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest)
+                _emit(export_progress(root, checked, args.manifest, args.destination))
                 return 0
             if subcommand == "verify-export":
                 from rq1.university_gpu.snapshot import verify_progress
@@ -303,11 +333,11 @@ def run(root: Path, args: argparse.Namespace) -> int:
             return 0
         if action == "progress-report":
             from rq1.university_gpu.progress import report
-            _emit(report(args.run_root, args.manifest))
+            _emit(report(_checked_generic_run_path(args.run_root, args.manifest), args.manifest))
             return 0
         if action == "benchmark-report":
             from rq1.university_gpu.benchmark import report
-            _emit(report(args.run_root, args.manifest))
+            _emit(report(_checked_generic_run_path(args.run_root, args.manifest), args.manifest))
             return 0
         if action == "verify-export":
             from rq1.university_gpu.snapshot import verify_progress
@@ -315,7 +345,8 @@ def run(root: Path, args: argparse.Namespace) -> int:
             return 0
         if action == "export-progress":
             from rq1.university_gpu.snapshot import export_progress
-            _emit(export_progress(root, args.run_root, args.manifest, args.destination, args.relevance))
+            checked = _checked_generic_run_path(args.run_root, args.manifest)
+            _emit(export_progress(root, checked, args.manifest, args.destination, args.relevance))
             return 0
         if action == "check":
             config = ops.load_external_config(args.config) if args.config else {}
@@ -394,14 +425,13 @@ def run(root: Path, args: argparse.Namespace) -> int:
             _emit(payload)
             return 0 if payload["run"]["status"] == "completed" else 1
         if action == "stop":
-            run_root = args.run_root.resolve()
-            run_root.mkdir(parents=True, exist_ok=True)
+            run_root = _checked_generic_run_path(args.run_root)
             from rq1.university_gpu.models import atomic_write_bytes
             atomic_write_bytes(run_root / "STOP", (args.reason.strip() + "\n").encode("utf-8"))
             _emit({"status": "STOP_REQUESTED", "run_root": run_root, "reason": args.reason})
             return 0
         manifest_value = load_json(args.manifest)
-        run_root = args.run_root.resolve()
+        run_root = _checked_generic_run_path(args.run_root, args.manifest, require_existing=action != "status")
         store = RunStore(run_root, manifest_value)
         coordinator = Coordinator(store, [type("OfflineWorker", (), {"worker_id": "offline-validation"})()])
         if action == "status":

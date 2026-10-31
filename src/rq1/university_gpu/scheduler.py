@@ -10,7 +10,7 @@ import time
 from contextlib import nullcontext
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import uuid4
 
@@ -21,6 +21,33 @@ from rq1.utils.process_safety import require_posix_process_management
 
 class SchedulerError(RuntimeError):
     pass
+
+
+def _contained_run_path(root: Path, relative: str | Path) -> Path:
+    """Resolve a run-relative path and reject traversal or symlinked components."""
+    root = root.resolve()
+    rel = Path(relative)
+    windows = PureWindowsPath(str(relative))
+    if (rel.is_absolute() or rel.drive or windows.is_absolute() or windows.drive or not rel.parts
+            or any(part in {".", ".."} for part in rel.parts)
+            or any(part in {".", ".."} for part in windows.parts)):
+        raise SchedulerError(f"unsafe run-relative path: {relative}")
+    candidate = root / rel
+    cursor = root
+    for part in rel.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise SchedulerError(f"run path contains a symlink: {cursor}")
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise SchedulerError(f"run path escapes the run root: {relative}") from exc
+    return candidate
+
+
+def _valid_unit_key(value: str) -> bool:
+    return (bool(value) and len(value) <= 128
+            and all(ch.isascii() and (ch.isalnum() or ch in "-_") for ch in value))
 
 
 def _validate_run_manifest(manifest: Mapping[str, Any]) -> list[str]:
@@ -122,7 +149,7 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     except OSError:
-        return False
+        return True  # An unexpected probe error does not establish that the owner is dead.
     return True
 
 
@@ -133,6 +160,8 @@ class RunLock:
         self.owned = False
 
     def __enter__(self) -> "RunLock":
+        if self.path.is_symlink() or self.path.parent.is_symlink():
+            raise SchedulerError("run lock path or its parent is a symlink")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"pid": os.getpid(), "host": socket.gethostname(), "created_at": _utc()}
         while True:
@@ -148,19 +177,44 @@ class RunLock:
                 if not self.resume:
                     raise SchedulerError(f"run is already locked: {self.path}")
                 require_posix_process_management("run-lock resume")
+                takeover = self.path.with_name(self.path.name + ".takeover")
                 try:
-                    existing = load_json(self.path)
-                    same_host = existing.get("host") == socket.gethostname()
-                    pid = int(existing.get("pid", -1))
-                except (OSError, ValueError, TypeError):
-                    raise SchedulerError("existing run lock is malformed; manual inspection is required")
-                if not same_host or _pid_alive(pid):
-                    raise SchedulerError("existing run owner may still be active; refusing to steal its lock")
-                stale = self.path.with_name(f"{self.path.name}.stale-{pid}-{uuid4().hex[:8]}")
+                    takeover_fd = os.open(takeover, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except FileExistsError as exc:
+                    raise SchedulerError("run-lock takeover is already in progress or needs manual inspection") from exc
                 try:
-                    os.replace(self.path, stale)
-                except FileNotFoundError:
-                    continue
+                    try:
+                        existing = load_json(self.path)
+                        if not isinstance(existing, Mapping):
+                            raise ValueError("lock is not an object")
+                        same_host = existing.get("host") == socket.gethostname()
+                        pid = int(existing.get("pid", -1))
+                        if pid <= 0:
+                            raise ValueError("invalid lock PID")
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError, TypeError) as exc:
+                        raise SchedulerError("existing run lock is malformed; manual inspection is required") from exc
+                    if not same_host or _pid_alive(pid):
+                        raise SchedulerError("existing run owner may still be active; refusing to steal its lock")
+                    stale = self.path.with_name(f"{self.path.name}.stale-{pid}-{uuid4().hex[:8]}")
+                    try:
+                        os.replace(self.path, stale)
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    except FileExistsError as exc:
+                        raise SchedulerError("another run owner acquired the lock during takeover") from exc
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        json.dump(payload, handle, sort_keys=True)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    self.owned = True
+                    return self
+                finally:
+                    os.close(takeover_fd)
+                    takeover.unlink(missing_ok=True)
 
     def __exit__(self, *_: object) -> None:
         if self.owned:
@@ -175,22 +229,32 @@ class RunLock:
 
 class RunStore:
     def __init__(self, root: Path, manifest: Mapping[str, Any]) -> None:
+        absolute_root = root.expanduser().absolute()
+        windows_root = PureWindowsPath(str(root))
+        if (".." in root.parts or ".." in windows_root.parts or (os.name != "nt" and windows_root.drive)
+                or any(path.is_symlink() for path in (absolute_root, *absolute_root.parents))):
+            raise SchedulerError("run root cannot contain traversal or symlink components")
         self.root = root.resolve()
         self.manifest = dict(manifest)
         self.run_id = str(manifest.get("run_id", ""))
         if not self.run_id:
             raise SchedulerError("manifest lacks run_id")
-        self.manifest_path = self.root / "manifest.json"
-        self.events_dir = self.root / "events"
-        self.results_dir = self.root / "results" / "units"
-        self.attempts_dir = self.root / "attempts"
+        self.manifest_path = _contained_run_path(self.root, "manifest.json")
+        self.events_dir = _contained_run_path(self.root, "events")
+        self.results_dir = _contained_run_path(self.root, "results/units")
+        self.attempts_dir = _contained_run_path(self.root, "attempts")
         self._next_event_sequence: int | None = None
+
+    def path(self, relative: str | Path) -> Path:
+        return _contained_run_path(self.root, relative)
 
     def initialize(self) -> None:
         problems = _validate_run_manifest(self.manifest)
         if problems:
             raise SchedulerError("frozen manifest failed validation: " + "; ".join(problems))
         self.root.mkdir(parents=True, exist_ok=True)
+        for rel in ("manifest.json", "events", "results", "results/units", "attempts"):
+            _contained_run_path(self.root, rel)
         if self.manifest_path.exists():
             existing = load_json(self.manifest_path)
             if existing != self.manifest:
@@ -206,6 +270,10 @@ class RunStore:
         known_units = {str(unit["unit_key"]) for unit in self.manifest.get("units", [])}
         started_attempts: set[str] = set()
         for path in sorted(self.events_dir.glob("*.json")):
+            try:
+                self.path(path.relative_to(self.root))
+            except SchedulerError as exc:
+                raise SchedulerError(f"unsafe event path: {path}") from exc
             value = load_json(path)
             if not isinstance(value, dict) or not isinstance(value.get("sequence"), int):
                 raise SchedulerError(f"invalid event file: {path}")
@@ -234,7 +302,7 @@ class RunStore:
         assert self._next_event_sequence is not None
         sequence = self._next_event_sequence
         payload = {"sequence": sequence, "timestamp": _utc(), **dict(value)}
-        path = self.events_dir / f"{sequence:08d}-{uuid4().hex}.json"
+        path = self.path(f"events/{sequence:08d}-{uuid4().hex}.json")
         atomic_write_json(path, payload, overwrite=False)
         self._next_event_sequence += 1
         return path
@@ -243,6 +311,10 @@ class RunStore:
         completed: dict[str, dict[str, Any]] = {}
         known = {unit["unit_key"] for unit in self.manifest["units"]}
         for path in sorted(self.results_dir.glob("*.json")):
+            try:
+                self.path(path.relative_to(self.root))
+            except SchedulerError:
+                raise
             value = load_json(path)
             if not isinstance(value, dict):
                 raise SchedulerError(f"authoritative result is not a JSON object: {path}")
@@ -290,7 +362,13 @@ class RunStore:
         from rq1.university_gpu.evidence import validate_attempt_evidence
         if result.get("attempt_id") != attempt_id or not attempt_id.isalnum():
             return ["result attempt identity mismatch"]
-        parent = self.attempts_dir / str(result["unit_key"])
+        unit_key = str(result.get("unit_key", ""))
+        if not _valid_unit_key(unit_key):
+            return ["result unit key is unsafe"]
+        try:
+            parent = self.path(Path("attempts") / unit_key)
+        except SchedulerError:
+            return ["attempt path escapes or traverses the run root"]
         matches = list(parent.glob("*-" + attempt_id))
         if len(matches) != 1 or matches[0].is_symlink() or self.attempts_dir.resolve() not in matches[0].resolve().parents:
             return ["attempt directory missing, ambiguous or unsafe"]
@@ -299,11 +377,13 @@ class RunStore:
 
     def record_result(self, unit: Mapping[str, Any], result: Mapping[str, Any], *, attempt_id: str, worker_id: str) -> Path:
         unit_key = str(unit["unit_key"])
+        if not _valid_unit_key(unit_key):
+            raise SchedulerError("assigned unit key is unsafe")
         expected_units = {str(item["unit_key"]): item for item in self.manifest["units"]}
         expected = expected_units.get(unit_key)
         if expected is None:
             raise SchedulerError(f"assigned unit is outside the frozen manifest: {unit_key}")
-        path = self.results_dir / f"{unit_key}.json"
+        path = self.path(Path("results/units") / f"{unit_key}.json")
         if path.exists():
             raise SchedulerError(f"completed unit cannot be overwritten: {unit_key}")
         body = dict(result)
@@ -337,9 +417,11 @@ class Coordinator:
             raise SchedulerError("worker IDs must be unique")
         self.store = store
         self.workers = list(workers)
-        self.stop_file = store.root / "STOP"
+        self.stop_file = store.path("STOP")
 
     def request_stop(self, reason: str = "operator requested safe stop") -> None:
+        if self.stop_file.is_symlink():
+            raise SchedulerError("STOP marker path is a symlink")
         self.stop_file.write_text(reason.strip() + "\n", encoding="utf-8")
 
     def run(
@@ -361,11 +443,9 @@ class Coordinator:
         if storage_minimum_bytes < 0:
             raise SchedulerError("storage minimum cannot be negative")
         self.store.initialize()
-        with (nullcontext() if lock_held else RunLock(self.store.root / "RUN.lock", resume=resume)):
+        with (nullcontext() if lock_held else RunLock(self.store.path("RUN.lock"), resume=resume)):
             if self.stop_file.exists() and not resume:
                 raise SchedulerError("STOP file exists; resume only after reviewing the run state")
-            if resume:
-                self.stop_file.unlink(missing_ok=True)
             rows = self.store.event_rows()
             attempts: dict[str, int] = {}
             latest: dict[str, str] = {}
@@ -374,9 +454,48 @@ class Coordinator:
                     key = str(row["unit_key"])
                     attempts[key] = attempts.get(key, 0) + 1
                     latest[key] = "running"
-                elif row.get("event") in {"attempt_failed", "unit_completed"}:
+                elif row.get("event") in {"attempt_failed", "unit_completed", "recovered_authoritative_result"}:
                     latest[str(row["unit_key"])] = str(row["event"])
             completed = self.store.completed()
+            completion_events = {str(row["unit_key"]) for row in rows
+                                 if row.get("event") in {"unit_completed", "recovered_authoritative_result"}}
+            if completion_events - set(completed):
+                raise SchedulerError("completion event exists without its authoritative result; manual inspection required")
+            failures: list[dict[str, Any]] = []
+            backup_failed = False
+            backup_succeeded = False
+            full_snapshot_failed = False
+            full_snapshot_succeeded = False
+            # A coordinator interruption may occur after atomic result publication but
+            # before checkpoint publication. Repair only missing checkpoints; an
+            # existing invalid checkpoint is evidence of conflict and is never replaced.
+            from rq1.university_gpu.snapshot import backup_completed_unit, verify_unit_checkpoint
+            try:
+                unit_checkpoints = self.store.path("backups/units")
+                if unit_checkpoints.exists():
+                    for entry in unit_checkpoints.iterdir():
+                        if entry.name.startswith(".partial-"):
+                            continue
+                        if (not _valid_unit_key(entry.name) or entry.is_symlink() or not entry.is_dir()
+                                or entry.name not in completed):
+                            raise SchedulerError(
+                                f"checkpoint exists without matching authoritative unit result: {entry.name}")
+            except Exception as exc:
+                backup_failed = True
+                failures.append({"failure_class": "backup", "error_type": type(exc).__name__, "error": str(exc)})
+            for key in sorted(completed):
+                if backup_failed:
+                    break
+                try:
+                    backup_completed_unit(self.store, key)
+                    backup_succeeded = True
+                except Exception as exc:
+                    backup_failed = True
+                    failures.append({"failure_class": "backup", "unit_key": key,
+                                     "error_type": type(exc).__name__, "error": str(exc)})
+                    break
+            if resume and not backup_failed:
+                self.stop_file.unlink(missing_ok=True)
             # A crash after the atomic result write but before the completion event is recoverable.
             for key, item in completed.items():
                 if latest.get(key) != "unit_completed":
@@ -399,9 +518,6 @@ class Coordinator:
             free_workers = list(self.workers)
             attempted = 0
             interrupted_by_cutoff = False
-            failures: list[dict[str, Any]] = []
-            backup_failed = False
-            backup_succeeded = False
             storage_failed = False
             with ThreadPoolExecutor(max_workers=len(self.workers), thread_name_prefix="rq1-gpu-scheduler") as pool:
                 while pending or active:
@@ -426,7 +542,7 @@ class Coordinator:
                         attempt_id = uuid4().hex
                         attempt_number = attempts.get(key, 0) + 1
                         attempts[key] = attempt_number
-                        attempt_dir = self.store.attempts_dir / key / f"{attempt_number:03d}-{attempt_id}"
+                        attempt_dir = self.store.path(Path("attempts") / key / f"{attempt_number:03d}-{attempt_id}")
                         attempt_dir.mkdir(parents=True, exist_ok=False)
                         self.store.append_event({"event": "attempt_started", "unit_key": key, "attempt_id": attempt_id,
                                                  "attempt_number": attempt_number, "worker_id": worker.worker_id,
@@ -451,29 +567,60 @@ class Coordinator:
                     for future in done:
                         worker, unit, attempt_id, attempt_dir, _ = active.pop(future)
                         key = str(unit["unit_key"])
+                        result_published = False
                         try:
                             result = dict(future.result())
                             if result.get("unit_key") != key:
                                 raise SchedulerError("worker returned a different unit identity")
                             output_path = self.store.record_result(unit, result, attempt_id=attempt_id, worker_id=worker.worker_id)
+                            result_published = True
                             self.store.append_event({"event": "unit_completed", "unit_key": key, "attempt_id": attempt_id,
                                                      "worker_id": worker.worker_id, "result_sha256": sha256_file(output_path)})
                             free_workers.append(worker)
+                            try:
+                                from rq1.university_gpu.snapshot import backup_completed_unit
+                                backup_completed_unit(self.store, key)
+                                backup_succeeded = True
+                            except Exception as exc:
+                                backup_failed = True
+                                failures.append({"failure_class": "backup", "unit_key": key,
+                                                 "error_type": type(exc).__name__, "error": str(exc)})
+                                try:
+                                    self.request_stop(f"per-unit checkpoint failed for {key}: {type(exc).__name__}: {exc}")
+                                except OSError:
+                                    pass
                             done_count = len(self.store.completed())
                             planned_count = len(self.store.manifest["units"])
+                            # Retain the historical periodic full-run bundle for portability;
+                            # per-unit checkpoints above are the immediate recovery authority.
                             if not backup_failed and (done_count % 10 == 0 or done_count == planned_count):
                                 try:
                                     from rq1.university_gpu.snapshot import backup_checkpoint
                                     backup_checkpoint(self.store)
-                                    backup_succeeded = True
+                                    full_snapshot_succeeded = True
                                 except Exception as exc:
                                     backup_failed = True
-                                    failures.append({"failure_class": "backup", "error_type": type(exc).__name__, "error": str(exc)})
+                                    full_snapshot_failed = True
+                                    failures.append({"failure_class": "backup", "backup_type": "full_snapshot",
+                                                     "error_type": type(exc).__name__, "error": str(exc)})
                                     try:
                                         self.request_stop(f"automatic backup failed: {type(exc).__name__}: {exc}")
                                     except OSError:
                                         pass  # A full or failed disk must still stop new assignments.
-                        except BaseException as exc:
+                        except Exception as exc:
+                            try:
+                                result_published = result_published or self.store.path(Path("results/units") / f"{key}.json").exists()
+                            except (OSError, ValueError, SchedulerError):
+                                result_published = True
+                            if result_published:
+                                backup_failed = True
+                                failures.append({"failure_class": "durability", "unit_key": key,
+                                                 "attempt_id": attempt_id, "error_type": type(exc).__name__, "error": str(exc)})
+                                try:
+                                    self.request_stop(f"post-publication failure for {key}: {type(exc).__name__}: {exc}")
+                                except OSError:
+                                    pass
+                                continue
                             info = {"unit_key": key, "attempt_id": attempt_id, "worker_id": worker.worker_id,
                                     "task_id": unit.get("task_id"), "task_family": unit.get("task_family"),
                                     "seed": unit.get("seed"), "condition": unit.get("condition"),
@@ -493,11 +640,49 @@ class Coordinator:
             execution_status = ("completed" if len(completed_now) == len(self.store.manifest["units"])
                                 else "incomplete" if failures else "paused")
             backup_status = "failed" if backup_failed else "succeeded" if backup_succeeded else "not_attempted"
+            checkpointed = []
+            checkpoint_missing = []
+            for key in completed_now:
+                try:
+                    from rq1.university_gpu.snapshot import verify_unit_checkpoint
+                    verify_unit_checkpoint(self.store, key)
+                    checkpointed.append(key)
+                except Exception as exc:
+                    checkpoint_missing.append(key)
+                    backup_failed = True
+                    failures.append({"failure_class": "checkpoint_verification", "unit_key": key,
+                                     "error_type": type(exc).__name__, "error": str(exc)})
+            # A resume that already holds every authoritative result may still
+            # lack the final full snapshot if its publication failed on the
+            # completion pass. Retry before reporting success; backup_checkpoint
+            # publishes a new create-only bundle and never replaces a snapshot.
+            if resume and not backup_failed and completed_now \
+                    and len(completed_now) == len(self.store.manifest["units"]):
+                try:
+                    from rq1.university_gpu.snapshot import backup_checkpoint
+                    backup_checkpoint(self.store)
+                    full_snapshot_succeeded = True
+                except Exception as exc:
+                    backup_failed = True
+                    full_snapshot_failed = True
+                    failures.append({"failure_class": "backup", "backup_type": "full_snapshot",
+                                     "error_type": type(exc).__name__, "error": str(exc)})
+                    try:
+                        self.request_stop(f"resume full snapshot failed: {type(exc).__name__}: {exc}")
+                    except OSError:
+                        pass
+            if backup_failed:
+                backup_status = "failed"
             # Episode authority survives backup failure; callers cannot mistake
             # successful execution for verified durability.
             return {"run_id": self.store.run_id,
                     "status": "durability_failed" if backup_failed else execution_status,
                     "execution_status": execution_status, "backup_status": backup_status,
+                    "unit_checkpoint_status": ("not_attempted" if not completed_now else
+                                                "failed" if checkpoint_missing else "verified"),
+                    "checkpointed_units": len(checkpointed), "uncheckpointed_units": checkpoint_missing,
+                    "full_snapshot_status": ("failed" if full_snapshot_failed else
+                                             "succeeded" if full_snapshot_succeeded else "not_attempted"),
                     "export_status": "not_performed", "independent_copy_status": "not_verified",
                     "planned_units": len(self.store.manifest["units"]), "completed_units": len(completed_now), "attempts_started": attempted,
                     "failures": failures, "cutoff_reached": interrupted_by_cutoff, "active_workers_at_return": len(active),
@@ -505,11 +690,16 @@ class Coordinator:
 
     def validate(self) -> dict[str, Any]:
         problems = _validate_run_manifest(self.store.manifest)
+        rows = []
         try:
-            self.store.event_rows()
+            rows = self.store.event_rows()
         except (OSError, ValueError, TypeError, SchedulerError) as exc:
             problems.append(f"invalid attempt event log: {type(exc).__name__}: {exc}")
         completed = self.store.completed()
+        completed_events = {str(row["unit_key"]) for row in rows
+                            if row.get("event") in {"unit_completed", "recovered_authoritative_result"}}
+        if completed_events - set(completed):
+            problems.append("completion event exists without its authoritative result")
         expected = {str(unit["unit_key"]): unit for unit in self.store.manifest["units"]}
         if set(completed) - set(expected):
             problems.append("authoritative result outside manifest")

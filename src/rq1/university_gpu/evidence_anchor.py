@@ -155,12 +155,19 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--run-root", type=Path, required=True)
         p.add_argument("--manifest", type=Path, required=True)
         p.add_argument("--anchor-dir", type=Path, required=True)
+        if action == "create":
+            p.add_argument("--output-root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        result = create_anchors(args.run_root, args.manifest, args.anchor_dir) if args.action == "create" else verify_anchor_dir(args.run_root, args.manifest, args.anchor_dir)
+        if args.action == "create":
+            from rq1.university_gpu.feasibility import checked_run_path
+            checked = checked_run_path(args.output_root, args.run_root, args.manifest)
+            result = create_anchors(checked, args.manifest, args.anchor_dir)
+        else:
+            result = verify_anchor_dir(args.run_root, args.manifest, args.anchor_dir)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, RuntimeError) as exc:
         parser.error(str(exc))
 
 

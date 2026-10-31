@@ -20,8 +20,17 @@ def definitions(mode: RunMode) -> tuple[StageDefinition,...]:
 class Autopilot:
     def __init__(self, root: Path): self.root=root
     def plan(self, mode: RunMode, output_dir: str | None=None) -> RunPlan:
-        commit,_,_=git_state(self.root); values={"schema_version":1,"run_plan_id":str(uuid4()),"mode":mode.value,"repository_commit":commit,"output_directory":output_dir or "results/final"}; values["content_hash"]=""; values["content_hash"]=canonical_hash({key:value for key,value in values.items() if key!="content_hash"}); return RunPlan(**values)
+        commit,_,_=git_state(self.root)
+        output_directory=state.validate_output_directory(
+            self.root, "results/final" if output_dir is None else output_dir
+        )
+        values={"schema_version":1,"run_plan_id":str(uuid4()),"mode":mode.value,"repository_commit":commit,"output_directory":output_directory}
+        plan=RunPlan(**values)
+        content_hash=canonical_hash({key:value for key,value in plan.to_dict().items() if key!="content_hash"})
+        return replace(plan,content_hash=content_hash)
     def create(self, plan: RunPlan) -> dict:
+        state.validate_run_id(plan.run_plan_id)
+        state.validate_output_directory(self.root, plan.output_directory)
         return state.initialize(self.root,plan.run_plan_id,plan.to_dict(),[item.name for item in definitions(RunMode(plan.mode))])
     def _block(self, data: dict, stage: str, code: str, message: str, kind: ErrorClass=ErrorClass.COMPATIBILITY) -> dict:
         data["stages"][stage]["status"]="blocked"; data["top_status"]=TopStatus.BLOCKED.value

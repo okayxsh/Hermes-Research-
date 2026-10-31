@@ -1,10 +1,12 @@
 """Frozen six-arm manifests for the prospective selective-memory follow-up."""
 from __future__ import annotations
 
+import os
 import random
+import re
 from collections import Counter
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
 from rq1.experiment.models import canonical_hash
@@ -28,6 +30,43 @@ ARMS = {"pilot": 36, "confirmatory": 540}
 
 class ManifestError(ValueError):
     pass
+
+
+_SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def validate_run_id(run_id: object) -> str:
+    """Preserve safe historical labels while excluding path syntax and dot segments."""
+    if not isinstance(run_id, str) or not _SAFE_RUN_ID.fullmatch(run_id):
+        raise ManifestError("run_id must be a 1-128 character path-safe identifier starting with a letter or digit")
+    if run_id.endswith((".", " ")):
+        raise ManifestError("run_id cannot end in a Windows-normalized dot or space")
+    windows_device = run_id.split(".", 1)[0].upper()
+    if (windows_device in {"CON", "PRN", "AUX", "NUL"}
+            or re.fullmatch(r"(?:COM|LPT)[1-9]", windows_device)
+            or windows_device in {"COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}):
+        raise ManifestError("run_id cannot use a reserved Windows device name")
+    return run_id
+
+
+def resolve_run_root(output_root: Path, run_id: object) -> Path:
+    """Resolve a run directory as one contained child of its configured output root."""
+    safe_id = validate_run_id(run_id)
+    expanded_root = output_root.expanduser()
+    windows = PureWindowsPath(str(expanded_root))
+    if ".." in expanded_root.parts or ".." in windows.parts or (os.name != "nt" and windows.drive):
+        raise ManifestError("configured output root cannot contain lexical '..' components")
+    absolute_root = expanded_root.absolute()
+    if any(path.is_symlink() for path in (absolute_root, *absolute_root.parents)):
+        raise ManifestError("configured output root cannot be a symlink")
+    resolved_root = expanded_root.resolve()
+    candidate = resolved_root / safe_id
+    if candidate.is_symlink():
+        raise ManifestError("run directory cannot be a symlink")
+    resolved_candidate = candidate.resolve(strict=False)
+    if resolved_candidate.parent != resolved_root:
+        raise ManifestError("run directory escapes the configured output root")
+    return candidate
 
 
 def _digest(value: object, label: str) -> str:
@@ -119,8 +158,7 @@ def build_manifest(
 ) -> dict[str, Any]:
     if stage not in {"pilot", "confirmatory"}:
         raise ManifestError("stage must be pilot or confirmatory")
-    if not run_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for ch in run_id):
-        raise ManifestError("run_id contains unsafe path characters")
+    validate_run_id(run_id)
     _validate_tasks(stage, tasks)
     if not isinstance(source_commit, str) or len(source_commit) != 40:
         raise ManifestError("source_commit must be a full Git commit SHA")
@@ -232,6 +270,10 @@ def validate_manifest(manifest: Mapping[str, Any], *, require_frozen: bool = Fal
         problems.append("manifest is not frozen")
     elif manifest.get("status") not in {"proposed", "frozen"}:
         problems.append("manifest status must be proposed or frozen")
+    try:
+        validate_run_id(manifest.get("run_id"))
+    except ManifestError as exc:
+        problems.append(str(exc))
     expected_model = {"tag": MODEL_TAG, "digest": MODEL_DIGEST, "quantization": MODEL_QUANTIZATION}
     if manifest.get("model") != expected_model:
         problems.append("manifest model identity differs from the frozen Gemma 4 12B model")

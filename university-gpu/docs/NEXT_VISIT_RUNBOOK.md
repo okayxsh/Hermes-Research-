@@ -188,20 +188,24 @@ PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility launch \
 
 This runs exactly the 12 D0/D18 units. It is not the 36-episode scientific pilot. Retries receive distinct attempt IDs; completed authoritative results are immutable.
 
+For each completed unit the coordinator atomically publishes `results/units/<unit-key>.json`, records the completion event, then copies that result and its closed attempt traces to the create-only `backups/units/<unit-key>/` checkpoint. It verifies the checkpoint and flushes files and directories where the platform supports this. This copies each unit's traces once; periodic full-run snapshots are published only at newly accepted 10-unit boundaries and at final completion. If the final snapshot fails after all units are complete, resume retries it by publishing a new create-only full snapshot; an intermediate 10-unit bundle is not reconstructed retroactively if its boundary was crossed while resuming. A result published immediately before a coordinator interruption can exist without its checkpoint; resume verifies that authority and creates the missing checkpoint before assigning further work. A concurrent worker may have physically finished before the coordinator receives and publishes its result; inspect that nonterminal attempt before retrying, because physical work can be repeated. The checkpoint is local, is not an independent backup, and cannot survive loss of the same workstation storage.
+
 ### 8. Monitor and interrupt cooperatively
 
 These are separate operator procedures. Do not paste monitor, stop and resume as one script.
 
 ```bash
 export RQ1_RUN_ROOT="$RQ1_FEASIBILITY_RUN_ROOT/rq1-feasibility-200-v1-university-20261102"
-"$RQ1_PY" -m rq1.cli university-gpu feasibility status --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility status --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
 nvidia-smi
 ```
+
+Inspect `durability_status`, `completion_events_without_results` and `local_unit_checkpoints`: `verified` lists valid local checkpoints, while `missing`, `invalid`, `orphaned`, or a completion event without its result require attention. `evidence_anchor_status` separately identifies units with supplied external anchors and unanchored units. The coordinator's launch/resume result also reports `unit_checkpoint_status`, `backup_status` and `full_snapshot_status`; `durability_failed` means do not treat local checkpointing as complete.
 
 To interrupt, request STOP, then wait for the coordinator to return and active work to finish:
 
 ```bash
-"$RQ1_PY" -m rq1.cli university-gpu feasibility stop --run-root "$RQ1_RUN_ROOT" --reason "scheduled access cutoff"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility stop --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --reason "scheduled access cutoff"
 ```
 
 The cutoff stops assignments 30 minutes early; it does not forcibly terminate active episodes. Reject nonfinite/expired deadlines. Set a measured reserve for active work and backup; a one-hour response timeout can exceed the assignment reserve. If time is insufficient, stop earlier. WSL/RDP persistence and process ownership remain university-only checks. Never kill another user's processes.
@@ -211,17 +215,19 @@ The cutoff stops assignments 30 minutes early; it does not forcibly terminate ac
 For a complete run only:
 
 ```bash
-"$RQ1_PY" -m rq1.cli university-gpu feasibility validate-run --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
-"$RQ1_PY" -m rq1.cli university-gpu feasibility merge --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility validate-run --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility merge --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST"
 ```
 
 For interrupted runs, failed workers or backup failures, skip complete-run validation/merge and proceed directly to the verified partial export below after all writers stop. Inspect execution and backup status separately. Preserve failed/partial attempts. Missing authoritative logs or corrupt accepted results must block export; partial export is not permission to suppress corruption.
+
+If a local checkpoint is missing but its result and traces validate, resume can reconstruct it before new assignments. If a published checkpoint is corrupt, conflicts with authority, or has no matching result, do not overwrite or delete it: stop, preserve a partial export and the checkpoint directory in separate storage, and obtain a reviewed recovery procedure. A failed disk, I/O flush or directory-fsync error must be resolved before relying on another local checkpoint. Partial exports preserve authoritative result and trace files but omit local `backups/`; their `source_checkpoint_status_at_export` reports what was observed, not independent verification.
 
 For either complete or incomplete stopped runs, create per-unit evidence records in a separate directory. These records bind the frozen manifest, run, unit, attempt, authoritative result and attempt files. Create-only publication prevents this tool overwriting an existing record; the directory is not independently protected merely because it is outside the run. Copy records to university-approved independent storage and verify that copy. Only set `RQ1_EVIDENCE_ANCHOR_DIR` to a directory whose provenance and protection the operator has independently verified. If no such directory exists, leave the variable unset and describe the result as internally validated. Keep the independently protected anchor records across resume; never replace conflicting records.
 
 ```bash
 : "${RQ1_ANCHOR_STAGING:?Set a new anchor directory outside the run root}"
-"$RQ1_PY" -m rq1.university_gpu.evidence_anchor create --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_ANCHOR_STAGING"
+"$RQ1_PY" -m rq1.university_gpu.evidence_anchor create --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_ANCHOR_STAGING"
 "$RQ1_PY" -m rq1.university_gpu.evidence_anchor verify --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_ANCHOR_STAGING"
 ```
 
@@ -239,7 +245,7 @@ Choose a new export destination every time:
 export RQ1_EXPORT="$RQ1_EVIDENCE/feasibility-export-$(date -u +%Y%m%dT%H%M%SZ)"
 test ! -e "$RQ1_EXPORT"
 test ! -e "$RQ1_EXPORT.tar.gz"
-"$RQ1_PY" -m rq1.cli university-gpu feasibility export-progress --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --destination "$RQ1_EXPORT"
+"$RQ1_PY" -m rq1.cli university-gpu feasibility export-progress --output-root "$RQ1_FEASIBILITY_RUN_ROOT" --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --destination "$RQ1_EXPORT"
 "$RQ1_PY" -m rq1.cli university-gpu feasibility verify-export --destination "$RQ1_EXPORT"
 (set -o noclobber; tar -czf - -C "$(dirname "$RQ1_EXPORT")" "$(basename "$RQ1_EXPORT")" > "$RQ1_EXPORT.tar.gz")
 (set -o noclobber; sha256sum "$RQ1_EXPORT.tar.gz" > "$RQ1_EXPORT.tar.gz.sha256")
@@ -250,7 +256,7 @@ After transfer, verify the extracted copy against the independently protected an
 
 ### 10. Resume after a worker failure or interruption
 
-After preserving a verified partial export, inspect failed attempts and ports/owned processes. Resolve the actual infrastructure error, recheck unchanged assets, set a new finite authorized deadline and explicitly resume:
+After preserving a verified partial export, inspect failed attempts and ports/owned processes. If a `RUN.lock.takeover` marker remains, stop and inspect ownership and the interrupted takeover; do not delete or replace it automatically. Resolve the actual infrastructure error, recheck unchanged assets, set a new finite authorized deadline and explicitly resume:
 
 ```bash
 : "${RQ1_ACCESS_END_EPOCH:?Set the actual authorized future Unix UTC deadline}"

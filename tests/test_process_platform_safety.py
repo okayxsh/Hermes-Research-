@@ -64,6 +64,8 @@ class ProcessPlatformSafetyTests(unittest.TestCase):
                 self.assertTrue(experiment_lock._stale())
                 self.assertTrue(stage_lock._stale())
                 self.assertEqual(kill.call_count, 8)
+                kill.side_effect = OSError("unknown liveness error")
+                self.assertTrue(_pid_alive(42))
 
     def test_native_windows_launches_reject_before_preflight_or_asset_access(self) -> None:
         root = Path.cwd()
@@ -83,7 +85,7 @@ class ProcessPlatformSafetyTests(unittest.TestCase):
             }
             with self.assertRaises(UnsupportedProcessManagementError):
                 run_design_launch(
-                    root, {}, {"manifest_sha256": "a" * 64, "stage": "pilot"}, approval=approval,
+                    root, {"run_output_dir": str(root)}, {"manifest_sha256": "a" * 64, "stage": "pilot", "run_id": "test-run"}, approval=approval,
                     yes=True, cutoff_epoch=10**12,
                 )
 
