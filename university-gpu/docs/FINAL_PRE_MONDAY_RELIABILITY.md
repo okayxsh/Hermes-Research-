@@ -2,13 +2,16 @@
 
 Date: 2026-10-31. Branch: `feat/rq1-university-4gpu`.
 
-Latest existing commit before Task5 work:
-`c9a26443c48cfbe9f27ced5ce1b7745d68435cfe`. Task5 code and docs are currently
-uncommitted. At takeover, no test processes were running; the initial working
-tree contained only the intentionally untracked OpenCode audit.
+Pre-Task5 base commit: `c9a26443c48cfbe9f27ced5ce1b7745d68435cfe`. Final Task5
+source and docs are locally committed at
+`26032e32543373d8ccb2dd0266731963fb314db9` (not pushed). Tests were run on the
+exact source before that commit. At takeover, no test processes were running;
+the initial working tree contained only the intentionally untracked OpenCode
+audit.
 
 Evidence basis: this report records coordinator-executed checks and source/test
-inspection. It did not rerun the test suites, did not run Git writes, and did not
+inspection. It did not rerun the test suites, performed no Git writes during
+testing and audit until the final local commit, did not push, and did not
 modify research data or inputs. Test timings below are as supplied, not
 regenerated here.
 
@@ -181,9 +184,10 @@ hardware, GPU-readiness, or real-ALFWorld claim.
 - **Recommendation B:** leave it out of the source commit. Only after explicit
   approval, archive a byte-identical copy to an approved external location and
   verify its SHA-256 there. No copy has been made.
-- Clean-checkout impact: while the audit is untracked and Task5 changes are
-  uncommitted, the runbook's clean-source gate fails. Audit disposition plus an
-  approved source commit is a pre-Monday blocker.
+- Clean-checkout impact: Task5 source and docs are now committed, but the audit
+  remains untracked, so `git status --porcelain` is not clean and the runbook
+  freeze gate still fails until the audit's disposition is resolved. An approved
+  source commit/hash must still be supplied for Monday.
 
 ## 10. Monday GO/NO-GO matrix
 
