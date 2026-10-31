@@ -721,9 +721,12 @@ def status(run_root: Path, manifest_path: Path) -> dict[str, Any]:
         run_status = "paused_or_incomplete"
     else:
         run_status = "not_started"
-    return {"run_id": manifest.get("run_id"), "status": run_status,
+    result = {"run_id": manifest.get("run_id"), "status": run_status,
             "planned_units": len(manifest.get("units", [])), "completed_units": len(completed), "attempts_started": attempts,
             "failed_attempts": failures, "stop_requested": stop_requested}
+    if manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        result["evidence_anchor_status"] = store.evidence_anchor_status(completed)
+    return result
 
 
 def export_run(run_root: Path, manifest_path: Path, destination: Path) -> dict[str, Any]:

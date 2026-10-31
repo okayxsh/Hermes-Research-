@@ -540,6 +540,14 @@ def freeze_engineering_manifest(
             or not engineering_approval.get("approved_by")
             or not engineering_approval.get("approval_reference")):
         raise FeasibilityError("a separate engineering-only GPU approval bound to the candidate is required")
+    from rq1.university_gpu.authorization import verify_engineering_authorization
+    try:
+        verify_engineering_authorization(engineering_approval, candidate_sha256=candidate_sha,
+            model_tag=str(candidate.get("model", {}).get("tag", "")),
+            model_digest=str(candidate.get("model", {}).get("digest", "")), profile_id=PROFILE_ID,
+            action_budget=TOTAL_ACTION_BUDGET, run_id=run_id, model_quantization=MODEL_QUANTIZATION)
+    except RuntimeError as exc:
+        raise FeasibilityError(str(exc)) from exc
 
     frozen = copy.deepcopy(dict(candidate))
     frozen["status"] = "engineering_frozen"
@@ -1090,6 +1098,16 @@ def _validate_engineering_approval(manifest: Mapping[str, Any], approval: Mappin
             or approval.get("prior_pick_place_exposure_acknowledged") is not True
             or not approval.get("approved_by") or not approval.get("approval_reference")):
         raise FeasibilityError("GPU command requires the exact candidate-bound engineering-only approval")
+    from rq1.university_gpu.authorization import verify_engineering_authorization, verify_frozen_manifest_anchor
+    try:
+        verify_engineering_authorization(approval, candidate_sha256=str(manifest.get("candidate_manifest_sha256", "")),
+            model_tag=str(manifest.get("model", {}).get("tag", "")),
+            model_digest=str(manifest.get("model", {}).get("digest", "")), profile_id=PROFILE_ID,
+            action_budget=TOTAL_ACTION_BUDGET, run_id=str(manifest.get("run_id", "")),
+            model_quantization=MODEL_QUANTIZATION)
+        verify_frozen_manifest_anchor(manifest)
+    except RuntimeError as exc:
+        raise FeasibilityError(str(exc)) from exc
 
 
 def run_feasibility_benchmark(

@@ -1,12 +1,22 @@
 {
   "schema": "rq1-engineering-feasibility-approval-v1",
+  "authorization_type": "engineering_gpu",
   "approval_scope": "engineering_feasibility_only",
+  "profile_id": "rq1-feasibility-200-v1",
+  "run_id": "",
   "candidate_manifest_sha256": "",
+  "model_tag": "",
+  "model_digest": "",
+  "model_quantization": "",
+  "total_action_budget": 200,
+  "conditions": ["D0", "D18"],
   "gpu_inference": false,
   "scientific_run": false,
   "not_for_scientific_claims": true,
   "prior_pick_place_exposure_acknowledged": false,
+  "approver_id": "",
   "approved_by": "",
   "approval_reference": "",
-  "approved_at_utc": ""
+  "approval_provenance": "",
+  "test_only": true
 }

@@ -261,7 +261,30 @@ class RunStore:
                 if issues:
                     raise SchedulerError("invalid authoritative evidence: " + "; ".join(issues))
             completed[unit_key] = value
+        anchor_dir = os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR")
+        if anchor_dir and self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            from rq1.university_gpu.evidence_anchor import verify_anchor_dir
+            try:
+                verify_anchor_dir(self.root, self.manifest_path, Path(anchor_dir))
+            except (OSError, ValueError, KeyError) as exc:
+                raise SchedulerError("external evidence anchor is missing, unsafe, or conflicts with run evidence") from exc
         return completed
+
+    def evidence_anchor_status(self, completed: Mapping[str, Any]) -> dict[str, Any]:
+        """Report coverage; independent protection requires an operator-controlled trust boundary."""
+        status = {"classification": "internally_validated", "independent_protection": "not_verified",
+                  "matched_units": [], "unanchored_units": sorted(completed)}
+        directory = os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR")
+        if directory and self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            from rq1.university_gpu.evidence_anchor import verify_anchor_dir
+            try:
+                check = verify_anchor_dir(self.root, self.manifest_path, Path(directory))
+            except (OSError, ValueError, KeyError) as exc:
+                raise SchedulerError("external evidence anchor is missing, unsafe, or conflicts with run evidence") from exc
+            missing = check["unanchored_units"]
+            status.update({"classification": "compared_to_supplied_anchors", "unanchored_units": missing,
+                           "matched_units": sorted(set(completed) - set(missing))})
+        return status
 
     def validate_evidence(self, result: Mapping[str, Any], attempt_id: str) -> list[str]:
         from rq1.university_gpu.evidence import validate_attempt_evidence
@@ -504,8 +527,11 @@ class Coordinator:
                 bad.append(key)
         if bad:
             problems.append(f"invalid result identity/status for {len(set(bad))} units")
-        return {"passed": not problems and len(completed) == len(expected), "problems": problems,
-                "expected": len(expected), "completed": len(completed), "missing": sorted(set(expected) - set(completed))}
+        result = {"passed": not problems and len(completed) == len(expected), "problems": problems,
+                  "expected": len(expected), "completed": len(completed), "missing": sorted(set(expected) - set(completed))}
+        if self.store.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            result["evidence_anchor_status"] = self.store.evidence_anchor_status(completed)
+        return result
 
     def merge(self) -> dict[str, Any]:
         validation = self.validate()

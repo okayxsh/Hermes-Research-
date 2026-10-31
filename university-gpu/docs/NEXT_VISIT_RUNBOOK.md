@@ -117,7 +117,7 @@ All six exact state/detour/action/source checks must pass. A failure blocks this
 
 ### 5. Complete reviews and freeze the engineering manifest
 
-Copy the invalid-by-design templates to new evidence paths with `cp -n`, then have the named humans complete the data review, model/tokenizer review, and engineering approval. The engineering approval must bind the candidate manifest hash, set `approval_scope=engineering_feasibility_only`, `gpu_inference=true`, `scientific_run=false`, `not_for_scientific_claims=true`, and acknowledge prior pick-and-place outcome exposure. It is not a scientific approval of Option B.
+Copy the invalid-by-design templates to new evidence paths with `cp -n`, then have authorized humans complete and review the data, model/tokenizer and engineering records. The engineering record must bind the candidate manifest hash, exact run ID, profile, model tag/digest/quantization, 200-action cap and `["D0", "D18"]`; it must identify the approver, approval provenance and reference, acknowledge prior exposure, and have `test_only=false`, `gpu_inference=true`, `scientific_run=false` and `not_for_scientific_claims=true`. `approved_by` and `approver_id` must match. The supplied template is deliberately invalid and test-only; only the authorized human may replace its fields with genuine approval. This does not authorize Option B scientifically.
 
 ```bash
 set -euo pipefail
@@ -129,6 +129,13 @@ export RQ1_PROSPECTIVE_IDENTITY_REVIEW="$RQ1_EVIDENCE/model-review.json"
 export RQ1_HUGGINGFACE_CACHE="${RQ1_HUGGINGFACE_CACHE:?Set the existing pinned Sentence-BERT cache}"
 export RQ1_FEASIBILITY_RUN_ROOT="${RQ1_FEASIBILITY_RUN_ROOT:?Set durable storage outside Git}"
 cp -n university-gpu/feasibility-config.example.json "$RQ1_EVIDENCE/feasibility-config.json"
+```
+
+An authorized reviewer must independently inspect the completed record and send its canonical SHA-256 through an independently authenticated channel. The operator compares that value to the following locally computed digest and sets the environment variable to the **independently received** value, never automatically to the local output:
+
+```bash
+"$RQ1_PY" -c 'import json,sys; from rq1.university_gpu.authorization import approval_digest; print(approval_digest(json.load(open(sys.argv[1], encoding="utf-8"))))' "$RQ1_EVIDENCE/engineering-approval.json"
+: "${RQ1_TRUSTED_ENGINEERING_APPROVAL_SHA256:?Set the independently received approval digest}"
 ```
 
 Edit that external config to use actual data/model/library/tokenizer paths and the exact tokenizer revision. Only after the human records and all prerequisites exist, freeze to a new external file:
@@ -147,7 +154,12 @@ PYTHONPATH=src "$RQ1_PY" -m rq1.cli university-gpu feasibility freeze \
   --run-id rq1-feasibility-200-v1-university-20261102 --output "$RQ1_FEASIBILITY_MANIFEST"
 ```
 
-The frozen feasibility manifest must retain `option_b_author_decision_status=pending` and `scientific_evidence=false`.
+The frozen feasibility manifest must retain `option_b_author_decision_status=pending` and `scientific_evidence=false`. Have the authorized reviewer inspect the complete frozen manifest and transmit its `manifest_sha256` through an independent authenticated channel. Set `RQ1_TRUSTED_ENGINEERING_MANIFEST_SHA256` to that received value. GPU benchmark, launch and resume require both pins and `--yes`; preflight and read-only diagnostics do not. A digest entered by the same person who wrote an unreviewed record does not establish human authorization. If either independently verified value is unavailable, stop before GPU use.
+
+```bash
+"$RQ1_PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["manifest_sha256"])' "$RQ1_FEASIBILITY_MANIFEST"
+: "${RQ1_TRUSTED_ENGINEERING_MANIFEST_SHA256:?Set the independently received frozen manifest digest}"
+```
 
 ### 6. Rehash all assets, then benchmark four GPUs without episodes
 
@@ -205,7 +217,23 @@ For a complete run only:
 
 For interrupted runs, failed workers or backup failures, skip complete-run validation/merge and proceed directly to the verified partial export below after all writers stop. Inspect execution and backup status separately. Preserve failed/partial attempts. Missing authoritative logs or corrupt accepted results must block export; partial export is not permission to suppress corruption.
 
-For either complete or incomplete stopped runs, choose a new destination every time:
+For either complete or incomplete stopped runs, create per-unit evidence records in a separate directory. These records bind the frozen manifest, run, unit, attempt, authoritative result and attempt files. Create-only publication prevents this tool overwriting an existing record; the directory is not independently protected merely because it is outside the run. Copy records to university-approved independent storage and verify that copy. Only set `RQ1_EVIDENCE_ANCHOR_DIR` to a directory whose provenance and protection the operator has independently verified. If no such directory exists, leave the variable unset and describe the result as internally validated. Keep the independently protected anchor records across resume; never replace conflicting records.
+
+```bash
+: "${RQ1_ANCHOR_STAGING:?Set a new anchor directory outside the run root}"
+"$RQ1_PY" -m rq1.university_gpu.evidence_anchor create --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_ANCHOR_STAGING"
+"$RQ1_PY" -m rq1.university_gpu.evidence_anchor verify --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_ANCHOR_STAGING"
+```
+
+After a separate approved transfer, verify using the independently stored directory, inspect `unanchored_units`, and only then set `RQ1_EVIDENCE_ANCHOR_DIR` to that verified directory. Repeat for newly completed units and protect new records separately. An absent anchor remains unanchored; an unavailable configured directory or any conflict blocks validation. A local hash or a hash stored beside the run proves no independent authentication.
+
+```bash
+: "${RQ1_INDEPENDENT_ANCHORS:?Set the independently stored and protected anchor directory}"
+"$RQ1_PY" -m rq1.university_gpu.evidence_anchor verify --run-root "$RQ1_RUN_ROOT" --manifest "$RQ1_FEASIBILITY_MANIFEST" --anchor-dir "$RQ1_INDEPENDENT_ANCHORS"
+export RQ1_EVIDENCE_ANCHOR_DIR="$RQ1_INDEPENDENT_ANCHORS"
+```
+
+Choose a new export destination every time:
 
 ```bash
 export RQ1_EXPORT="$RQ1_EVIDENCE/feasibility-export-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -218,6 +246,7 @@ test ! -e "$RQ1_EXPORT.tar.gz"
 ```
 
 Copy archive and checksum to university-approved independent storage and verify the copied checksum and export manifest there. Local checkpoint/export success does not prove independent-copy verification. GitHub is supplementary backup.
+After transfer, verify the extracted copy against the independently protected anchors using `evidence_anchor verify --run-root <copied-export>/run --manifest <copied-export>/run/manifest.json --anchor-dir "$RQ1_INDEPENDENT_ANCHORS"`; also run `feasibility verify-export --destination <copied-export>`. Retain a separately protected anchor-directory snapshot for each partial export: anchors for units completed later reference results absent from an earlier export and will make that earlier verification fail. Inspect anchor coverage and the export's `independent_protection` and `unanchored_units` fields. Never treat anchor records merely copied into the export as an independent trust source.
 
 ### 10. Resume after a worker failure or interruption
 

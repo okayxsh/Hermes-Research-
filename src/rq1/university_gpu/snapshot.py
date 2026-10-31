@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -119,6 +120,8 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
             raise SnapshotError("run contains invalid results: " + "; ".join(validation["problems"]))
         store.event_rows()
         completed = store.completed()
+        anchor_setting = os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR")
+        anchor_report = store.evidence_anchor_status(completed)
         staging.mkdir()
         files = []
 
@@ -141,6 +144,9 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
                 raise SnapshotError(f"run contains a symlink: {rel}")
             if source.is_file():
                 copy_checked(source, Path("run") / rel)
+        if anchor_setting and manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            for unit in anchor_report["matched_units"]:
+                copy_checked(Path(anchor_setting) / f"{unit}.json", Path("anchor-records") / f"{unit}.json")
         for source in sorted((root / "src" / "rq1").rglob("*.py")):
             copy_checked(source, Path("analysis-src/rq1") / source.relative_to(root / "src" / "rq1"))
         copy_checked(root / "pyproject.toml", Path("analysis-src/pyproject.toml"))
@@ -159,6 +165,7 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
                   "execution_status": "completed" if validation["passed"] else "incomplete",
                   "export_status": "verified_local_copy",
                   "independent_copy_status": "not_verified",
+                  "evidence_anchor_status": anchor_report,
                   "attempt_states": _attempt_states(store),
                   "completed": validation["completed"], "missing_unit_keys": validation["missing"],
                   "source_commit": manifest["source_commit"], "files": sorted(files, key=lambda row: row["path"])}
@@ -175,7 +182,7 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
     return {"status": "EXPORTED", "destination": str(destination), "complete": report["complete"],
             "completed": report["completed"], "planned": report["planned"], "files": len(files),
             "execution_status": report["execution_status"], "export_status": report["export_status"],
-            "independent_copy_status": "not_verified"}
+            "independent_copy_status": "not_verified", "evidence_anchor_status": anchor_report}
 
 
 def verify_progress(destination: Path) -> dict:
@@ -213,4 +220,6 @@ def verify_progress(destination: Path) -> dict:
     if rows != expected:
         raise SnapshotError("analysis-ready results differ from authoritative unit records")
     return {"status": "PASS", "complete": report["complete"], "completed": report["completed"],
-            "planned": report["planned"], "missing": len(report["missing_unit_keys"]), "files": len(seen)}
+            "planned": report["planned"], "missing": len(report["missing_unit_keys"]), "files": len(seen),
+            "evidence_anchor_status": report.get("evidence_anchor_status", {"classification": "internally_validated", "independent_protection": "not_verified"}),
+            "external_anchor_comparison": "performed" if (os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR") and manifest.get("schema") == "rq1-feasibility-execution-manifest-v1") else "not_performed"}

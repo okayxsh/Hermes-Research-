@@ -2,6 +2,7 @@
 import copy
 import io
 import json
+import os
 import subprocess
 import shutil
 import tarfile
@@ -109,6 +110,12 @@ class ProvenanceRegressionTests(unittest.TestCase):
         self.approval = {"approval_scope": "engineering_feasibility_only", "gpu_inference": True, "scientific_run": False,
             "not_for_scientific_claims": True, "candidate_manifest_sha256": self.candidate["manifest_sha256"],
             "prior_pick_place_exposure_acknowledged": True, "approved_by": "TEST ONLY", "approval_reference": "not real authorization"}
+        self.approval.update({"schema": "rq1-engineering-feasibility-approval-v1", "authorization_type": "engineering_gpu",
+            "profile_id": f.PROFILE_ID, "run_id": f.PROFILE_ID + "-test-fixture", "model_tag": f.MODEL_TAG,
+            "model_digest": f.MODEL_DIGEST, "model_quantization": f.MODEL_QUANTIZATION, "total_action_budget": 200,
+            "conditions": ["D0", "D18"], "approver_id": "TEST ONLY", "approval_provenance": "synthetic fixture", "test_only": False})
+        from rq1.university_gpu.authorization import approval_digest, TRUSTED_APPROVAL_SHA256_ENV
+        self.stack.enter_context(patch.dict(os.environ, {TRUSTED_APPROVAL_SHA256_ENV: approval_digest(self.approval)}))
         rows = []
         for task in self.candidate["tasks"]:
             actions = task["prefix_actions"] + [task["detour_action"]] + task["reference_actions"][len(task["prefix_actions"]):]
@@ -135,11 +142,14 @@ class ProvenanceRegressionTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
 
     def freeze(self):
-        return f.freeze_engineering_manifest(self.repo, self.candidate, run_id=f.PROFILE_ID + "-test-fixture",
+        frozen = f.freeze_engineering_manifest(self.repo, self.candidate, run_id=f.PROFILE_ID + "-test-fixture",
             data_report=self.data_report, data_review=self.data_review, oracle_report=self.oracle,
             identity_report=self.identity, identity_review=self.identity_review, accum18_library_path=self.library,
             accum18_reference_path=self.reference, sbert_cache=self.cache, tokenizer_path=self.tokenizer,
             engineering_approval=self.approval)
+        from rq1.university_gpu.authorization import TRUSTED_MANIFEST_SHA256_ENV
+        os.environ[TRUSTED_MANIFEST_SHA256_ENV] = frozen["manifest_sha256"]
+        return frozen
 
     def test_candidate_reference_freeze_preflight_and_resume_drift(self):
         self.assertEqual(f.validate_feasibility_manifest(self.candidate), [])
