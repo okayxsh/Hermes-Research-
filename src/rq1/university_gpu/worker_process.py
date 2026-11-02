@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
@@ -45,6 +46,32 @@ class WorkerProcessClient:
         except Empty as exc:
             raise SchedulerError(f"timed out waiting for worker {label}") from exc
 
+    @staticmethod
+    def _invalid_protocol_line(line: str, *, label: str, reason: str) -> SchedulerError:
+        digest = hashlib.sha256(line.encode('utf-8', errors='replace')).hexdigest()
+        return SchedulerError(f"invalid worker protocol message for {label}: {reason}; "
+                              f"chars={len(line)} sha256={digest} preview={line[:160]!r}")
+
+    @staticmethod
+    def _decode_protocol_line(line: str, *, label: str) -> dict[str, Any]:
+        """Reject malformed feasibility replies, retaining a bounded diagnostic."""
+        try:
+            def reject_constant(value: str) -> None:
+                raise ValueError(f"invalid JSON constant {value}")
+            def unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON key")
+                    result[key] = value
+                return result
+            message = json.loads(line, parse_constant=reject_constant, object_pairs_hook=unique_keys)
+            if not isinstance(message, dict):
+                raise ValueError("protocol message must be a JSON object")
+            return message
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise WorkerProcessClient._invalid_protocol_line(line, label=label, reason="invalid JSON object") from exc
+
     def start(self, *, timeout: float = 900) -> dict[str, Any]:
         require_posix_process_management("GPU worker start")
         if self.process is not None and self.process.poll() is None:
@@ -65,8 +92,11 @@ class WorkerProcessClient:
                 stderr_path = self.config_path.parent / f"{self.worker_id}.stderr.log"
                 stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
                 raise SchedulerError(f"worker {self.worker_id} exited before ready: {stderr[-2000:]}")
-            ready = json.loads(line)
+            ready = (self._decode_protocol_line(line, label=f"{self.worker_id} startup")
+                     if self.module == "rq1.university_gpu.feasibility_worker" else json.loads(line))
             if ready.get("ready") is not True:
+                if self.module == "rq1.university_gpu.feasibility_worker":
+                    raise self._invalid_protocol_line(line, label=f"{self.worker_id} startup", reason="worker not ready")
                 raise SchedulerError(f"worker {self.worker_id} failed startup: {ready}")
             if ready.get("worker_id") != self.worker_id or ready.get("gpu_uuid") != self.gpu_uuid:
                 raise SchedulerError(f"worker {self.worker_id} identity does not match its assigned GPU")
@@ -92,7 +122,24 @@ class WorkerProcessClient:
                 stderr_path = self.config_path.parent / f"{self.worker_id}.stderr.log"
                 stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
                 raise SchedulerError(f"worker {self.worker_id} closed its protocol stream: {stderr[-2000:]}")
-            response = json.loads(line)
+            if self.module == "rq1.university_gpu.feasibility_worker":
+                try:
+                    response = self._decode_protocol_line(line, label=f"{self.worker_id} episode")
+                    if type(response.get("ok")) is not bool or (response["ok"] and not isinstance(response.get("result"), dict)):
+                        raise self._invalid_protocol_line(line, label=f"{self.worker_id} episode", reason="invalid response shape")
+                    if response["ok"] is False and (
+                        not isinstance(response.get("error_type"), str) or not response["error_type"]
+                        or not isinstance(response.get("error"), str)
+                        or any(response.get(key) is not None and type(response.get(key)) is not bool
+                               for key in ("safe_to_continue", "mutation_state_known"))
+                        or not isinstance(response.get("failure_details", {}), dict)
+                    ):
+                        raise self._invalid_protocol_line(line, label=f"{self.worker_id} episode", reason="invalid failure response shape")
+                except SchedulerError:
+                    self.stop(timeout=2)
+                    raise
+            else:
+                response = json.loads(line)
             if response.get("ok") is not True:
                 raise RunFailure(
                     f"worker {self.worker_id} failed unit: {response.get('error_type')}: {response.get('error')}",
