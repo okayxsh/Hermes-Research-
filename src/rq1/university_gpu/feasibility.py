@@ -1130,12 +1130,11 @@ def run_feasibility_benchmark(
     from rq1.university_gpu.hardware import machine_report as default_machine_report
     from rq1.university_gpu.models import GPUDevice
     from rq1.university_gpu.ollama import OllamaServer, probe_endpoint as default_probe, worker_specs
-    from rq1.university_gpu.ops import capture_placement
+    from rq1.university_gpu.feasibility_placement import capture_feasibility_placement
     machine_report_fn = machine_report_fn or default_machine_report
     server_factory = server_factory or OllamaServer
     probe_fn = probe_fn or default_probe
     smoke_fn = smoke_fn or _feasibility_smoke
-    placement_fn = placement_fn or capture_placement
     output = output.expanduser().resolve()
     try:
         output.relative_to(root.resolve())
@@ -1174,8 +1173,9 @@ def run_feasibility_benchmark(
         smoke = smoke_fn([spec.endpoint for spec in specs], approval)
         if smoke.get("status") != "PASS" or smoke.get("inference_count") != 4:
             raise FeasibilityError("four-way benchmark smoke test failed")
-        placement = placement_fn({server.spec.worker_id: int(server.process.pid) for server in servers
-                                  if server.process is not None})
+        placement = (placement_fn({server.spec.worker_id: int(server.process.pid) for server in servers
+                                   if server.process is not None}) if placement_fn is not None
+                     else capture_feasibility_placement(servers))
         expected = {spec.worker_id: spec.gpu_uuid for spec in specs}
         if placement.get("passed") is not True or placement.get("assignments") != expected:
             raise FeasibilityError("four-worker benchmark could not verify distinct GPU UUID placement")
@@ -1191,6 +1191,8 @@ def run_feasibility_benchmark(
                   "profile_id": PROFILE_ID, "scientific_evidence": False, "episodes_started": 0,
                   "manifest_sha256": manifest.get("manifest_sha256"), "error_type": type(exc).__name__,
                   "error": str(exc), "recorded_at": datetime.now(timezone.utc).isoformat()}
+        if 'placement' in locals():
+            report['gpu_placement'] = dict(placement)
         failure = exc
     finally:
         cleanup_errors = []
@@ -1299,7 +1301,8 @@ def run_feasibility_launch(
     from rq1.university_gpu.hardware import machine_report as default_machine_report
     from rq1.university_gpu.models import GPUDevice
     from rq1.university_gpu.ollama import OllamaServer, probe_endpoint as default_probe, worker_specs
-    from rq1.university_gpu.ops import OperatorError, capture_placement
+    from rq1.university_gpu.ops import OperatorError
+    from rq1.university_gpu.feasibility_placement import capture_feasibility_placement
     from rq1.university_gpu.scheduler import Coordinator, RunLock, RunStore
     from rq1.university_gpu.worker_process import WorkerProcessClient
 
@@ -1308,7 +1311,6 @@ def run_feasibility_launch(
     worker_factory = worker_factory or WorkerProcessClient
     probe_fn = probe_fn or default_probe
     smoke_fn = smoke_fn or _feasibility_smoke
-    placement_fn = placement_fn or capture_placement
     output_root = Path(str(config["run_output_dir"])).expanduser()
     try:
         output_root.resolve().relative_to(root.resolve())
@@ -1351,8 +1353,9 @@ def run_feasibility_launch(
         smoke = smoke_fn([spec.endpoint for spec in specs], approval)
         if smoke.get("status") != "PASS" or smoke.get("scientific_evidence") is not False:
             raise FeasibilityError("engineering smoke inference or approval boundary failed")
-        placement = placement_fn({server.spec.worker_id: int(server.process.pid) for server in servers
-                                  if server.process is not None})
+        placement = (placement_fn({server.spec.worker_id: int(server.process.pid) for server in servers
+                                   if server.process is not None}) if placement_fn is not None
+                     else capture_feasibility_placement(servers))
         expected_placement = {spec.worker_id: spec.gpu_uuid for spec in specs}
         if placement.get("passed") is not True or placement.get("assignments") != expected_placement:
             raise FeasibilityError("live Ollama process-to-physical-GPU UUID placement did not verify")
@@ -1424,6 +1427,7 @@ def run_feasibility_launch(
                 "schema": "rq1-feasibility-launch-failure-v1", "launch_id": launch_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(), "error_type": type(exc).__name__,
                 "error": str(exc), "profile_id": PROFILE_ID, "scientific_evidence": False,
+                "gpu_placement": dict(placement) if 'placement' in locals() else None,
             }, overwrite=False)
         except OSError:
             pass

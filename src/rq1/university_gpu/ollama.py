@@ -94,6 +94,8 @@ class OllamaServer:
     startup_timeout: float = 30
     process: subprocess.Popen[Any] | None = None
     log_handle: Any = None
+    log_start_offset: int | None = None
+    log_identity: tuple[int, int] | None = None
 
     def start(self, *, runner: Any = subprocess.Popen) -> dict[str, Any]:
         require_posix_process_management("Ollama worker start")
@@ -101,6 +103,9 @@ class OllamaServer:
             raise OllamaError(f"server for {self.spec.worker_id} is already running")
         self.spec.worker_dir.mkdir(parents=True, exist_ok=True)
         self.log_handle = (self.spec.worker_dir / "ollama-server.log").open("ab")
+        log_stat = os.fstat(self.log_handle.fileno())
+        self.log_start_offset = log_stat.st_size
+        self.log_identity = (log_stat.st_dev, log_stat.st_ino)
         env = server_environment(self.spec, model_dir=self.model_dir)
         self.process = runner([self.binary, "serve"], cwd=self.spec.worker_dir, env=env,
                               stdin=subprocess.DEVNULL, stdout=self.log_handle, stderr=subprocess.STDOUT)
