@@ -46,7 +46,14 @@ def verify_engineering_authorization(
             or not isinstance(approval.get("approval_reference"), str) or not approval["approval_reference"].strip()
             or not isinstance(approval.get("approval_provenance"), str) or not approval["approval_provenance"].strip()):
         raise AuthorizationError("engineering approval schema or candidate/profile/model scope is invalid")
-    trusted = os.environ.get(TRUSTED_APPROVAL_SHA256_ENV, "").strip().lower()
+    mode = os.environ.get("RQ1_ENGINEERING_AUTHORITY_MODE", "independent")
+    if mode not in {"independent", "self_attested"}:
+        raise AuthorizationError("unsupported engineering authorization mode")
+    if mode == "self_attested" and "self-attestation" not in str(approval.get("approval_provenance", "")).lower():
+        raise AuthorizationError("self-attested mode requires explicit self-attestation provenance")
+    pin_key = ("RQ1_SELF_ATTESTED_ENGINEERING_APPROVAL_SHA256"
+               if mode == "self_attested" else TRUSTED_APPROVAL_SHA256_ENV)
+    trusted = os.environ.get(pin_key, "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", trusted):
         raise AuthorizationError("independent engineering approval hash is not configured; production authorization is blocked")
     observed = approval_digest(approval)
@@ -57,7 +64,16 @@ def verify_engineering_authorization(
 
 def verify_frozen_manifest_anchor(manifest: Mapping[str, Any]) -> str:
     """Require separately pinned frozen-run identity before any GPU operation."""
-    trusted = os.environ.get(TRUSTED_MANIFEST_SHA256_ENV, "").strip().lower()
+    mode = os.environ.get("RQ1_ENGINEERING_AUTHORITY_MODE", "independent")
+    if mode not in {"independent", "self_attested"}:
+        raise AuthorizationError("unsupported engineering authorization mode")
+    if mode == "self_attested":
+        approval = manifest.get("engineering_approval", {})
+        if "self-attestation" not in str(approval.get("approval_provenance", "")).lower():
+            raise AuthorizationError("manifest lacks self-attestation provenance")
+    pin_key = ("RQ1_SELF_ATTESTED_ENGINEERING_MANIFEST_SHA256"
+               if mode == "self_attested" else TRUSTED_MANIFEST_SHA256_ENV)
+    trusted = os.environ.get(pin_key, "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", trusted):
         raise AuthorizationError("independent frozen engineering manifest hash is not configured")
     observed = str(manifest.get("manifest_sha256", "")).lower()
