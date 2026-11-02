@@ -1,9 +1,17 @@
 """Worker entry point for the isolated non-scientific 200-action profile."""
 from __future__ import annotations
 
+import sys
+
+# Only the executable feasibility worker owns its stdout descriptor. Isolate
+# it before importing the runtime or its native and subprocess dependencies.
+_protocol_stream = None
+if __name__ == "__main__":
+    from rq1.university_gpu.feasibility_protocol import isolate_protocol_stdout
+    _protocol_stream = isolate_protocol_stdout()
+
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -174,7 +182,7 @@ def serve(config_path: Path, *, input_stream: Any = sys.stdin, output_stream: An
         output_stream.flush()
         for line in input_stream:
             if not line.strip():
-                continue
+                raise ValueError("blank worker protocol request")
             message = json.loads(line)
             if message.get("command") == "shutdown":
                 break
@@ -206,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
-    return serve(args.config)
+    return serve(args.config, output_stream=_protocol_stream if _protocol_stream is not None else sys.stdout)
 
 
 if __name__ == "__main__":
