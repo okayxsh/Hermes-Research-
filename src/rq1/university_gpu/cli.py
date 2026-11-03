@@ -179,7 +179,7 @@ def add_parser(subparsers: Any) -> None:
     item.add_argument("--yes", action="store_true")
     item.add_argument("--output", type=Path, required=True)
     for name in ("launch", "resume"):
-        item = feasibility_actions.add_parser(name, help="Run the 12-episode engineering matrix after all separate gates pass.")
+        item = feasibility_actions.add_parser(name, help="Run the separately authorized engineering matrix after all gates pass.")
         item.add_argument("--config", type=Path, required=True)
         item.add_argument("--manifest", type=Path, required=True)
         item.add_argument("--approval-file", type=Path, required=True)
@@ -207,6 +207,63 @@ def add_parser(subparsers: Any) -> None:
     item = feasibility_actions.add_parser("verify-export", help="Verify a copied feasibility export offline.")
     item.add_argument("--destination", type=Path, required=True)
 
+    feasibility = actions.add_parser("engineering-scale", help="Separate non-scientific six-task, 200-action engineering pathway.")
+    feasibility_actions = feasibility.add_subparsers(dest="scale_command", required=True)
+    item = feasibility_actions.add_parser("candidate", help="Build a separate 500-unit or four-unit acceptance candidate.")
+    item.add_argument("--baseline-candidate", type=Path, required=True)
+    item.add_argument("--acceptance", action="store_true")
+    item.add_argument("--additional-attempts", type=int, default=0)
+    item.add_argument("--output", type=Path, required=True)
+    item = feasibility_actions.add_parser("validate", help="Validate the candidate or reviewed engineering-frozen manifest.")
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--require-frozen", action="store_true")
+    item = feasibility_actions.add_parser("freeze", help="Bind reviewed assets and human approvals into an engineering-only manifest.")
+    for flag in ("candidate", "data-report", "data-review", "oracle-report", "identity-report", "identity-review",
+                 "accum18-library", "accum18-reference", "sbert-cache", "tokenizer", "engineering-approval", "output"):
+        item.add_argument("--" + flag, type=Path, required=True)
+    item.add_argument("--run-id", required=True)
+    item = feasibility_actions.add_parser("preflight", help="Rehash every frozen input without GPU access or inference.")
+    item.add_argument("--config", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("benchmark", help="Run four approved concurrent smoke requests and verify GPU UUID placement; no episodes.")
+    item.add_argument("--config", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--approval-file", type=Path, required=True)
+    item.add_argument("--yes", action="store_true")
+    item.add_argument("--output", type=Path, required=True)
+    for name in ("launch", "resume"):
+        item = feasibility_actions.add_parser(name, help="Run the separately authorized engineering matrix after all gates pass.")
+        item.add_argument("--config", type=Path, required=True)
+        item.add_argument("--manifest", type=Path, required=True)
+        item.add_argument("--approval-file", type=Path, required=True)
+        item.add_argument("--yes", action="store_true")
+        item.add_argument("--retry-failed", action="store_true")
+        item.add_argument("--cutoff-epoch", type=float, required=True)
+    item = feasibility_actions.add_parser("status", help="Read feasibility run progress.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("stop", help="Request cooperative stop after active episodes finish.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
+    item.add_argument("--reason", default="operator requested safe stop")
+    for name in ("validate-run", "merge"):
+        item = feasibility_actions.add_parser(name, help="Validate stored feasibility results or write canonical merged results.")
+        item.add_argument("--run-root", type=Path, required=True)
+        item.add_argument("--output-root", type=Path, required=True)
+        item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("export-progress", help="Export a checksummed partial or complete engineering run.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item.add_argument("--destination", type=Path, required=True)
+    item = feasibility_actions.add_parser("protect", help="Verify and copy a stopped scale segment to its approved destination.")
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--output-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("verify-export", help="Verify a copied feasibility export offline.")
+    item.add_argument("--destination", type=Path, required=True)
+
 
 def _emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, default=str))
@@ -220,9 +277,18 @@ def run(root: Path, args: argparse.Namespace) -> int:
 
     try:
         action = args.university_gpu_command
-        if action == "feasibility":
+        if action in {"feasibility", "engineering-scale"}:
             from rq1.university_gpu import feasibility
-            subcommand = args.feasibility_command
+            if action == "engineering-scale":
+                from rq1.university_gpu import engineering_scale as feasibility
+                subcommand = args.scale_command
+            else:
+                subcommand = args.feasibility_command
+            if subcommand == "candidate":
+                value = feasibility.build_scale_candidate(load_json(args.baseline_candidate), acceptance=args.acceptance, additional_attempts=args.additional_attempts)
+                atomic_write_json(args.output, value, overwrite=False)
+                _emit({"status": "CANDIDATE_UNAPPROVED", "manifest_sha256": value["manifest_sha256"], "episodes": value["episode_count"]})
+                return 0
             if subcommand == "propose":
                 value = feasibility.build_candidate_manifest(args.candidate, args.proposal, args.transferred_audit, args.model_proposal)
                 atomic_write_json(args.output, value, overwrite=False)
@@ -284,7 +350,8 @@ def run(root: Path, args: argparse.Namespace) -> int:
                 _emit(result)
                 return 0 if result["status"] == "PASS" else 1
             if subcommand in {"launch", "resume"}:
-                value = feasibility.run_feasibility_launch(
+                launcher = feasibility.run_supervised if action == "engineering-scale" else feasibility.run_feasibility_launch
+                value = launcher(
                     root, ops.load_external_config(args.config), load_json(args.manifest),
                     approval=load_json(args.approval_file), yes=args.yes, resume=subcommand == "resume",
                     retry_failed=args.retry_failed, cutoff_epoch=args.cutoff_epoch,
@@ -310,12 +377,18 @@ def run(root: Path, args: argparse.Namespace) -> int:
                     value = coordinator.validate()
                     _emit(value)
                     return 0 if value["passed"] else 1
-                _emit(coordinator.merge())
+                value = (feasibility.finalize_run(checked, manifest_value) if action == "engineering-scale" else coordinator.merge())
+                _emit(value)
                 return 0
             if subcommand == "export-progress":
                 from rq1.university_gpu.snapshot import export_progress
                 checked = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest)
                 _emit(export_progress(root, checked, args.manifest, args.destination))
+                return 0
+            if subcommand == "protect" and action == "engineering-scale":
+                from rq1.university_gpu.scale_protection import protect_segment
+                checked = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest)
+                _emit(protect_segment(root, checked, args.manifest))
                 return 0
             if subcommand == "verify-export":
                 from rq1.university_gpu.snapshot import verify_progress

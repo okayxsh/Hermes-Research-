@@ -51,6 +51,9 @@ def _valid_unit_key(value: str) -> bool:
 
 
 def _validate_run_manifest(manifest: Mapping[str, Any]) -> list[str]:
+    if manifest.get("schema") == "rq1-engineering-scale-manifest-v1":
+        from rq1.university_gpu.engineering_scale import validate_feasibility_manifest
+        return validate_feasibility_manifest(manifest, require_frozen=True)
     if manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
         from rq1.university_gpu.feasibility import validate_feasibility_manifest
 
@@ -61,9 +64,9 @@ def _validate_run_manifest(manifest: Mapping[str, Any]) -> list[str]:
 def _validate_feasibility_result(result: Mapping[str, Any], expected: Mapping[str, Any],
                                  manifest: Mapping[str, Any]) -> list[str]:
     """Keep engineering-only records from being reinterpreted as scientific results."""
-    if manifest.get("schema") != "rq1-feasibility-execution-manifest-v1":
+    if manifest.get("schema") not in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
         return []
-    profile = "rq1-feasibility-200-v1"
+    profile = manifest["profile_id"]
     measurements = result.get("measurements")
     problems = []
     if (result.get("scientific_evidence") is not False or result.get("profile_id") != profile
@@ -77,7 +80,7 @@ def _validate_feasibility_result(result: Mapping[str, Any], expected: Mapping[st
     else:
         if (measurements.get("scientific_evidence") is not False
                 or measurements.get("evaluation_profile") != profile
-                or measurements.get("result_schema") != "rq1-feasibility-episode-result-v1"
+                or measurements.get("result_schema") != ("rq1-engineering-scale-result-v1" if profile == "rq1-engineering-500-v1" else "rq1-feasibility-episode-result-v1")
                 or measurements.get("model") != manifest.get("model", {}).get("tag")
                 or measurements.get("model_digest") != manifest.get("model", {}).get("digest")
                 or measurements.get("condition") != expected.get("condition")
@@ -89,6 +92,8 @@ def _validate_feasibility_result(result: Mapping[str, Any], expected: Mapping[st
                 or measurements.get("checkpoint_digest") != expected.get("checkpoint_digest")
                 or measurements.get("perturbation_digest") != expected.get("post_detour_digest")):
             problems.append("feasibility episode measurements do not preserve model, action, or perturbation identity")
+    if profile == "rq1-engineering-500-v1" and any(result.get(k) != expected.get(k) for k in ("repetition_id", "pair_id")):
+        problems.append("scale repetition/pair identity differs")
     retrieved = result.get("retrieved_skill_ids")
     scores = result.get("retrieval_similarity_scores")
     if not isinstance(retrieved, list) or (expected.get("condition") == "D0" and retrieved) \
@@ -307,10 +312,16 @@ class RunStore:
         self._next_event_sequence += 1
         return path
 
-    def completed(self) -> dict[str, dict[str, Any]]:
+    def completed(self, *, only_unit: str | None = None) -> dict[str, dict[str, Any]]:
         completed: dict[str, dict[str, Any]] = {}
         known = {unit["unit_key"] for unit in self.manifest["units"]}
-        for path in sorted(self.results_dir.glob("*.json")):
+        if only_unit is not None:
+            if self.manifest.get("profile_id") != "rq1-engineering-500-v1" or only_unit not in known or not _valid_unit_key(only_unit):
+                raise SchedulerError("selective verification is limited to one known scale unit")
+            paths = [self.path(Path("results/units") / (only_unit + ".json"))]
+        else:
+            paths = sorted(self.results_dir.glob("*.json"))
+        for path in paths:
             try:
                 self.path(path.relative_to(self.root))
             except SchedulerError:
@@ -326,7 +337,7 @@ class RunStore:
             payload = value.get("result")
             if not isinstance(payload, dict) or value.get("result_sha256") != content_hash(payload):
                 raise SchedulerError(f"result hash mismatch: {path}")
-            if self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+            if self.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
                 expected = next(u for u in self.manifest["units"] if u["unit_key"] == unit_key)
                 issues = _validate_feasibility_result(payload, expected, self.manifest)
                 issues.extend(self.validate_evidence(payload, str(value.get("attempt_id", ""))))
@@ -334,7 +345,7 @@ class RunStore:
                     raise SchedulerError("invalid authoritative evidence: " + "; ".join(issues))
             completed[unit_key] = value
         anchor_dir = os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR")
-        if anchor_dir and self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        if anchor_dir and self.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
             from rq1.university_gpu.evidence_anchor import verify_anchor_dir
             try:
                 verify_anchor_dir(self.root, self.manifest_path, Path(anchor_dir))
@@ -347,7 +358,7 @@ class RunStore:
         status = {"classification": "internally_validated", "independent_protection": "not_verified",
                   "matched_units": [], "unanchored_units": sorted(completed)}
         directory = os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR")
-        if directory and self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        if directory and self.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
             from rq1.university_gpu.evidence_anchor import verify_anchor_dir
             try:
                 check = verify_anchor_dir(self.root, self.manifest_path, Path(directory))
@@ -394,7 +405,7 @@ class RunStore:
                 or body.get("task_family") != expected.get("task_family")
                 or not isinstance(body.get("recovery_success"), bool)):
             raise SchedulerError("worker result status or scientific identity differs from the frozen assignment")
-        if self.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        if self.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
             result_problems = _validate_feasibility_result(body, expected, self.manifest)
             result_problems.extend(self.validate_evidence(body, attempt_id))
             if result_problems:
@@ -435,6 +446,7 @@ class Coordinator:
         storage_minimum_bytes: int = 1_000_000_000,
         minimum_start_seconds: float = 1800,
         heartbeat_seconds: float = 60,
+        monitor: Any = None,
     ) -> dict[str, Any]:
         if heartbeat_seconds <= 0:
             raise SchedulerError("heartbeat interval must be positive")
@@ -543,12 +555,21 @@ class Coordinator:
                             "mutation_state_known=true; manual recovery is required")
                 pending.append(unit)
             active: dict[Future[Mapping[str, Any]], tuple[EpisodeWorker, Mapping[str, Any], str, Path, float]] = {}
+            accepted_count = len(completed)
             free_workers = list(self.workers)
             attempted = 0
             interrupted_by_cutoff = False
             storage_failed = False
+            last_monitor = float("-inf")
             with ThreadPoolExecutor(max_workers=len(self.workers), thread_name_prefix="rq1-gpu-scheduler") as pool:
                 while pending or active:
+                    if monitor is not None and time.monotonic() - last_monitor >= heartbeat_seconds:
+                        try:
+                            monitor()
+                        except Exception as exc:
+                            failures.append({"failure_class": "monitor", "error_type": type(exc).__name__, "error": str(exc)})
+                            self.request_stop("resource monitor failed; stop assigning work")
+                        last_monitor = time.monotonic()
                     if pending and not storage_failed:
                         try:
                             free_bytes = shutil.disk_usage(self.store.root).free
@@ -576,6 +597,8 @@ class Coordinator:
                                                  "attempt_number": attempt_number, "worker_id": worker.worker_id,
                                                  "task_id": unit.get("task_id"), "task_family": unit.get("task_family"),
                                                  "seed": unit.get("seed"), "condition": unit.get("condition"),
+                                                 **({"repetition_id": unit["repetition_id"], "pair_id": unit["pair_id"]}
+                                                    if self.store.manifest.get("profile_id") == "rq1-engineering-500-v1" else {}),
                                                  "attempt_dir": str(attempt_dir)})
                         future = pool.submit(worker.execute, unit, attempt_dir, attempt_id)
                         active[future] = (worker, unit, attempt_id, attempt_dir, time.monotonic())
@@ -617,11 +640,13 @@ class Coordinator:
                                     self.request_stop(f"per-unit checkpoint failed for {key}: {type(exc).__name__}: {exc}")
                                 except OSError:
                                     pass
-                            done_count = len(self.store.completed())
+                            accepted_count += 1
+                            done_count = (accepted_count if self.store.manifest.get("profile_id") == "rq1-engineering-500-v1"
+                                          else len(self.store.completed()))
                             planned_count = len(self.store.manifest["units"])
                             # Retain the historical periodic full-run bundle for portability;
                             # per-unit checkpoints above are the immediate recovery authority.
-                            if not backup_failed and (done_count % 10 == 0 or done_count == planned_count):
+                            if not backup_failed and ((self.store.manifest.get("profile_id") != "rq1-engineering-500-v1" and done_count % 10 == 0) or done_count == planned_count):
                                 try:
                                     from rq1.university_gpu.snapshot import backup_checkpoint
                                     backup_checkpoint(self.store)
@@ -652,12 +677,16 @@ class Coordinator:
                             info = {"unit_key": key, "attempt_id": attempt_id, "worker_id": worker.worker_id,
                                     "task_id": unit.get("task_id"), "task_family": unit.get("task_family"),
                                     "seed": unit.get("seed"), "condition": unit.get("condition"),
+                                                 **({"repetition_id": unit["repetition_id"], "pair_id": unit["pair_id"]}
+                                                    if self.store.manifest.get("profile_id") == "rq1-engineering-500-v1" else {}),
                                     "error_type": type(exc).__name__, "error": str(exc), "attempt_dir": str(attempt_dir),
                                     "failure_details": dict(getattr(exc, "details", {}) or {}),
                                     "safe_to_continue": getattr(exc, "safe_to_continue", None),
                                     "mutation_state_known": getattr(exc, "mutation_state_known", None)}
                             failures.append(info)
                             self.store.append_event({"event": "attempt_failed", **info})
+                            if self.store.manifest.get("profile_id") == "rq1-engineering-500-v1":
+                                self.request_stop("scale worker failure requires reviewed recovery")
                             if not getattr(worker, "quarantine_on_failure", False):
                                 free_workers.append(worker)
                         free_workers.sort(key=lambda item: item.worker_id)
@@ -747,7 +776,7 @@ class Coordinator:
             problems.append(f"invalid result identity/status for {len(set(bad))} units")
         result = {"passed": not problems and len(completed) == len(expected), "problems": problems,
                   "expected": len(expected), "completed": len(completed), "missing": sorted(set(expected) - set(completed))}
-        if self.store.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        if self.store.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
             result["evidence_anchor_status"] = self.store.evidence_anchor_status(completed)
         return result
 

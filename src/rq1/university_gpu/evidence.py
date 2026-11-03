@@ -16,7 +16,9 @@ def inventory_attempt(attempt_dir: Path, result: Mapping[str, Any]) -> dict:
         if path.is_symlink() or not path.is_file() or any(p.is_symlink() for p in path.parents if p != attempt_dir.parent):
             raise ValueError("missing or unsafe mandatory trace: " + name)
         files.append({"path": name, "sha256": sha256_file(path), "bytes": path.stat().st_size})
-    return {"schema": "rq1-feasibility-attempt-evidence-v1", "unit_key": result["unit_key"],
+    extras = ({"repetition_id": result["repetition_id"], "pair_id": result["pair_id"]}
+              if result.get("profile_id") == "rq1-engineering-500-v1" else {})
+    return {**extras, "schema": "rq1-feasibility-attempt-evidence-v1", "unit_key": result["unit_key"],
             "attempt_id": result["attempt_id"], "task_id": result["task_id"], "condition": result["condition"],
             "files": files}
 
@@ -26,7 +28,10 @@ def validate_attempt_evidence(attempt_dir: Path, result: Mapping[str, Any], task
         evidence = result.get("raw_evidence")
         if not isinstance(evidence, Mapping) or evidence.get("schema") != "rq1-feasibility-attempt-evidence-v1":
             return ["missing required attempt evidence inventory"]
-        for key in ("unit_key", "attempt_id", "task_id", "condition"):
+        keys = ("unit_key", "attempt_id", "task_id", "condition")
+        if result.get("profile_id") == "rq1-engineering-500-v1":
+            keys += ("repetition_id", "pair_id")
+        for key in keys:
             if evidence.get(key) != result.get(key):
                 return ["attempt evidence identity mismatch: " + key]
         if result.get("log_paths") != list(REQUIRED_LOGS):

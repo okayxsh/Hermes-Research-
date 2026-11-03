@@ -28,7 +28,7 @@ def verify_engineering_authorization(
     conditions: tuple[str, ...] = ("D0", "D18"),
 ) -> str:
     """Validate schema and match an operator-pinned approval digest from a separate channel."""
-    if (approval.get("test_only") is not False or approval.get("schema") != "rq1-engineering-feasibility-approval-v1"
+    if (approval.get("test_only") is not False or approval.get("schema") != ("rq1-engineering-scale-approval-v1" if profile_id == "rq1-engineering-500-v1" else "rq1-engineering-feasibility-approval-v1")
             or approval.get("authorization_type") != "engineering_gpu"
             or approval.get("approval_scope") != "engineering_feasibility_only"
             or approval.get("gpu_inference") is not True or approval.get("scientific_run") is not False
@@ -47,6 +47,8 @@ def verify_engineering_authorization(
             or not isinstance(approval.get("approval_provenance"), str) or not approval["approval_provenance"].strip()):
         raise AuthorizationError("engineering approval schema or candidate/profile/model scope is invalid")
     mode = os.environ.get("RQ1_ENGINEERING_AUTHORITY_MODE", "independent")
+    if profile_id == "rq1-engineering-500-v1" and mode != "independent":
+        raise AuthorizationError("scale runs require independent authorization")
     if mode not in {"independent", "self_attested"}:
         raise AuthorizationError("unsupported engineering authorization mode")
     if mode == "self_attested" and "self-attestation" not in str(approval.get("approval_provenance", "")).lower():
@@ -65,6 +67,8 @@ def verify_engineering_authorization(
 def verify_frozen_manifest_anchor(manifest: Mapping[str, Any]) -> str:
     """Require separately pinned frozen-run identity before any GPU operation."""
     mode = os.environ.get("RQ1_ENGINEERING_AUTHORITY_MODE", "independent")
+    if manifest.get("profile_id") == "rq1-engineering-500-v1" and mode != "independent":
+        raise AuthorizationError("scale runs require independent manifest verification")
     if mode not in {"independent", "self_attested"}:
         raise AuthorizationError("unsupported engineering authorization mode")
     if mode == "self_attested":

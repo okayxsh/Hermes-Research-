@@ -1,0 +1,114 @@
+{
+  "schema": "rq1-engineering-scale-offline-validation-v1",
+  "status": "OFFLINE_VALIDATED_NOT_LAUNCH_READY",
+  "launch_ready": false,
+  "baseline_commit": "6af25622464142beef25d2c248655946389e4f8b",
+  "profile_id": "rq1-engineering-500-v1",
+  "matrix": {
+    "executions": 500,
+    "pairs": 250,
+    "conditions": {
+      "D0": 250,
+      "D18": 250
+    },
+    "task_pair_counts": [
+      42,
+      42,
+      42,
+      42,
+      41,
+      41
+    ],
+    "environment_seed": 11,
+    "inference_seed": 11,
+    "total_action_cap": 200
+  },
+  "transferred_repeat_run": {
+    "archive_sha256": "8d6f2ce4acd7f30875052cd497b10a4cb92f5ef412c398adc20e3906e05c6455",
+    "semantic_verification": "PASS",
+    "completed": 12,
+    "planned": 12,
+    "inventory_entries": 415,
+    "required_raw_files": 48,
+    "independent_anchor_authentication": "NOT_VERIFIED",
+    "checkpoint_directories_in_transfer": false,
+    "archived_source_blobs_compared": 211,
+    "archived_source_blob_mismatches": 0
+  },
+  "tests": {
+    "broad_suite": {
+      "run": 520,
+      "skipped": 9,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "final_focused_suite": {
+      "run": 32,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "legacy_and_scale_regression": {
+      "run": 57,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "development_500_integration": {
+      "status": "PASS",
+      "seconds": 2519.315
+    },
+    "release_500_integration": {
+      "status": "PASS",
+      "test_cases": 1,
+      "logical_executions": 500,
+      "workers": 4,
+      "segments": 10,
+      "seconds": 3157.503
+    },
+    "additional_focused_cases": "PASS: hardware identity, dependency binding, backup path restrictions, flush/recovery, supervisor barriers, published-result crash window, synthetic freeze/preflight and drift",
+    "coverage_note": "Broad suite excludes the separately running long integration; later focused cases were tested separately. Run counts overlap and must not be summed.",
+    "synthetic_freeze_preflight_and_drift": "PASS (one targeted test; synthetic assets/approval pins only)",
+    "supervisor_clean_pause_and_failure_barriers": {
+      "run": 3,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "published_result_crash_window_and_unknown_state": {
+      "run": 2,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "storage_projection_freeze_and_acceptance": {
+      "run": 3,
+      "failures": 0,
+      "status": "PASS"
+    },
+    "current_discovered_test_cases": 534
+  },
+  "checks": {
+    "python_compilation": "PASS",
+    "git_diff_check": "PASS",
+    "ruff": "UNAVAILABLE_NOT_INSTALLED"
+  },
+  "real_gpu_requests_executed": 0,
+  "real_episodes_executed": 0,
+  "production_approvals_created": 0,
+  "preserved_git_blobs": {
+    "src/rq1/university_gpu/feasibility.py": "5f04008488dcc71d0d6c9901d6a609b054fbd4d7",
+    "src/rq1/university_gpu/feasibility_worker.py": "8abec600f0c1833b5685a33576b5fdc3a3d62405",
+    "university-gpu/prospective/feasibility-200-candidate.json": "291123a15860f3c7164c52ac234fb9f7c31ff1e8"
+  },
+  "external_blockers": [
+    "University WSL dependency/hardware inventory and permissions not verified in this laptop execution",
+    "Fresh independent acceptance/500-run approvals and externally received manifest pins",
+    "Separate real four-GPU acceptance run on the reviewed source",
+    "Approved independent storage, successful destination readback and institutional independence assertion",
+    "Authorized runtime cutoff, persistent-session/RDP survival and shutdown policy"
+  ],
+  "limitations": [
+    "All new executed episodes are synthetic test-provider cases, not research evidence",
+    "Laptop backup fixtures are not proof of off-machine independence",
+    "Repeated seed-11 observations use only six task contexts; no confirmatory inference",
+    "The source checkpoint status for the transferred run is reported, not independently rechecked from omitted checkpoint directories"
+  ],
+  "next_action": "Deploy the reviewed Git commit using ENGINEERING_500_RUNBOOK.md, obtain genuine independent acceptance authorization and trust pins, then run CPU preflight and separately approved hardware acceptance."
+}

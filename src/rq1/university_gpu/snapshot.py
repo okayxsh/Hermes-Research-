@@ -130,7 +130,7 @@ def verify_unit_checkpoint(store: RunStore, unit_key: str) -> dict:
     if (not isinstance(result, dict) or envelope.get("result_sha256") != content_hash(result)
             or result.get("attempt_id") != report.get("attempt_id")):
         raise SnapshotError(f"per-unit checkpoint embedded result is invalid: {unit_key}")
-    if store.manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+    if store.manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
         matches = list((checkpoint / "attempts" / unit_key).glob("*-" + str(report["attempt_id"])))
         if len(matches) != 1 or matches[0].is_symlink():
             raise SnapshotError(f"checkpoint raw attempt is missing or ambiguous: {unit_key}")
@@ -153,7 +153,8 @@ def verify_unit_checkpoint(store: RunStore, unit_key: str) -> dict:
 
 def backup_completed_unit(store: RunStore, unit_key: str) -> Path:
     """Publish one completed result and its closed raw traces without copying prior units."""
-    completed = store.completed()
+    selective = {"only_unit": unit_key} if store.manifest.get("profile_id") == "rq1-engineering-500-v1" else {}
+    completed = store.completed(**selective)
     if unit_key not in completed:
         raise SnapshotError(f"cannot checkpoint a unit without validated authority: {unit_key}")
     envelope = completed[unit_key]
@@ -197,7 +198,7 @@ def backup_completed_unit(store: RunStore, unit_key: str) -> Path:
                   "files_sha256": content_hash(sorted(files, key=lambda row: row["path"])),
                   "independent_backup": "not_verified"}
         atomic_write_json(temporary / "CHECKPOINT-MANIFEST.json", report, overwrite=False)
-        if sha256_file(result_source) != report["result_sha256"] or unit_key not in store.completed():
+        if sha256_file(result_source) != report["result_sha256"] or unit_key not in store.completed(**selective):
             raise SnapshotError("authoritative result changed during unit checkpoint")
         _fsync_checkpoint_tree(temporary)
         temporary.rename(target)
@@ -442,7 +443,7 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
                 raise SnapshotError(f"run contains a symlink: {rel}")
             if source.is_file():
                 copy_checked(source, Path("run") / rel)
-        if anchor_setting and manifest.get("schema") == "rq1-feasibility-execution-manifest-v1":
+        if anchor_setting and manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}:
             for unit in anchor_report["matched_units"]:
                 copy_checked(Path(anchor_setting) / f"{unit}.json", Path("anchor-records") / f"{unit}.json")
         for source in sorted((root / "src" / "rq1").rglob("*.py")):
@@ -523,4 +524,4 @@ def verify_progress(destination: Path) -> dict:
             "planned": report["planned"], "missing": len(report["missing_unit_keys"]), "files": len(seen),
             "evidence_anchor_status": report.get("evidence_anchor_status", {"classification": "internally_validated", "independent_protection": "not_verified"}),
             "source_checkpoint_status_at_export": report.get("source_checkpoint_status_at_export", "not_recorded"),
-            "external_anchor_comparison": "performed" if (os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR") and manifest.get("schema") == "rq1-feasibility-execution-manifest-v1") else "not_performed"}
+            "external_anchor_comparison": "performed" if (os.environ.get("RQ1_EVIDENCE_ANCHOR_DIR") and manifest.get("schema") in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}) else "not_performed"}

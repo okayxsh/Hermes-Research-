@@ -18,7 +18,7 @@ def _validated_manifest(run_root: Path, manifest_path: Path) -> dict:
     if manifest != load_json(run_root / "manifest.json"):
         raise EvidenceAnchorError("frozen manifest differs from run")
     from rq1.university_gpu.scheduler import _validate_run_manifest
-    if (manifest.get("schema") != "rq1-feasibility-execution-manifest-v1"
+    if (manifest.get("schema") not in {"rq1-feasibility-execution-manifest-v1", "rq1-engineering-scale-manifest-v1"}
             or _validate_run_manifest(manifest)):
         raise EvidenceAnchorError("feasibility manifest is invalid")
     return manifest
@@ -67,6 +67,8 @@ def _anchor_for(run_root: Path, manifest: dict, envelope: dict) -> dict:
                "episode_id": result["unit_key"], "attempt_id": attempt_id,
                "result_sha256": sha256_file(run_root / "results" / "units" / f"{unit}.json"),
                "attempt_files": _attempt_files(matches[0])}
+    if manifest.get("profile_id") == "rq1-engineering-500-v1":
+        payload.update(repetition_id=result["repetition_id"], pair_id=result["pair_id"])
     payload["anchor_sha256"] = content_hash(payload)
     return payload
 
@@ -76,6 +78,10 @@ def verify_anchor(run_root: Path, manifest_path: Path, anchor_path: Path) -> dic
         raise EvidenceAnchorError("external anchor must not be a symlink")
     run_root, manifest_path, anchor_path = run_root.resolve(), manifest_path.resolve(), anchor_path.resolve()
     manifest = _validated_manifest(run_root, manifest_path)
+    return _verify_anchor_with_manifest(run_root, manifest, anchor_path)
+
+
+def _verify_anchor_with_manifest(run_root: Path, manifest: dict, anchor_path: Path) -> dict:
     anchor_dir = anchor_path.parent.resolve()
     if anchor_dir == run_root or run_root in anchor_dir.parents:
         raise EvidenceAnchorError("anchor directory is inside mutable run root")
@@ -138,10 +144,13 @@ def verify_anchor_dir(run_root: Path, manifest_path: Path, anchor_dir: Path) -> 
     files = sorted(anchor_dir.glob("*.json"))
     seen = set()
     for path in files:
-        result = verify_anchor(run_root, manifest_path, path)
+        result = (_verify_anchor_with_manifest(run_root, manifest, path)
+                  if manifest.get("profile_id") == "rq1-engineering-500-v1" else verify_anchor(run_root, manifest_path, path))
         if result["unit_key"] in seen:
             raise EvidenceAnchorError("duplicate unit anchor")
         seen.add(result["unit_key"])
+    if manifest.get("profile_id") == "rq1-engineering-500-v1" and _validated_manifest(run_root, manifest_path) != manifest:
+        raise EvidenceAnchorError("manifest changed during anchor verification")
     completed = {p.stem for p in (run_root / "results" / "units").glob("*.json")}
     return {"status": "PASS", "integrity": "compared_to_supplied_anchor_directory; independent protection not verified", "verified": len(seen), "unanchored_units": sorted(completed - seen),
             "missing_anchor_units": sorted({str(u["unit_key"]) for u in manifest.get("units", [])} - seen)}
@@ -161,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.action == "create":
             from rq1.university_gpu.feasibility import checked_run_path
+            if load_json(args.manifest).get("schema") == "rq1-engineering-scale-manifest-v1":
+                from rq1.university_gpu.engineering_scale import checked_run_path
             checked = checked_run_path(args.output_root, args.run_root, args.manifest)
             result = create_anchors(checked, args.manifest, args.anchor_dir)
         else:

@@ -1,0 +1,32 @@
+{
+  "schema": "rq1-engineering-scale-approval-v1",
+  "authorization_type": "engineering_gpu",
+  "approval_scope": "engineering_feasibility_only",
+  "profile_id": "rq1-engineering-500-v1",
+  "run_id": "",
+  "candidate_manifest_sha256": "",
+  "model_tag": "gemma4:12b",
+  "model_digest": "6114515d63c17436a7c0417d82820ac65ad643e2806c5a3c89cb62846436ed0b",
+  "model_quantization": "Q4_K_M",
+  "total_action_budget": 200,
+  "conditions": [
+    "D0",
+    "D18"
+  ],
+  "gpu_inference": false,
+  "scientific_run": false,
+  "not_for_scientific_claims": true,
+  "prior_pick_place_exposure_acknowledged": false,
+  "approver_id": "",
+  "approved_by": "",
+  "approval_reference": "",
+  "approval_provenance": "",
+  "test_only": true,
+  "source_commit": "",
+  "episode_count": 500,
+  "maximum_attempts": 500,
+  "backup_destination": "",
+  "backup_independence_confirmed": false,
+  "access_end_epoch": null,
+  "acceptance_export_manifest_sha256": ""
+}

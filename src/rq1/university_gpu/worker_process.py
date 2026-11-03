@@ -93,9 +93,9 @@ class WorkerProcessClient:
                 stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
                 raise SchedulerError(f"worker {self.worker_id} exited before ready: {stderr[-2000:]}")
             ready = (self._decode_protocol_line(line, label=f"{self.worker_id} startup")
-                     if self.module == "rq1.university_gpu.feasibility_worker" else json.loads(line))
+                     if self.module in {"rq1.university_gpu.feasibility_worker", "rq1.university_gpu.engineering_scale_worker"} else json.loads(line))
             if ready.get("ready") is not True:
-                if self.module == "rq1.university_gpu.feasibility_worker":
+                if self.module in {"rq1.university_gpu.feasibility_worker", "rq1.university_gpu.engineering_scale_worker"}:
                     raise self._invalid_protocol_line(line, label=f"{self.worker_id} startup", reason="worker not ready")
                 raise SchedulerError(f"worker {self.worker_id} failed startup: {ready}")
             if ready.get("worker_id") != self.worker_id or ready.get("gpu_uuid") != self.gpu_uuid:
@@ -122,7 +122,7 @@ class WorkerProcessClient:
                 stderr_path = self.config_path.parent / f"{self.worker_id}.stderr.log"
                 stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
                 raise SchedulerError(f"worker {self.worker_id} closed its protocol stream: {stderr[-2000:]}")
-            if self.module == "rq1.university_gpu.feasibility_worker":
+            if self.module in {"rq1.university_gpu.feasibility_worker", "rq1.university_gpu.engineering_scale_worker"}:
                 try:
                     response = self._decode_protocol_line(line, label=f"{self.worker_id} episode")
                     if type(response.get("ok")) is not bool or (response["ok"] and not isinstance(response.get("result"), dict)):
