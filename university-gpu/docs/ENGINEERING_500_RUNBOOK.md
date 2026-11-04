@@ -1,5 +1,7 @@
 # Engineering scale runner: 4-episode acceptance and 500 executions
 
+For owner-reviewed acceptance and production commands, see [ENGINEERING_500_OWNER_REVIEWED.md](ENGINEERING_500_OWNER_REVIEWED.md). Owner review is not independent review; locally generated pins are integrity checks only.
+
 Status: offline preparation. Real four-GPU acceptance, independent reviewer decisions, university access and backup destination approval must be obtained on the workstation. Nothing here authorizes scientific inference. Original 12-episode profile and scientific freezes are preserved.
 
 ## Identity and workload
@@ -154,4 +156,4 @@ Retain all segment destinations and anchor snapshots. Raw outputs remain outside
 
 Default local and independent reserves: 50 GB each. Production preflight also projects observed acceptance-run bytes per execution across the approved physical attempt allowance with a 12x copy/headroom factor, and requires the larger of that projection and 50 GB on both destinations. This is a conservative estimate, not a worst-case bound; monitor remaining space and retain the runtime reserve. Existing assets/model caches need additional space and separately approved preservation. Run exports contain code, results, traces and identity pins; they do not bundle model blobs or dataset caches. Prior transferred run evidence extrapolates to ~0.81 GB per 500 before omitted logs/checkpoints. Cumulative segment copies cost ~5.5x final evidence; actual lengths, retries, monitor logs and compression vary. Full snapshots every ten units remain unchanged for the old runner; scale uses per-unit checkpoints and final/explicit-stop bundles. Full boundary/export validation remains mandatory.
 
-Launch readiness requires all offline checks, real four-GPU acceptance, independent authorization, approved persistent access, sufficient runtime/storage and verified independent readback. The software cannot establish institutional permission or physical backup independence by hashing a local path.
+Launch readiness requires all offline checks, real four-GPU acceptance, independent or owner-reviewed authorization, approved persistent access, sufficient runtime/storage and verified independent readback. The software cannot establish institutional permission or physical backup independence by hashing a local path.
