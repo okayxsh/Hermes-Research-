@@ -397,6 +397,24 @@ def _attempt_states(store: RunStore) -> list[dict]:
     return [states[key] for key in sorted(states)]
 
 
+def _continuation_launches(run_root: Path, manifest: dict) -> list[dict]:
+    launches = []
+    for path in sorted((run_root / "launches").glob("*.json")):
+        record = load_json(path)
+        if not isinstance(record, dict) or "continuation_authorization" not in record:
+            continue
+        auth = record["continuation_authorization"]
+        commit = record.get("continuation_source_commit")
+        if (not isinstance(auth, dict) or not isinstance(commit, str)
+                or record.get("manifest_sha256") != manifest["manifest_sha256"]
+                or record.get("original_source_commit") != manifest["source_commit"]
+                or commit != auth.get("continuation_source_commit")):
+            raise SnapshotError("continuation launch provenance conflicts with frozen run")
+        launches.append({"launch_id": record["launch_id"], "original_source_commit": manifest["source_commit"],
+                         "continuation_source_commit": commit, "authorization_sha256": content_hash(auth)})
+    return launches
+
+
 def export_progress(root: Path, run_root: Path, manifest_path: Path, destination: Path, relevance_path: Path | None = None) -> dict:
     root, run_root, destination = root.resolve(), run_root.resolve(), destination.resolve()
     if not run_root.is_dir():
@@ -469,19 +487,7 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
                   "attempt_states": _attempt_states(store),
                   "completed": validation["completed"], "missing_unit_keys": validation["missing"],
                   "source_commit": manifest["source_commit"], "files": sorted(files, key=lambda row: row["path"])}
-        continuation_launches = []
-        for path in sorted((run_root / "launches").glob("*.json")):
-            record = load_json(path)
-            if isinstance(record, dict) and isinstance(record.get("continuation_authorization"), dict):
-                auth = record["continuation_authorization"]
-                if (record.get("manifest_sha256") != manifest["manifest_sha256"]
-                        or record.get("original_source_commit") != manifest["source_commit"]
-                        or record.get("continuation_source_commit") != auth.get("continuation_source_commit")):
-                    raise SnapshotError("continuation launch provenance conflicts with frozen run")
-                continuation_launches.append({"launch_id": record["launch_id"],
-                    "original_source_commit": record["original_source_commit"],
-                    "continuation_source_commit": record["continuation_source_commit"],
-                    "authorization_sha256": content_hash(auth)})
+        continuation_launches = _continuation_launches(run_root, manifest)
         if continuation_launches:
             report["continuation_launches"] = continuation_launches
         try:
@@ -520,6 +526,9 @@ def verify_progress(destination: Path) -> dict:
     if actual != seen | {"EXPORT-MANIFEST.json"}:
         raise SnapshotError("export contains missing or unlisted files")
     manifest = load_json(destination / "run" / "manifest.json")
+    if (report.get("source_commit") != manifest["source_commit"]
+            or report.get("continuation_launches", []) != _continuation_launches(destination / "run", manifest)):
+        raise SnapshotError("export source provenance differs from preserved run and launch records")
     store = RunStore(destination / "run", manifest)
     store.event_rows()
     validation = Coordinator(store, [type("OfflineWorker", (), {"worker_id": "verify"})()]).validate()

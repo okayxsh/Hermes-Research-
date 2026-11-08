@@ -19,6 +19,7 @@ ALLOWED_CHANGES = frozenset({
     "src/rq1/university_gpu/engineering_scale.py", "src/rq1/university_gpu/scale_continuation.py",
     "src/rq1/university_gpu/cli.py", "src/rq1/university_gpu/snapshot.py",
     "tests/test_engineering_scale_continuation.py", "university-gpu/docs/ENGINEERING_500_CONTINUATION.md",
+    "university-gpu/docs/ENGINEERING_500_CONTINUATION_QUICKSTART.md",
 })
 
 

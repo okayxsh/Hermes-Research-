@@ -76,6 +76,9 @@ class ContinuationTests(unittest.TestCase):
                 with self.assertRaises(continuation.ContinuationError): self.verify(auth=changed)
         with patch.dict(os.environ, dict(pins(self.m, self.approval, self.auth), **{continuation.PIN_ENV:"0"*64})):
             with self.assertRaises(continuation.ContinuationError): self.verify()
+        with patch.dict(os.environ, pins(self.m, self.approval, self.auth)):
+            with self.assertRaisesRegex(continuation.ContinuationError, "75 minutes"):
+                self.verify(cutoff=time.time() - 1)
 
     def test_rejects_wrong_original_pin_and_non_owner_mode(self):
         for changes in ({"RQ1_ENGINEERING_AUTHORITY_MODE":"independent"},
@@ -83,6 +86,9 @@ class ContinuationTests(unittest.TestCase):
                         {"RQ1_OWNER_REVIEWED_ENGINEERING_APPROVAL_SHA256":"0"*64}):
             with patch.dict(os.environ, dict(pins(self.m, self.approval, self.auth), **changes)):
                 with self.assertRaises(continuation.ContinuationError): self.verify()
+        with patch.dict(os.environ, pins(self.m, self.approval, self.auth)):
+            os.environ.pop("RQ1_OWNER_REVIEWED_ENGINEERING_APPROVAL_SHA256")
+            with self.assertRaises(continuation.ContinuationError): self.verify()
 
     def test_source_commit_mismatch_and_scientific_profile_block(self):
         with patch.dict(os.environ, pins(self.m, self.approval, self.auth)):
@@ -129,7 +135,19 @@ class ContinuationTests(unittest.TestCase):
                     cutoff_epoch=time.time()+6000, machine_report_fn=lambda **kw: {"status":"PASS", "devices":devices},
                     server_factory=server)
         server.assert_not_called()
-        self.assertFalse((self.base / self.m["run_id"]).exists())
+        run_root = self.base / self.m["run_id"]
+        self.assertFalse(run_root.exists())
+        run_root.mkdir()
+        with patch.dict(os.environ, pins(self.m, self.approval, self.auth)), \
+             patch.object(continuation, "check_source"), patch.object(scale, "require_posix_process_management"), \
+             patch.object(scale, "verify_frozen_feasibility_assets", return_value={"status": "PASS"}):
+            with self.assertRaisesRegex(continuation.ContinuationError, "existing run manifest"):
+                scale.run_feasibility_launch(ROOT, {"run_output_dir":str(self.base), "worker_count":4}, self.m,
+                    approval=self.approval, continuation=self.auth, resume=True, yes=True,
+                    cutoff_epoch=time.time()+6000, machine_report_fn=lambda **kw: {"status":"PASS", "devices":devices},
+                    server_factory=server)
+        server.assert_not_called()
+        self.assertEqual(list(run_root.iterdir()), [])
 
     def test_original_218_checkpoint_set_remains_bound_after_progress(self):
         root = self.base / "fixture-run"; root.mkdir()
@@ -243,6 +261,14 @@ class ContinuationTests(unittest.TestCase):
         receipt = protect_segment(ROOT, store.root, store.manifest_path)
         identity = continuation.checkpoint_identity(store.root, m)
         self.assertEqual(identity["completed_count"], 1)
+        key = receipt["unit_keys"][0]
+        for path in (store.results_dir / (key + ".json"),
+                     store.root / "backups" / "units" / key / "CHECKPOINT-MANIFEST.json"):
+            original = path.read_bytes()
+            path.write_bytes(b"{}")
+            with self.assertRaises((ValueError, RuntimeError, KeyError)):
+                continuation.checkpoint_identity(store.root, m)
+            path.write_bytes(original)
         archive = Path(receipt["destination"]) / "export.tar.gz"; original = archive.read_bytes(); archive.write_bytes(b"test corruption")
         with self.assertRaises(ValueError): continuation.checkpoint_identity(store.root, m)
         archive.write_bytes(original)
@@ -267,6 +293,37 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual(row["original_source_commit"], m["source_commit"])
         self.assertEqual(row["continuation_source_commit"], "b"*40)
         self.assertEqual(row["authorization_sha256"], content_hash(auth))
+        report_path = destination / "EXPORT-MANIFEST.json"
+        report = load_json(report_path)
+        report["continuation_launches"] = []
+        atomic_write_json(report_path, report)
+        with self.assertRaisesRegex(ValueError, "export source provenance"):
+            verify_progress(destination)
+
+    def test_publication_without_receipt_blocks_continuation(self):
+        from rq1.university_gpu import scale_protection
+        m = frozen(acceptance=True)
+        m["backup_destination"] = str(self.backup)
+        m["engineering_approval"]["backup_destination"] = str(self.backup)
+        m["manifest_sha256"] = scale._manifest_digest(m)
+        store = RunStore(self.base / "run", m)
+        Coordinator(store, [Worker("w")]).run(max_attempts=1, storage_minimum_bytes=0, minimum_start_seconds=0)
+        original = sha256_file(next(store.results_dir.glob("*.json")))
+        receipt_path = store.root / "protection" / "0001.json"
+
+        def fail_receipt(path, value, **kwargs):
+            if path == receipt_path:
+                raise OSError("injected receipt publication failure")
+            return atomic_write_json(path, value, **kwargs)
+
+        with patch.object(scale_protection, "atomic_write_json", side_effect=fail_receipt):
+            with self.assertRaisesRegex(OSError, "receipt publication failure"):
+                protect_segment(ROOT, store.root, store.manifest_path)
+        self.assertFalse(receipt_path.exists())
+        self.assertEqual(len(list(self.backup.glob("*-0001-*/export.tar.gz"))), 1)
+        self.assertEqual(sha256_file(next(store.results_dir.glob("*.json"))), original)
+        with self.assertRaisesRegex(continuation.ContinuationError, "receipt missing"):
+            continuation.checkpoint_identity(store.root, m)
 
     @patch("os.fsync", return_value=None)  # Synthetic speed-up; durability is covered by separate failure-injection tests.
     def test_synthetic_218_to_500_supervised_continuation(self, _mock_fsync):
@@ -281,17 +338,36 @@ class ContinuationTests(unittest.TestCase):
         # A full Windows filesystem integration may take longer than a real access
         # window. This synthetic-only deadline must not trigger the cutoff test.
         auth["access_end_epoch"] = time.time() + 100000
+        pause_at_250 = True
         def fake_launch(root, config, manifest, **kwargs):
             completed = len(store.completed()); boundary = min(500, (completed // 50 + 1) * 50)
             outcome = Coordinator(store, workers).run(resume=True, retry_failed=False, max_attempts=boundary-completed,
                 storage_minimum_bytes=0, minimum_start_seconds=0)
+            if pause_at_250 and outcome["completed_units"] == 250:
+                outcome["cutoff_reached"] = True
             return {"run": outcome}
-        with patch.dict(os.environ, pins(self.m, self.approval, auth)), patch.object(continuation, "check_source"), \
+        def resume(approval):
+            with patch.dict(os.environ, pins(self.m, self.approval, approval)):
+                return scale.run_supervised(ROOT, {"run_output_dir":str(self.base)}, self.m, approval=self.approval,
+                    continuation=approval, yes=True, resume=True, retry_failed=False, cutoff_epoch=approval["access_end_epoch"])
+        with patch.object(continuation, "check_source"), \
              patch.object(scale, "verify_frozen_feasibility_assets", return_value={"status":"PASS"}), \
-             patch.object(scale, "run_feasibility_launch", side_effect=fake_launch):
-            result = scale.run_supervised(ROOT, {"run_output_dir":str(self.base)}, self.m, approval=self.approval,
-                continuation=auth, yes=True, resume=True, retry_failed=False, cutoff_epoch=auth["access_end_epoch"])
+             patch.object(scale, "run_feasibility_launch", side_effect=fake_launch) as launch:
+            self.assertEqual(resume(auth)["run"]["completed_units"], 250)
+            with self.assertRaisesRegex(continuation.ContinuationError, "checkpoint scope"):
+                resume(auth)
+            self.assertEqual(launch.call_count, 1)
+            newer = continuation.checkpoint_identity(run_root, self.m)
+            self.assertEqual(newer["completed_count"], 250)
+            fresh = authorization(self.m, newer)
+            fresh["access_end_epoch"] = time.time() + 100000
+            pause_at_250 = False
+            result = resume(fresh)
         self.assertEqual(result["run"]["completed_units"], 500)
         self.assertEqual(sum(len(worker.assignments) for worker in workers), 500)
+        starts = [row["unit_key"] for row in store.event_rows() if row["event"] == "attempt_started"]
+        self.assertEqual(len(starts), 500)
+        self.assertEqual(len(set(starts)), 500)
+        self.assertEqual(len(result["protection"]["unit_keys"]), 500)
         for name, digest in before.items():
             self.assertEqual(sha256_file(run_root / name), digest, name)

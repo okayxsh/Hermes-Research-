@@ -941,13 +941,14 @@ def run_feasibility_launch(
     lock = RunLock(run_root / "RUN.lock", resume=resume)
     lock.__enter__()
     try:
-        store.initialize()
         if continuation:
             from rq1.university_gpu.scale_continuation import checkpoint_identity, verify_authorization, verify_authorized_checkpoint_preserved
             current_identity = checkpoint_identity(run_root, manifest)
             verify_authorized_checkpoint_preserved(run_root, manifest, continuation["checkpoint"])
             verify_authorization(root, manifest, approval, continuation,
                 current_identity if continuation_start else continuation["checkpoint"], cutoff_epoch=cutoff_epoch)
+        else:
+            store.initialize()
     except BaseException:
         lock.__exit__(None, None, None)
         raise
