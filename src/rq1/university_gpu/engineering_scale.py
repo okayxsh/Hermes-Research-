@@ -527,7 +527,7 @@ def _report_file_matches(path: Path, expected: str, field: str, label: str) -> d
     return value
 
 
-def verify_frozen_feasibility_assets(root: Path, config: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+def verify_frozen_feasibility_assets(root: Path, config: Mapping[str, Any], manifest: Mapping[str, Any], *, expected_source_commit: str | None = None) -> dict[str, Any]:
     """Recheck all local, non-GPU inputs immediately before a feasibility run."""
     problems = validate_feasibility_manifest(manifest, require_frozen=True)
     if problems:
@@ -625,7 +625,7 @@ def verify_frozen_feasibility_assets(root: Path, config: Mapping[str, Any], mani
                                 text=True, check=True, timeout=15).stdout.strip()
     status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True,
                             text=True, check=True, timeout=15).stdout
-    if provenance != manifest.get("source_commit") or status.strip():
+    if provenance != (expected_source_commit or manifest.get("source_commit")) or status.strip():
         raise FeasibilityError("launch source must be the exact clean commit bound to the manifest")
     return {"status": "PASS", "profile_id": PROFILE_ID, "scientific_evidence": False,
             "storage_projection": storage_projection, "verified_inputs": dict(inputs), "selected_task_sources": source_check,
@@ -874,6 +874,8 @@ def run_feasibility_launch(
     probe_fn: Callable[..., Mapping[str, Any]] | None = None,
     smoke_fn: Callable[..., Mapping[str, Any]] | None = None,
     placement_fn: Callable[..., Mapping[str, Any]] | None = None,
+    continuation: Mapping[str, Any] | None = None,
+    continuation_start: bool = True,
 ) -> dict[str, Any]:
     """Run only an explicitly approved 12-episode engineering feasibility batch."""
     if not yes:
@@ -882,15 +884,21 @@ def run_feasibility_launch(
         raise FeasibilityError("unapproved candidate manifests cannot be launched")
     if validate_feasibility_manifest(manifest, require_frozen=True):
         raise FeasibilityError("engineering manifest failed validation")
-    _validate_engineering_approval(manifest, approval, yes=yes)
+    if continuation is None:
+        _validate_engineering_approval(manifest, approval, yes=yes)
+    else:
+        from rq1.university_gpu.scale_continuation import verify_authorization
+        if not resume or retry_failed:
+            raise FeasibilityError("continuation permits resume without failed retries only")
+        verify_authorization(root, manifest, approval, continuation, continuation["checkpoint"], cutoff_epoch=cutoff_epoch)
     if cutoff_epoch is None or type(cutoff_epoch) not in (int, float) or not math.isfinite(cutoff_epoch) or cutoff_epoch <= time.time() + 4500:
         raise FeasibilityError("a real university access cutoff at least 30 minutes away is required")
-    if cutoff_epoch > float(approval.get("access_end_epoch", 0)):
+    if cutoff_epoch > float((continuation or approval).get("access_end_epoch", 0)):
         raise FeasibilityError("cutoff exceeds approved access deadline")
     if int(config.get("worker_count", 0)) != 4:
         raise FeasibilityError("feasibility launch requires four isolated GPU workers")
     require_posix_process_management("GPU feasibility launch/resume/stop")
-    verified = verify_frozen_feasibility_assets(root, config, manifest)
+    verified = verify_frozen_feasibility_assets(root, config, manifest, expected_source_commit=(continuation or {}).get("continuation_source_commit"))
 
     from rq1.university_gpu.hardware import machine_report as default_machine_report
     from rq1.university_gpu.models import GPUDevice
@@ -913,6 +921,9 @@ def run_feasibility_launch(
     else:
         raise FeasibilityError("run_output_dir must be outside the Git checkout")
     run_root = bounded_run_root(output_root, str(manifest["run_id"]))
+    if continuation and (not run_root.is_dir() or run_root.is_symlink()):
+        from rq1.university_gpu.scale_continuation import ContinuationError
+        raise ContinuationError("continuation requires the existing, non-symlink run directory")
     if run_root.exists() and any(run_root.iterdir()) and not resume:
         raise FeasibilityError("existing run data requires explicit --resume; it will never be overwritten")
     run_root.mkdir(parents=True, exist_ok=True)
@@ -923,18 +934,25 @@ def run_feasibility_launch(
         raise FeasibilityError("all four workstation GPUs and free local ports must pass readiness")
     devices = [GPUDevice(str(item["uuid"]), int(item["index"]), str(item["name"]),
                          int(item["memory_total_mib"]), int(item["memory_free_mib"])) for item in machine["devices"]]
-    specs = worker_specs(devices, count=4, base_port=int(config.get("ollama_base_port", 11_534)), root=run_root / "workers")
+    launch_id = uuid4().hex
+    runtime_root = run_root / "continuation-runtime" / launch_id if continuation else run_root
+    specs = worker_specs(devices, count=4, base_port=int(config.get("ollama_base_port", 11_534)), root=runtime_root / "workers")
     store = RunStore(run_root, manifest)
     lock = RunLock(run_root / "RUN.lock", resume=resume)
     lock.__enter__()
     try:
         store.initialize()
+        if continuation:
+            from rq1.university_gpu.scale_continuation import checkpoint_identity, verify_authorization, verify_authorized_checkpoint_preserved
+            current_identity = checkpoint_identity(run_root, manifest)
+            verify_authorized_checkpoint_preserved(run_root, manifest, continuation["checkpoint"])
+            verify_authorization(root, manifest, approval, continuation,
+                current_identity if continuation_start else continuation["checkpoint"], cutoff_epoch=cutoff_epoch)
     except BaseException:
         lock.__exit__(None, None, None)
         raise
     servers: list[Any] = []
     clients: list[Any] = []
-    launch_id = uuid4().hex
     try:
         servers = [server_factory(spec, Path(str(config["ollama_models_dir"])),
                                   binary=str(config.get("ollama_binary", "ollama"))) for spec in specs]
@@ -959,6 +977,8 @@ def run_feasibility_launch(
             "manifest_sha256": manifest["manifest_sha256"], "candidate_manifest_sha256": manifest["candidate_manifest_sha256"],
             "approval": dict(approval), "input_verification": verified, "machine": dict(machine),
             "model_probes": probes, "smoke_test": dict(smoke), "gpu_placement": dict(placement),
+            **({"continuation_authorization": dict(continuation), "continuation_source_commit": continuation["continuation_source_commit"],
+                "original_source_commit": manifest["source_commit"]} if continuation else {}),
             "scientific_evidence": False,
         }, overwrite=False)
 
@@ -967,7 +987,7 @@ def run_feasibility_launch(
         d18 = library_payload.get("libraries", library_payload)["Accum-18"]
         libraries = {"D0": {"skills": []}, "D18": {"skills": list(d18["skills"])}
                      }
-        worker_configs = run_root / "worker-configs"
+        worker_configs = runtime_root / "worker-configs"
         worker_configs.mkdir(parents=True, exist_ok=True)
         task_rows = list(manifest["tasks"])
         provenance = {
@@ -983,6 +1003,10 @@ def run_feasibility_launch(
             "inference_settings": dict(MODEL_SETTINGS), "scientific_evidence": False,
             "placement": {"passed": True, "assignments": dict(placement["assignments"])},
         }
+        if continuation:
+            provenance.update(source_commit=continuation["continuation_source_commit"], original_source_commit=manifest["source_commit"],
+                              continuation_source_commit=continuation["continuation_source_commit"],
+                              continuation_authorization_sha256=content_hash(dict(continuation)))
         for spec in specs:
             worker_config = {
                 "profile_id": PROFILE_ID, "scientific_evidence": False, "worker_id": spec.worker_id,
@@ -1018,7 +1042,7 @@ def run_feasibility_launch(
         outcome = coordinator.run(resume=resume, retry_failed=retry_failed, cutoff_epoch=float(cutoff_epoch), lock_held=True,
                                   max_attempts=(None if len(store.completed()) == manifest["episode_count"] else min(remaining_allowance, next_boundary - len(store.completed()))),
                                   minimum_start_seconds=4500, storage_minimum_bytes=manifest["minimum_free_bytes"],
-                                  monitor=lambda: monitor_resources(run_root, servers, manifest))
+                                  monitor=lambda: monitor_resources(runtime_root, servers, manifest))
         if outcome["status"] == "paused" and ((run_root / "STOP").exists() or outcome["cutoff_reached"]):
             from rq1.university_gpu.snapshot import backup_checkpoint
             backup_checkpoint(store)
@@ -1030,6 +1054,9 @@ def run_feasibility_launch(
                 "schema": "rq1-feasibility-launch-failure-v1", "launch_id": launch_id,
                 "recorded_at": datetime.now(timezone.utc).isoformat(), "error_type": type(exc).__name__,
                 "error": str(exc), "profile_id": PROFILE_ID, "scientific_evidence": False,
+                **({"original_source_commit": manifest["source_commit"],
+                    "continuation_source_commit": continuation["continuation_source_commit"],
+                    "continuation_authorization_sha256": content_hash(dict(continuation))} if continuation else {}),
                 "gpu_placement": dict(placement) if 'placement' in locals() else None,
             }, overwrite=False)
         except OSError:
@@ -1109,18 +1136,29 @@ def _run_supervised(root: Path, config: Mapping[str, Any], manifest: Mapping[str
             return value
         kwargs["resume"] = True
         kwargs["retry_failed"] = False
+        if kwargs.get("continuation") is not None:
+            kwargs["continuation_start"] = False
         verify_last_protection(run_root, manifest)
 
 
 def run_supervised(root: Path, config: Mapping[str, Any], manifest: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
     from rq1.university_gpu.scheduler import RunLock
-    _validate_engineering_approval(manifest, kwargs["approval"], yes=kwargs.get("yes", False))
+    continuation = kwargs.get("continuation")
+    if continuation is None:
+        _validate_engineering_approval(manifest, kwargs["approval"], yes=kwargs.get("yes", False))
+    elif not kwargs.get("yes") or not kwargs.get("resume") or kwargs.get("retry_failed"):
+        raise FeasibilityError("continuation requires explicit resume acknowledgement and forbids retries")
     issues = validate_feasibility_manifest(manifest, require_frozen=True)
     if issues:
         raise FeasibilityError("invalid scale manifest: " + "; ".join(issues))
     output_root = Path(str(config["run_output_dir"]))
-    output_root.mkdir(parents=True, exist_ok=True)
+    if continuation is None:
+        output_root.mkdir(parents=True, exist_ok=True)
+    elif not output_root.is_dir() or output_root.is_symlink():
+        raise FeasibilityError("continuation requires existing, non-symlink run storage")
     target = bounded_run_root(output_root, manifest["run_id"])
+    if continuation is not None and (not target.is_dir() or target.is_symlink()):
+        raise FeasibilityError("continuation requires an existing, non-symlink run directory")
     if target.exists():
         from rq1.university_gpu.scheduler import RunStore
         store = RunStore(target, manifest)
@@ -1139,6 +1177,23 @@ def run_supervised(root: Path, config: Mapping[str, Any], manifest: Mapping[str,
         if len(store.completed()) < manifest["episode_count"] and sum(e["event"] == "attempt_started" for e in events) >= manifest["maximum_attempts"]:
             raise FeasibilityError("approved total attempt allowance exhausted")
     with RunLock(output_root / (manifest["run_id"] + ".supervisor.lock"), resume=kwargs.get("resume", False)):
+        if continuation is not None:
+            from rq1.university_gpu.scale_continuation import checkpoint_identity, verify_authorization
+            with RunLock(target / "RUN.lock", resume=True):
+                identity = checkpoint_identity(target, manifest)
+                if not 218 <= identity["completed_count"] < 500:
+                    raise FeasibilityError("continuation checkpoint must contain 218 to 499 verified executions")
+                digest = verify_authorization(root, manifest, kwargs["approval"], continuation, identity,
+                                              cutoff_epoch=kwargs.get("cutoff_epoch"))
+                verify_frozen_feasibility_assets(root, config, manifest,
+                    expected_source_commit=continuation["continuation_source_commit"])
+                from rq1.university_gpu.scheduler import RunStore
+                evidence = RunStore(target, manifest).path(Path("continuation-authorizations") / (digest + ".json"))
+                if evidence.exists():
+                    if evidence.is_symlink() or load_json(evidence) != continuation:
+                        raise FeasibilityError("existing continuation authorization evidence conflicts")
+                else:
+                    atomic_write_json(evidence, dict(continuation), overwrite=False)
         return _run_supervised(root, config, manifest, **kwargs)
 
 

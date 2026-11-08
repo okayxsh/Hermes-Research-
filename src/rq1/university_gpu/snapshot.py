@@ -469,6 +469,21 @@ def export_progress(root: Path, run_root: Path, manifest_path: Path, destination
                   "attempt_states": _attempt_states(store),
                   "completed": validation["completed"], "missing_unit_keys": validation["missing"],
                   "source_commit": manifest["source_commit"], "files": sorted(files, key=lambda row: row["path"])}
+        continuation_launches = []
+        for path in sorted((run_root / "launches").glob("*.json")):
+            record = load_json(path)
+            if isinstance(record, dict) and isinstance(record.get("continuation_authorization"), dict):
+                auth = record["continuation_authorization"]
+                if (record.get("manifest_sha256") != manifest["manifest_sha256"]
+                        or record.get("original_source_commit") != manifest["source_commit"]
+                        or record.get("continuation_source_commit") != auth.get("continuation_source_commit")):
+                    raise SnapshotError("continuation launch provenance conflicts with frozen run")
+                continuation_launches.append({"launch_id": record["launch_id"],
+                    "original_source_commit": record["original_source_commit"],
+                    "continuation_source_commit": record["continuation_source_commit"],
+                    "authorization_sha256": content_hash(auth)})
+        if continuation_launches:
+            report["continuation_launches"] = continuation_launches
         try:
             revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, check=True).stdout.strip()
             status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True, timeout=10, check=True).stdout

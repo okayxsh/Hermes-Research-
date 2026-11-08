@@ -209,6 +209,14 @@ def add_parser(subparsers: Any) -> None:
 
     feasibility = actions.add_parser("engineering-scale", help="Separate non-scientific six-task, 200-action engineering pathway.")
     feasibility_actions = feasibility.add_subparsers(dest="scale_command", required=True)
+    item = feasibility_actions.add_parser("resume-inspect", help="Verify the stopped run and protected checkpoint before owner review.")
+    item.add_argument("--output-root", type=Path, required=True)
+    item.add_argument("--run-root", type=Path, required=True)
+    item.add_argument("--manifest", type=Path, required=True)
+    item = feasibility_actions.add_parser("resume-preflight", help="Verify continuation authorization and all frozen assets without GPU inference.")
+    for flag in ("config", "manifest", "approval-file", "resume-authorization"):
+        item.add_argument("--" + flag, type=Path, required=True)
+    item.add_argument("--cutoff-epoch", type=float, required=True)
     item = feasibility_actions.add_parser("candidate", help="Build a separate 500-unit or four-unit acceptance candidate.")
     item.add_argument("--baseline-candidate", type=Path, required=True)
     item.add_argument("--acceptance", action="store_true")
@@ -239,6 +247,8 @@ def add_parser(subparsers: Any) -> None:
         item.add_argument("--yes", action="store_true")
         item.add_argument("--retry-failed", action="store_true")
         item.add_argument("--cutoff-epoch", type=float, required=True)
+        if name == "resume":
+            item.add_argument("--resume-authorization", type=Path)
     item = feasibility_actions.add_parser("status", help="Read feasibility run progress.")
     item.add_argument("--run-root", type=Path, required=True)
     item.add_argument("--output-root", type=Path, required=True)
@@ -284,6 +294,32 @@ def run(root: Path, args: argparse.Namespace) -> int:
                 subcommand = args.scale_command
             else:
                 subcommand = args.feasibility_command
+            if subcommand == "resume-inspect":
+                from rq1.university_gpu.scale_continuation import checkpoint_identity
+                from rq1.university_gpu.scheduler import RunLock
+                target = feasibility.checked_run_path(args.output_root, args.run_root, args.manifest)
+                with RunLock(target / "RUN.lock", resume=False):
+                    identity = checkpoint_identity(target, load_json(args.manifest))
+                _emit({"status": "VERIFIED_CHECKPOINT", "checkpoint": identity, "scientific_evidence": False})
+                return 0
+            if subcommand == "resume-preflight":
+                from rq1.university_gpu.scale_continuation import checkpoint_identity, verify_authorization
+                from rq1.university_gpu.scheduler import RunLock
+                config, manifest = ops.load_external_config(args.config), load_json(args.manifest)
+                target = feasibility.checked_run_path(Path(str(config["run_output_dir"])),
+                    Path(str(config["run_output_dir"])) / manifest["run_id"], args.manifest)
+                with RunLock(target / "RUN.lock", resume=False):
+                    identity = checkpoint_identity(target, manifest)
+                    if not 218 <= identity["completed_count"] < 500:
+                        raise ValueError("continuation requires 218 to 499 protected completions")
+                    authorization = load_json(args.resume_authorization)
+                    digest = verify_authorization(root, manifest, load_json(args.approval_file), authorization,
+                                                  identity, cutoff_epoch=args.cutoff_epoch)
+                    verified = feasibility.verify_frozen_feasibility_assets(root, config, manifest,
+                        expected_source_commit=authorization["continuation_source_commit"])
+                _emit({"status": "PASS", "checkpoint": identity, "resume_integrity_pin": digest,
+                       "assets": verified, "scientific_evidence": False})
+                return 0
             if subcommand == "candidate":
                 value = feasibility.build_scale_candidate(load_json(args.baseline_candidate), acceptance=args.acceptance, additional_attempts=args.additional_attempts)
                 atomic_write_json(args.output, value, overwrite=False)
@@ -351,10 +387,13 @@ def run(root: Path, args: argparse.Namespace) -> int:
                 return 0 if result["status"] == "PASS" else 1
             if subcommand in {"launch", "resume"}:
                 launcher = feasibility.run_supervised if action == "engineering-scale" else feasibility.run_feasibility_launch
+                extra = {}
+                if action == "engineering-scale" and subcommand == "resume" and args.resume_authorization:
+                    extra["continuation"] = load_json(args.resume_authorization)
                 value = launcher(
                     root, ops.load_external_config(args.config), load_json(args.manifest),
                     approval=load_json(args.approval_file), yes=args.yes, resume=subcommand == "resume",
-                    retry_failed=args.retry_failed, cutoff_epoch=args.cutoff_epoch,
+                    retry_failed=args.retry_failed, cutoff_epoch=args.cutoff_epoch, **extra,
                 )
                 _emit(value)
                 return 0 if value["run"]["status"] == "completed" else 1
