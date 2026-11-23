@@ -1,0 +1,53 @@
+{
+  "schema": "rq1-sci-prep-exposure-sources-v1",
+  "_notes": [
+    "TEMPLATE. Copy outside the repository, then pass --sources <copy> --sources-base <historical RQ1 checkout root>.",
+    "Paths are relative to --sources-base. expected_sha256 values are the SHA-256 of the laptop-preserved byte copies of these four files; a mismatch BLOCKS the run (e.g. if a checkout rewrote line endings) and must be resolved, never bypassed.",
+    "Every exclusion reason present in each manifest is declared below (acquisition: missing_game_file, not_selected; extension: + selected_in_parent_acquisition_queue; evaluation: missing_game_file, not_selected, replaced_before_freeze_...). An undeclared reason turns the split UNKNOWN.",
+    "Every <FILL ...> placeholder must be replaced with real evidence or the source removed with a written justification. An unresolvable placeholder ID turns its scope split UNKNOWN; a missing required file BLOCKS. Missing evidence is never treated as absence of exposure.",
+    "template_definition goal_template reproduces the historical 94 -> 79 screen. The university-reported 79 -> 77 rule is undocumented and is NOT reproduced by any definition here."
+  ],
+  "template_definition": "goal_template",
+  "sources": [
+    {"id": "acquisition-180", "kind": "task_manifest", "path": "artifacts/task_manifests/frozen/acquisition-b64c383e0f335b90.json",
+     "role": "acquisition", "required": true, "scope_splits": ["train"],
+     "expected_sha256": "d002ec6f73bc35a146ffbf1991416c048e2ef7a6cb668051e94348f5dd229219",
+     "description": "240-episode acquisition, first 180 tasks (model outcomes observed)",
+     "selected": {"class": "EXPOSED", "reason": "historical acquisition episode"},
+     "exclusions": {"missing_game_file": {"class": null, "note": "not installed"},
+                    "not_selected": {"class": null, "note": "listed, not acquired"}}},
+    {"id": "acquisition-ext-60", "kind": "task_manifest", "path": "artifacts/task_manifests/frozen_extension/acquisition-extension-4b9e3c8cda4dd809.json",
+     "role": "acquisition", "required": true, "scope_splits": ["train"],
+     "expected_sha256": "860c66eedd7cd3c99761682b9d21df1d68cc5cd6c9c1fb8ccce194c1b0ded3a0",
+     "description": "acquisition extension 181-240 (model outcomes observed)",
+     "selected": {"class": "EXPOSED", "reason": "historical acquisition episode"},
+     "exclusions": {"missing_game_file": {"class": null, "note": "not installed"},
+                    "not_selected": {"class": null, "note": "listed, not acquired"},
+                    "selected_in_parent_acquisition_queue": {"class": null, "note": "already EXPOSED through acquisition-180"}}},
+    {"id": "evaluation-30", "kind": "task_manifest", "path": "artifacts/task_manifests/frozen_evaluation/evaluation-amended-b83a2ecacba19992.json",
+     "role": "evaluation", "required": true, "scope_splits": ["valid_unseen"],
+     "expected_sha256": "340f52ce660f703d9b98e1cf2a58ac195e2fe7c1c380f08b98d0419929bdb429",
+     "description": "360-episode historical evaluation task manifest",
+     "selected": {"class": "EXPOSED", "reason": "historical 360-episode evaluation (outcomes observed)"},
+     "exclusions": {"replaced_before_freeze_no_oracle_validated_controlled_failure": {"class": "POSSIBLY_EXPOSED", "role": "evaluation_preparation", "reason": "handled during historical controlled-failure preparation"},
+                    "not_selected": {"class": null, "note": "historically route-screened (expert route lengths); no model outcome located"},
+                    "missing_game_file": {"class": null, "note": "not installed"}}},
+    {"id": "engineering-six", "kind": "task_list", "path": "university-gpu/prospective/feasibility-200-candidate.json",
+     "role": "engineering", "required": true, "scope_splits": ["valid_seen"], "class": "EXPOSED",
+     "expected_sha256": "c60ead3eddcae90ffcac26fe0de55c12395fe8ee55bf782937ea6f5373590385",
+     "reason": "closed 500-episode D0/D18 engineering run (outcomes observed; not scientific evidence)"},
+    {"id": "gemma-pick-place-demonstration", "kind": "inline_task_ids", "role": "demonstration", "required": true,
+     "scope_splits": ["valid_seen"], "class": "EXPOSED",
+     "provenance": "<FILL: where the prior pick-and-place Gemma memory/no-memory demonstration is recorded>",
+     "task_ids": ["<FILL: exact task ID(s) of the demonstration>"]},
+    {"id": "debugging-and-pilot-records", "kind": "task_list", "path": "<FILL: path to a JSON list of debugging / Kaggle smoke / pilot / calibration task IDs>",
+     "role": "pilot", "required": true, "scope_splits": ["train", "valid_seen", "valid_unseen"], "class": "POSSIBLY_EXPOSED",
+     "json_pointer": "tasks", "id_field": "task_id",
+     "reason": "debugging, smoke, pilot or calibration exposure"}
+  ],
+  "screening_policies": [
+    {"name": "historical_template_screened", "exclude_template_roles": ["evaluation", "evaluation_preparation"]},
+    {"name": "acquisition_engineering_template_screened",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation", "acquisition", "engineering", "demonstration", "pilot"]}
+  ]
+}
