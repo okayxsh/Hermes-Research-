@@ -61,6 +61,16 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(r["model_calls"], 0)
         self.assertFalse(r["model_visible"])
         self.assertTrue(o["evidence_files"]["session-b-oracle"])
+        self.assertEqual((o["environment_log_confirmation"]["logged_steps"], o["environment_log_confirmation"]["logged_final_success"]),
+                         (6, True))
+        self.assertEqual(r["stages"]["route_replay"]["environment_log"]["logged_steps"], len(ROUTE))
+
+    def test_in_memory_success_without_persisted_environment_evidence_is_not_validated(self):
+        missing = self.run_oracle(world={"log_fault": "omit"})
+        self.assertEqual((missing["status"], missing["code"]), ("FAILED", "environment_log_missing"))
+        contradicted = self.run_oracle(world={"log_fault": "unsuccessful"})
+        self.assertEqual((contradicted["status"], contradicted["code"]), ("FAILED", "environment_log_does_not_confirm_success"))
+        self.assertNotIn("oracle", contradicted)
 
     def test_missing_route_is_blocked_not_fabricated(self):
         def no_route(t, s):

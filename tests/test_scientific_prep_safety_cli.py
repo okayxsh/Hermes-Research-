@@ -182,6 +182,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(summary["rows"][0]["task_id"], task_id)
         self.assertEqual(summary["rows"][0]["status"], "ENVIRONMENT_VALIDATED")
         self.assertEqual((summary["model_calls"], summary["preparation_status"]), (0, "preparation_only"))
+        self.assertIn("<locals>.Driver", summary["environment_backend"])      # fixture backend is visible as such
+        self.assertFalse(summary["screening_provisional"])
         with contextlib.ExitStack() as stack:                           # a task outside the screened pool is refused
             for patcher in self._patched(Driver):
                 stack.enter_context(patcher)
@@ -208,6 +210,25 @@ class CliTests(unittest.TestCase):
         summary = json.loads((self.out / "oracle-oracle-3" / "oracle-validation-summary.json").read_text(encoding="utf-8"))
         self.assertEqual(summary["rows"][0]["code"], "aborted_infrastructure_error")
         self.assertNotIn("FAILED", {r["status"] for r in summary["rows"]})        # never converted into a task failure
+
+    def test_exposure_unresolved_source_fails_closed_or_is_explicitly_provisional(self):
+        args = ["inventory", "--data-root", str(self.root / "data"), "--splits", "valid_seen", "--output-root", str(self.out)]
+        self.assertEqual(run(args + ["--label", "inv"])[0], EXIT_OK)
+        evidence = self.root / "ev"
+        evidence.mkdir()
+        (evidence / "sources.json").write_text(json.dumps({"schema": "rq1-sci-prep-exposure-sources-v1", "screening_policies": POLICIES,
+            "sources": [{"id": "pilot-records", "kind": "task_list", "role": "pilot", "status": "unresolved", "required": True,
+                         "scope_splits": ["valid_seen"], "unresolved_reason": "task IDs not recorded locally"}]}), encoding="utf-8")
+        base = ["exposure", "--inventory", str(self.out / "inventory-inv" / "task-inventory.json"), "--sources",
+                str(evidence / "sources.json"), "--output-root", str(self.out)]
+        code, closed = run(base + ["--label", "closed"])
+        self.assertEqual((code, closed["status"], closed["pool_counts"]["pilot_valid_seen"]["outcome_screened"]), (1, "written", 0))
+        code, provisional = run(base + ["--label", "prov", "--allow-provisional"])
+        self.assertEqual((code, provisional["status"], provisional["evidence_complete"]), (1, "written_provisional", False))
+        self.assertGreater(provisional["pool_counts"]["pilot_valid_seen"]["outcome_screened"], 0)
+        screening = json.loads((self.out / "exposure-prov" / "candidate-screening-summary.json").read_text(encoding="utf-8"))
+        self.assertTrue(screening["provisional"])
+        self.assertTrue(screening["roster_approval_blockers"])
 
     def test_horizons_command_is_arithmetic_only(self):
         code, payload = run(["horizons", "--prefix", "48", "--continuation", "30"])

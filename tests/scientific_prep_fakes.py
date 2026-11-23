@@ -73,29 +73,36 @@ class FakeSession:
     def __exit__(self, *_):
         return None
 
-    def _log(self, event, payload):
+    def _log(self, tool, request, response):
+        # same record shape as RealEpisodeSession._event("tool_result", ...)
+        if self.driver.log_fault == "omit":
+            return
+        if self.driver.log_fault == "unsuccessful" and response.get("success"):
+            response = {**response, "success": False}
         with (self.output_dir / "episode-events.jsonl").open("a", encoding="utf-8") as h:
-            h.write(json.dumps({"event": event, "payload": payload}, sort_keys=True) + "\n")
+            h.write(json.dumps({"event": "tool_result", "payload": {"tool": tool, "request": request, "response": response}},
+                               sort_keys=True) + "\n")
 
     def start(self, task_id, split, seed, action_limit):
         self.driver.sessions += 1
         self.world = FakeWorld(**self.driver.world_kwargs, session_number=self.driver.sessions)
         self.limit = action_limit
         self.state = {**self.world.state("You are in the middle of a room."), "task_id": task_id, "split": split}
-        self._log("start", {"task_id": task_id})
+        self._log("alfworld_start", {"task_id": task_id, "split": split, "seed": seed}, self.state)
         return self.state
 
     def step(self, action, *, phase):
         if action not in (self.state or {}).get("admissible_actions", []):
             raise AssertionError("validator dispatched a non-admissible action")
         self.state = self.world.act(action, self.limit)
-        self._log("step", {"action": action, "phase": phase})
+        self._log("alfworld_step", {"action": action}, self.state)
         return self.state
 
 
 class FakeDriver:
-    def __init__(self, **world_kwargs):
-        self.world_kwargs, self.sessions = world_kwargs, 0
+    def __init__(self, *, log_fault=None, **world_kwargs):
+        # log_fault: None | "omit" (session writes no bridge log) | "unsuccessful" (log contradicts in-memory success)
+        self.world_kwargs, self.sessions, self.log_fault = world_kwargs, 0, log_fault
 
     def session(self, *, output_dir, run_id, attempt_id=None, profile=""):
         return FakeSession(self, output_dir)

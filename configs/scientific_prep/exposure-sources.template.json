@@ -1,11 +1,12 @@
 {
   "schema": "rq1-sci-prep-exposure-sources-v1",
   "_notes": [
-    "TEMPLATE. Copy outside the repository, then pass --sources <copy> --sources-base <historical RQ1 checkout root>.",
-    "Paths are relative to --sources-base. expected_sha256 values are the SHA-256 of the laptop-preserved byte copies of these four files; a mismatch BLOCKS the run (e.g. if a checkout rewrote line endings) and must be resolved, never bypassed.",
-    "Every exclusion reason present in each manifest is declared below (acquisition: missing_game_file, not_selected; extension: + selected_in_parent_acquisition_queue; evaluation: missing_game_file, not_selected, replaced_before_freeze_...). An undeclared reason turns the split UNKNOWN.",
-    "Every <FILL ...> placeholder must be replaced with real evidence or the source removed with a written justification. An unresolvable placeholder ID turns its scope split UNKNOWN; a missing required file BLOCKS. Missing evidence is never treated as absence of exposure.",
-    "template_definition goal_template reproduces the historical 94 -> 79 screen. The university-reported 79 -> 77 rule is undocumented and is NOT reproduced by any definition here."
+    "TEMPLATE. Copy outside the repository, then pass --sources <copy> --sources-base <root of the historical RQ1 checkout that holds artifacts/task_manifests/...>.",
+    "expected_sha256 = SHA-256 of the canonical (LF) committed bytes, verified on the laptop against the preserved copies (manifests) and the committed git blobs (engineering candidate, prelaunch report). A file matches if its raw bytes or its CRLF->LF-normalised bytes hash to this value; any other difference BLOCKS and must be resolved, never bypassed.",
+    "Every exclusion reason present in each manifest is declared (acquisition: missing_game_file, not_selected; extension: + selected_in_parent_acquisition_queue; evaluation: missing_game_file, not_selected, replaced_before_freeze_...). An undeclared reason turns the split UNKNOWN.",
+    "status=unresolved sources have no authoritative task identities. By default their scope splits become UNKNOWN (fail closed: empty pools). 'exposure --allow-provisional' keeps tasks screenable for PREPARATION ONLY; every output is then marked provisional and roster_approval_blockers is non-empty. Resolve them (replace with a real source and remove 'status') before any scientific roster approval.",
+    "Policies are distinct and named. A policy naming a role with no evidence is reported (roles_without_any_evidence) and blocks roster approval; it is never silently treated as 'nothing to exclude'.",
+    "known_template_screened needs a template_list source with role known_template_match. The university-reported 79 -> 77 is reproduced exactly (per family) by the single goal template pick_heat_then_place_in_recep|Potato|None|GarbageCan; that is a reconstruction from counts, NOT an authoritative source. Add it only once the university audit's own list is confirmed, e.g. {\"id\": \"university-audit-known-templates\", \"kind\": \"template_list\", \"role\": \"known_template_match\", \"scope_splits\": [\"valid_unseen\"], \"template_definition\": \"goal_template\", \"templates\": [...], \"provenance\": \"<audit file and line>\"}."
   ],
   "template_definition": "goal_template",
   "sources": [
@@ -36,18 +37,33 @@
      "role": "engineering", "required": true, "scope_splits": ["valid_seen"], "class": "EXPOSED",
      "expected_sha256": "c60ead3eddcae90ffcac26fe0de55c12395fe8ee55bf782937ea6f5373590385",
      "reason": "closed 500-episode D0/D18 engineering run (outcomes observed; not scientific evidence)"},
-    {"id": "gemma-pick-place-demonstration", "kind": "inline_task_ids", "role": "demonstration", "required": true,
-     "scope_splits": ["valid_seen"], "class": "EXPOSED",
-     "provenance": "<FILL: where the prior pick-and-place Gemma memory/no-memory demonstration is recorded>",
-     "task_ids": ["<FILL: exact task ID(s) of the demonstration>"]},
-    {"id": "debugging-and-pilot-records", "kind": "task_list", "path": "<FILL: path to a JSON list of debugging / Kaggle smoke / pilot / calibration task IDs>",
-     "role": "pilot", "required": true, "scope_splits": ["train", "valid_seen", "valid_unseen"], "class": "POSSIBLY_EXPOSED",
-     "json_pointer": "tasks", "id_field": "task_id",
-     "reason": "debugging, smoke, pilot or calibration exposure"}
+    {"id": "gemma-prelaunch-demonstration", "kind": "json_task_fields",
+     "path": "artifacts/prelaunch/prelaunch-a718b4e4d9644b01aa4861e6905cd587/pilot-report.json",
+     "role": "demonstration", "required": true, "scope_splits": ["train", "valid_seen"], "class": "EXPOSED",
+     "pointers": ["/valid_seen_task_id", "/train_task_id"],
+     "expected_sha256": "fe4201c2508eee472d6d01ad4ec1be2c1302d3aa18103bd25b2086c74f4022ab",
+     "reason": "gemma4:12b non-scientific prelaunch run prelaunch-a718b4e4...: memory and no-memory recovery outcomes (valid_seen) and one acquisition episode (train)"},
+    {"id": "kaggle-valid-seen-smoke", "kind": "task_list", "role": "smoke", "required": true, "scope_splits": ["valid_seen"],
+     "status": "unresolved",
+     "unresolved_reason": "docs/RUNPOD_DEPLOYMENT.md records a real valid_seen start/step/reset smoke on Kaggle (environment only; Gemma returned READY, no task episode) but no task ID is recorded in local evidence"},
+    {"id": "university-debugging-and-pilot-records", "kind": "task_list", "role": "pilot", "required": true,
+     "scope_splits": ["train", "valid_seen", "valid_unseen"], "status": "unresolved",
+     "unresolved_reason": "university-side debugging / smoke / pilot / calibration run logs are not on the laptop; replace with a task_list or csv_task_column source built from those logs"}
   ],
   "screening_policies": [
-    {"name": "historical_template_screened", "exclude_template_roles": ["evaluation", "evaluation_preparation"]},
-    {"name": "acquisition_engineering_template_screened",
-     "exclude_template_roles": ["evaluation", "evaluation_preparation", "acquisition", "engineering", "demonstration", "pilot"]}
+    {"name": "historical_template_screened", "description": "historical evaluation and evaluation-preparation goal templates (reproduces the historical valid_unseen screen)",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation"]},
+    {"name": "known_template_screened", "description": "historical screen plus explicitly listed known source templates (needs a template_list source)",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation", "known_template_match"]},
+    {"name": "acquisition_template_screened", "description": "historical screen plus every goal template of the 240 acquisition tasks",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation", "acquisition"]},
+    {"name": "acquisition_engineering_template_screened", "description": "historical screen plus every goal template of acquisition, engineering, demonstration, smoke and pilot tasks",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation", "acquisition", "engineering", "demonstration", "smoke", "pilot"]},
+    {"name": "exact_trial_reuse_screened", "description": "historical screen plus any ALFRED trial identifier reused by another exposed source",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation"],
+     "exclude_trial_reuse_roles": ["acquisition", "engineering", "demonstration", "smoke", "pilot"]},
+    {"name": "semantic_type_object_screened", "description": "broader semantic screen: task type + object across all exposed roles",
+     "template_definition": "type_object",
+     "exclude_template_roles": ["evaluation", "evaluation_preparation", "acquisition", "engineering", "demonstration", "smoke", "pilot"]}
   ]
 }

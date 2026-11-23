@@ -8,12 +8,17 @@ Reuses the frozen historical definitions -- unchanged, so no new failure definit
 Strengthening relative to the historical preparation (flagged for scientific review, not a new definition):
   1. the complete expert route is first replayed from reset and must reach environment-reported success;
   2. the oracle runs in an INDEPENDENT second session that must reproduce the checkpoint and post-detour digests of
-     the first session before executing the continuation to environment-reported success.
+     the first session before executing the continuation to environment-reported success;
+  3. the persisted bridge log of the route replay and of the oracle session must itself confirm the step count and
+     the final environment-reported done+success (in-memory state alone never yields ENVIRONMENT_VALIDATED).
+ENVIRONMENT_VALIDATED is evidence about whatever backend the driver wraps; the CLI always records the backend class,
+so results produced with the synthetic test doubles are identifiable as fixtures and are never scientific evidence.
 Statuses: ENVIRONMENT_VALIDATED | FAILED | BLOCKED (missing input/route/identity) | UNVERIFIED (not executed).
 Oracle actions/continuations are evidence only and are never written to any agent-visible artifact.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -53,6 +58,34 @@ def _step_checked(session: Any, action: str, phase: str, *, allow_done: bool) ->
     if state.get("done") and not allow_done:
         raise _Reject(f"{phase}_terminal_too_early", action)
     return state
+
+
+def _logged_environment_outcome(directory: Path, expected_steps: int) -> dict[str, Any]:
+    """Independent confirmation from the PERSISTED bridge log (``episode-events.jsonl``, written by every real
+    RealEpisodeSession): exactly one ``alfworld_start``, ``expected_steps`` ``alfworld_step`` results, and the last
+    environment response reporting done and success.  In-memory session state alone never validates an oracle."""
+    path = directory / "episode-events.jsonl"
+    if not path.is_file():
+        raise _Reject("environment_log_missing", f"{path.name} not written by the session")
+    starts, steps, last = 0, 0, None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            payload = record.get("payload") or {}
+            if record.get("event") != "tool_result":
+                continue
+            if payload.get("tool") == "alfworld_start":
+                starts += 1
+            elif payload.get("tool") == "alfworld_step":
+                steps, last = steps + 1, payload.get("response") or {}
+    except (OSError, ValueError, AttributeError) as exc:
+        raise _Reject("environment_log_unreadable", str(exc)) from exc
+    if starts != 1 or steps != expected_steps:
+        raise _Reject("environment_log_disagrees", f"log has {starts} start(s) and {steps} step(s); expected 1 and {expected_steps}")
+    if not isinstance(last, dict) or last.get("done") is not True or last.get("success") is not True:
+        raise _Reject("environment_log_does_not_confirm_success", "last logged environment response is not done+success")
+    return {"log_file": path.name, "log_sha256": sha256_file(path), "logged_steps": steps,
+            "logged_final_done": True, "logged_final_success": True}
 
 
 def _replay_route(driver: Any, task_id: str, split: str, seed: int, actions: Sequence[str], directory: Path,
@@ -145,6 +178,7 @@ def validate_candidate(record: Mapping[str, Any], *, driver: Any, route_provider
     try:
         out["stages"]["route_replay"] = _replay_route(driver, task_id, split, seed, actions, output_dir / "route-replay",
                                                       max_total_actions)
+        out["stages"]["route_replay"]["environment_log"] = _logged_environment_outcome(output_dir / "route-replay", len(actions))
     except _Reject as exc:
         return finish(FAILED, exc.code, exc.detail)
     out["stages"]["route_replay"]["evidence_files"] = _session_files(output_dir / "route-replay")
@@ -180,6 +214,11 @@ def validate_candidate(record: Mapping[str, Any], *, driver: Any, route_provider
             if exc.code.endswith("state_hash_mismatch"):
                 return finish(FAILED, exc.code, "environment state is not reproducible across independent sessions")
             continue
+        try:   # the persisted bridge log of session B must itself confirm the environment-reported success
+            logged = _logged_environment_outcome(base / "session-b-oracle", len(prefix) + DETOUR_ACTIONS + len(continuation))
+        except _Reject as exc:
+            attempt.update(result="rejected", code=exc.code, detail=exc.detail)
+            return finish(FAILED, exc.code, "persisted environment evidence does not confirm the oracle")
         validated = horizon_rows(len(prefix), DETOUR_ACTIONS, len(continuation), caps=caps, environment_validated=True)
         attempt.update(result="accepted", horizons=validated)
         out["oracle"] = {
@@ -187,6 +226,7 @@ def validate_candidate(record: Mapping[str, Any], *, driver: Any, route_provider
             "detour_action": first["detour_action"], "continuation_actions": list(continuation),
             "checkpoint_digest": first["checkpoint_digest"], "post_detour_digest": first["post_detour_digest"],
             "digests_reproduced_in_independent_session": True, "env_done": True, "env_success": True,
+            "environment_log_confirmation": logged,
             "prefix_length": len(prefix), "detour_length": DETOUR_ACTIONS, "continuation_length": len(continuation),
             "total_oracle_actions": len(prefix) + DETOUR_ACTIONS + len(continuation), "horizons": validated,
             "evidence_files": {name: _session_files(base / name) for name in ("session-a", "session-b-oracle")},

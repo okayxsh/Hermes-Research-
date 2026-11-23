@@ -121,7 +121,8 @@ def cmd_exposure(args: argparse.Namespace) -> int:
     except (InventoryError, EXP.ExposureConfigError, OSError, ValueError) as exc:
         _emit({"status": "blocked", "reason": str(exc)})
         return EXIT_BLOCKED
-    result = EXP.build_ledger(inventory_file, config, config_base=Path(args.sources_base or Path(args.sources).parent))
+    result = EXP.build_ledger(inventory_file, config, config_base=Path(args.sources_base or Path(args.sources).parent),
+                              allow_provisional=args.allow_provisional)
     if result["blocked"]:
         _emit({"status": "blocked", "reason": result["blocked"]})
         return EXIT_BLOCKED
@@ -133,11 +134,16 @@ def cmd_exposure(args: argparse.Namespace) -> int:
         _emit({"status": "refused", "reason": str(exc)})
         return EXIT_REFUSED
     common = {"inventory_content_sha256": inventory_file.get("content_sha256"), "template_definition": result["template_definition"],
-              "sources": result["sources"]}
+              "sources": result["sources"], "provisional": result["provisional"], "provisional_gaps": result["provisional_gaps"],
+              "roster_approval_blockers": pools["roster_approval_blockers"]}
     write_json_once(out / "exposure-ledger.json", stamp({**common, "ledger": result["ledger"]}, "rq1-sci-prep-exposure-ledger-v1"))
     write_csv_once(out / "exposure-ledger.csv", result["ledger"],
-                   ["task_id", "split", "family", "scene", "template", "installed", "exposure_class", "screening_class", "evidence", "notes"])
-    overlap = {"template_definition": result["template_definition"], "referenced_templates_by_role": result["referenced_templates"]}
+                   ["task_id", "split", "family", "scene", "trial", "template", "installed", "exposure_class", "screening_class",
+                    "exposure_kinds", "template_overlap_roles", "exact_trial_reuse_roles", "evidence_complete",
+                    "provisional_gaps", "evidence", "notes"])
+    overlap = {"template_definition": result["template_definition"], "referenced_templates_by_role": result["referenced_templates"],
+               "referenced_templates_by_definition": result["referenced_templates_by_definition"],
+               "note": "procedural-template overlap is reported for every definition; it excludes tasks only through a named policy"}
     write_json_once(out / "template-overlap-summary.json", stamp({**common, **overlap}, "rq1-sci-prep-template-overlap-v1"))
     write_json_once(out / "candidate-screening-summary.json", stamp({**common, **pools}, "rq1-sci-prep-candidate-screening-v1"))
     write_json_once(out / "uncertainty-ledger.json", stamp({**common, "uncertainties": result["uncertainty"],
@@ -150,9 +156,10 @@ def cmd_exposure(args: argparse.Namespace) -> int:
         counts[row["split"]][row["screening_class"]] += 1
     brief = {name: {"outcome_screened": pools[name]["outcome_screened"]["tasks"],
                     **{p: v["tasks"] for p, v in pools[name]["policies"].items()}} for name in POOLS}
-    _emit({"status": "written", "output_dir": str(out), "screening_class_counts": counts, "pool_counts": brief,
-           "uncertainties": len(result["uncertainty"])})
-    return EXIT_OK if not result["uncertainty"] else EXIT_PARTIAL
+    _emit({"status": "written_provisional" if result["provisional"] else "written", "output_dir": str(out),
+           "screening_class_counts": counts, "pool_counts": brief, "uncertainties": len(result["uncertainty"]),
+           "evidence_complete": pools["evidence_complete"], "roster_approval_blockers": pools["roster_approval_blockers"]})
+    return EXIT_OK if pools["evidence_complete"] else EXIT_PARTIAL
 
 
 def load_inventory_file(path: Path) -> dict[str, Any]:
@@ -249,6 +256,10 @@ def cmd_oracle_validate(args: argparse.Namespace) -> int:
         "selection_cap": args.selection_cap, "caps": list(args.caps), "alfworld_version": capability.version,
         "inventory_content_sha256": inventory.get("content_sha256"), "ledger_content_sha256": ledger.get("content_sha256"),
         "rows": rows, "model_calls": 0, "aborted": aborted,
+        "environment_backend": f"{RealEpisodeDriver.__module__}.{RealEpisodeDriver.__qualname__}",
+        "screening_content_sha256": screening.get("content_sha256"),
+        "screening_provisional": bool(screening.get("provisional")),
+        "screening_roster_approval_blockers": screening.get("roster_approval_blockers", []),
         "not_attempted": [t for t in chosen if t not in {r["task_id"] for r in results}]}, "rq1-sci-prep-oracle-summary-v1"))
     write_csv_once(out / "oracle-validation-summary.csv", rows,
                    ["task_id", "family", "status", "code", "total_oracle_actions", *[f"cap_{c}" for c in sorted(set(args.caps))]])
@@ -283,6 +294,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--inventory", required=True)
     p.add_argument("--sources", required=True, help="exposure sources config (rq1-sci-prep-exposure-sources-v1)")
     p.add_argument("--sources-base", help="base directory for relative source paths (default: config directory)")
+    p.add_argument("--allow-provisional", action="store_true",
+                   help="keep tasks screenable despite sources declared status=unresolved; every output is marked provisional "
+                        "and roster approval stays blocked (default: such scopes become UNKNOWN, fail closed)")
     outputs(p)
     p.set_defaults(func=cmd_exposure)
     p = sub.add_parser("horizons", help="action-horizon arithmetic only")
