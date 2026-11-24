@@ -1,10 +1,18 @@
 # Reproducible agent-environment experiment
 
+## Current workflow (read first)
+
+The protocol section below is **historical** (the original four-condition design) and is preserved unchanged for provenance. The **current proposed** scientific workflow is the Phase 2/2B five-arm design (`src/rq1/five_arm/`). It is a DRAFT, unapproved, and gated by readiness levels. See `docs/PHASE2_WORKFLOW_HIERARCHY.md` for:
+- which layer (historical four-condition, amended evaluation, closed six-arm engineering workflow, Phase 1 preparation, Phase 2 five-arm) is current;
+- what each readiness level authorises.
+
+Agents must not approve scientific decisions, fabricate labels or approvals, or run models without the matching readiness level and an explicit authorisation.
+
 ## Purpose
 
 Build a reproducible controlled-recovery experiment: determine whether a persistent agent's naturally accumulated skill library improves recovery from controlled plan-invalidating failures in multi-step ALFWorld tasks, or increases post-failure retrieval noise and recovery degradation.
 
-## Authoritative RQ1 protocol
+## Authoritative RQ1 protocol (historical four-condition design; see "Current workflow" above)
 
 The scientific retrieval mechanism is **Sentence-BERT embeddings + cosine similarity + deterministic top-3**, invoked exactly once immediately after the controlled failure. Retrieval noise is defined as **1 − Precision@3** against human relevance labels. The four memory conditions are **NoLib (0)**, **Clean-24 (24 core skills, 4 per family)**, **Accum-60 (Clean-24 + 36)**, and **Accum-96 (Clean-24 + 72)**. The legacy `L0/L25/L50/L75/L100` chronological-snapshot design and Hermes-native retrieval are deprecated from the active scientific path.
 

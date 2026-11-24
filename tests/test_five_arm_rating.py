@@ -11,7 +11,14 @@ from rq1.five_arm import rating
 SALT = "fixture-salt-0123456789"
 TASKS = [{"task_id": f"valid_seen:task-{i}/trial_T1", "task_goal": f"put a clean mug in coffeemachine {i}.",
           "recovery_context": "You arrive at cabinet 1. The cabinet 1 is closed."} for i in range(3)]
-DECL = lambda rater: {"label_source": "human", "rater_id": rater, "saw_other_ratings": False}
+def DECL(rater, **override):
+    """A declaration-SHAPED record for tooling tests (not a real declaration; no real rater exists here)."""
+    base = {"declaration_version": rating.DECLARATION_VERSION, "label_source": "human", "rater_id": rater, "role": "rater",
+            "declared_at": "2026-11-24T10:00:00Z", **rating.DECLARATION_STATEMENTS,
+            "coordinator_receipt": {"received_by_code": "COORD", "received_at": "2026-11-24T11:00:00Z", "channel": "separate upload",
+                                    "export_sha256": "a" * 64}}
+    base.update(override)
+    return base
 
 
 def fill(csv_text: str, labeler) -> bytes:
@@ -74,8 +81,13 @@ class SubmissionTests(unittest.TestCase):
         sub = self.parse(fill(self.export_a, self.lab_a))
         self.assertEqual(len(sub), len(self.ids))
         bad_cases = [
-            (fill(self.export_a, self.lab_a), "A", {"label_source": "ai_model", "rater_id": "A", "saw_other_ratings": False}),
-            (fill(self.export_a, self.lab_a), "A", {"label_source": "human", "rater_id": "A", "saw_other_ratings": True}),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", label_source="ai_model")),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", saw_other_ratings=True)),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", no_ai_or_automated_assistance=False)),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", saw_retrieval_ranks_or_scores=True)),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", email="someone@example.org")),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", coordinator_receipt=None)),
+            (fill(self.export_a, self.lab_a), "A", DECL("A", coordinator_receipt={**DECL("A")["coordinator_receipt"], "received_by_code": "A"})),
             (fill(self.export_a, lambda i: "MAYBE"), "A", None),
             (fill(self.export_a, lambda i: ""), "A", None),
             (b"\n".join(fill(self.export_a, self.lab_a).splitlines()[:-1]) + b"\n", "A", None),   # missing item
@@ -104,7 +116,9 @@ class SubmissionTests(unittest.TestCase):
             rating.adjudicate(a, b, {i: {"label": "UNCERTAIN", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"))
         final = rating.adjudicate(a, b, {i: {"label": "PARTIAL", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"))
         self.assertTrue(all(final[i] == "PARTIAL" for i in conflicts))
-        prov = {k: "a" * 64 for k in ("export_sha256", "rater_a_submission_sha256", "rater_b_submission_sha256", "adjudication_sha256")}
+        prov = {k: "a" * 64 for k in ("export_sha256", "rater_a_submission_sha256", "rater_b_submission_sha256", "adjudication_sha256",
+                                      "rater_a_declaration_sha256", "rater_b_declaration_sha256", "adjudicator_declaration_sha256")}
+        self.assertIn("independence_screen", report)
         frozen = rating.freeze_labels(final, self.key, provenance=prov)
         self.assertEqual(frozen["status"], "frozen_pending_human_approval")
         self.assertEqual(len(rating.label_map(frozen)), len(self.ids))
@@ -115,7 +129,26 @@ class SubmissionTests(unittest.TestCase):
             rating.freeze_labels(final, self.key, provenance={**prov, "adjudication_sha256": "x"})
 
 
+class ProvenanceTests(unittest.TestCase):
+    def test_independence_screen_and_export_leak_scan(self):
+        same = {f"i{k}": {"label": "RELEVANT", "rationale": "same words"} for k in range(25)}
+        screen = rating.independence_screen(same, same)
+        self.assertEqual(len(screen["flags"]), 2)
+        for leak in ("Retrieval rank 1 was shown.", "similarity 0.8123", "the D18 condition"):
+            with self.assertRaises(rating.RatingError):
+                rating.build_items([{**TASKS[0], "recovery_context": leak}], SKILL_TEXTS, design="full_library", salt=SALT)
+
+
 class WorkloadTests(unittest.TestCase):
+    def test_from_frozen_rankings(self):
+        rankings = {f"t{i}": [f"s{(i + k) % 18:02d}" for k in range(18)] for i in range(79)}
+        w = rating.workload_from_rankings(rankings, rel_scope="natural_top3", irr_scope="natural_top3",
+                                          pilot_tasks=[f"t{i}" for i in range(12)])
+        self.assertEqual((w["pairs"], w["judgments_before_adjudication"], w["pilot_pairs"], w["pilot_judgments_before_adjudication"]),
+                         (237, 474, 36, 72))
+        wide = rating.workload_from_rankings(rankings, rel_scope="natural_top3", irr_scope="full_ranking")
+        self.assertEqual(wide["pairs"], 79 * 18)
+
     def test_exact_counts(self):
         w = rating.workload(tasks=79, library_skills=18, candidate_per_task=3, pilot_tasks=12)
         self.assertEqual((w["full_library"]["pairs"], w["full_library"]["judgments"]), (1422, 2844))

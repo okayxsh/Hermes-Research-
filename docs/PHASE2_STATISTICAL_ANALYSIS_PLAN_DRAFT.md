@@ -1,117 +1,161 @@
-# RQ1 Phase 2: statistical analysis plan (DRAFT, PROPOSED)
+# RQ1 Phase 2B: statistical analysis plan (DRAFT, PROPOSED)
 
 **Status: DRAFT, not approved.**
-- The implementation is `src/rq1/five_arm/analysis.py`, `stats.py` and `power.py`.
+- The implementation is in `src/rq1/five_arm/analysis.py`, `stats.py`, `power.py` and `pilot.py`.
 - It is tested only on synthetic data.
+- The governing decisions are SD-08, SD-10, SD-11, SD-20 and SD-21 in `PHASE2_DECISION_REGISTER_DRAFT.md`. All await approval.
 
-## 1. Outcome, unit and hypotheses
+## 1. Hierarchy, estimand and primary test
 
-- **Primary outcome:** environment-reported success within the approved total action budget.
-- **Unit of analysis: task.**
-  - Seeds are repeated inference measurements within a task.
-  - Per task and contrast, the outcome is the mean over seeds where both arms have a VALID outcome.
-- **Primary family (Holm across the three):**
+**Primary comparison (single, confirmatory): D18 − D0, over every roster task.**
 
-  | Contrast | Population |
-  |---|---|
-  | D18 − D0 | all eligible tasks |
-  | D18 − Fill | all eligible tasks |
-  | Irr − Fill | frozen Irr subset |
+- **Outcome:** environment-reported success within the approved total action cap after the controlled disruption.
+- **Unit:** the task. Per task, the outcome is the mean over the inference seeds with VALID outcomes in **both** arms (pairwise complete case).
+- **Estimand:** the task-weighted mean within-task difference, reported in percentage points.
+  - It describes the **finite screened population** of roster tasks.
+  - It is the total effect of natural Accum-18 retrieval versus no memory, not an isolated relevance effect.
+- **Test:** a two-sided task-level sign-flip permutation test at α = 0.05, with no multiplicity adjustment because there is one primary comparison.
+  - It is exact by enumeration for ≤ 20 non-zero differences; otherwise a seeded Monte-Carlo with 100,000 draws.
+  - With one binary pair per task it equals the exact McNemar/sign test.
+- **Primary interval (SD-21):** a template-cluster bootstrap percentile 95% CI (10,000 replicates).
+  - Goal templates are resampled with replacement, keeping every task of a drawn template; the task-weighted ratio estimator is used.
+  - Sensitivity interval: the task bootstrap CI.
 
-- **Test:** a two-sided sign-flip permutation test on task-level paired differences.
-  - It is exact when there are 20 or fewer non-zero differences, and otherwise a seeded Monte-Carlo with 100,000 draws.
-  - With one binary outcome per task, this is the exact McNemar/sign test.
-  - McNemar is reported only in that case, never on correlated seed-level outcomes.
-- **Estimates:** the mean task-level difference, with a task-bootstrap 95% interval.
-- **Secondary contrasts:**
-  - Rel − Irr (the Rel ∩ Irr subset) and Rel − Fill (the Rel subset);
-  - recovery actions with failures held at the budget, which is a restricted mean, not success-only;
-  - invalid actions;
-  - descriptive latency (wall clock and inference, failures included);
-  - cumulative success by recovery action;
-  - retrieval relevance: Precision@3, strict and lenient, plus injected relevance by arm;
-  - acquisition-template-overlap exclusion sensitivity.
-- **Rel vs D18 is not a relevance contrast,** because it compares 1 active skill against 3.
+**Secondary, exploratory comparisons** (Holm *within* this family only; never pooled with the primary; reported as exploratory):
+- D18 − Fill, Irr − Fill, Rel − Irr, Rel − Fill, over their frozen subsets.
+- Restricted-mean recovery actions (failures counted at the full allowance), invalid actions and latency (failures included).
+- Cumulative success by recovery action.
+- Retrieved Precision@3 (strict; lenient sensitivity) and injected relevance by arm.
+- Acquisition-template-overlap exclusion.
 
-## 2. Dependence
+Rel − D18 is never treated as a relevance contrast (1 versus 3 active skills).
 
-- **Templates:** the 79 tasks share 27 goal templates. Template-aware sensitivity averages task differences within each template, then applies the sign-flip test and a template bootstrap over the templates.
-- **Scenes:** there are only three. Results by scene and leave-one-scene-out are **descriptive only**; no scene-cluster asymptotics are used, and family and scene are confounded.
-- **Generalisation:** the 79 tasks are not independent draws from ALFWorld. Claims are restricted to the screened population.
+## 2. Audit of the task-level sign-flip test
+
+**Null hypothesis tested.** The *sharp* null: within every task, the two arms' outcome distributions are identical, so the arm labels are exchangeable within the task. Given task-level latent factors, tasks are conditionally independent; each episode is a fresh session from the frozen checkpoint.
+
+Under this null each task difference d_i is symmetric about zero and independent across tasks, conditional on |d_i|. Enumerating sign flips is therefore exact.
+
+**Template dependence:**
+- Shared template or scene effects that act on **both** arms cancel inside d_i. They do not invalidate the test of the sharp null.
+- The test is **not** an exact test of the weak null "average effect = 0" when effects are heterogeneous and correlated within templates. The code and docs no longer describe it as exact for that case.
+- **Template-aware sensitivity:**
+  - the template-level sign-flip (unit = template mean difference; 27 units);
+  - the template-cluster bootstrap interval, which is the primary interval.
+- The simulation (§4) shows the template-level test has less power, sharply so under an uneven template allocation. It is therefore a sensitivity analysis, not the primary test.
+
+**Scenes.** There are only three scenes, so per-scene and leave-one-scene-out estimates are **descriptive**. No scene-cluster asymptotics are used.
+
+**Family/scene confounding.** Family and scene are confounded, and a family × scene table is reported with every contrast.
+
+**Generalisation.** The estimate describes the screened finite population. Inference to broader ALFWorld tasks assumes exchangeability that the screening does not provide. The template-cluster interval reflects only the dependence among the observed templates.
 
 ## 3. Missingness and retries
 
-- **Infrastructure failures** (provider, environment, interruption) are retried up to 2 times with the same unit identity.
-  - Retrying anything else, exceeding the limit, gaps in attempt numbers, or two valid outcomes for one unit all abort the analysis.
-- **Model failures, budget exhaustion and invalid-action limits are outcomes.** They are never retried and never treated as missing.
-- **Primary analysis:** pairwise complete cases within task.
-  - Denominators and status counts are reported by arm.
-  - Tasks with no complete pair are listed.
-- **Sensitivity:** worst-case and best-case bounds, setting missing cells to the least or most favourable outcome.
-- **Records for unplanned cells** (for example, Rel outside its frozen subset) abort the analysis.
+- **Infrastructure failures** (provider, environment, interruption, including process death detected on resume) are retried up to **2** times with the same unit identity.
+  - Retrying anything else aborts the analysis.
+  - So do exceeding the limit, gaps in attempt numbering, or two VALID outcomes for one unit.
+- **Model failures, budget exhaustion and selection exhaustion are outcomes.** They are never retried or treated as missing.
+- **INVALID_MEASUREMENT** (context limit reached, provider/local token discrepancy beyond tolerance, missing provider count in real runs) is missing, never a failure.
+- **Primary analysis:** pairwise complete case within task. Denominators and status counts are reported by arm; tasks with no complete pair are listed.
+- **Sensitivity:** worst-case and best-case bounds. Records for unplanned cells abort the analysis.
+- **Blocked filler cells** are excluded prospectively from Fill/Rel/Irr subsets and never remove a task's D18/D0 pair.
 
-## 4. Prospective power and precision (synthetic simulation; not evidence of any effect)
+## 4. Prospective power and precision for D18 − D0 (synthetic; not evidence of any effect)
 
-**Simulation model:**
-- logit random effects for template (SD 0.8), task (SD 1.0) and treatment-effect heterogeneity (SD 0.5);
-- the effect calibrated on the marginal probability scale;
-- a 70% chance that all seeds share one draw (temperature-0 near-determinism);
-- 2% of cells missing completely at random;
-- 400 replications per scenario, seed 20261124.
+**Model:**
+- logit random effects: template SD 0.8, scene SD 0.4 (three scenes), task SD 1.0;
+- treatment-effect heterogeneity: template-level SD 0.3, task-level SD 0.5;
+- the effect is calibrated so that the **marginal** success difference equals Δ at marginal reference success p_ref.
 
-The paired t-test approximates the planned sign-flip test. Bonferroni α/3 is a conservative lower bound for Holm. The +33.2 pp engineering difference (six repeated contexts) is **not** used as an expected effect. The output file has `content_sha256` `d6d2b8d1893b80534315adf35c3ae7c2835ae6da8434d3dc8193b1d2ff9bc248` and is not committed. Regenerate it with `python -m rq1.five_arm power --reps 400`.
+**Assumptions:**
+- *Templates:* 27, with a balanced allocation of 79 tasks (25×3 + 2×2). This is an assumption; real counts come from the frozen roster. A skewed allocation is run as a sensitivity.
+- *Seeds:* with probability 0.7 all seeds of a task/arm share one outcome (temperature-0 near-determinism); otherwise they are independent given the task probability.
+- *Missingness:* 2% of cells are MCAR.
 
-**79 tasks:**
+**Simulated test:** the task-level sign-flip via its conditional normal approximation (z = Σd / √Σd²).
 
-| p_ref | Δ | seeds | Power α=.05 | Power α/3 (Holm bound) | Median 95% CI half-width |
-|---|---|---|---|---|---|
-| 0.50 | 0.05 | 3 | 0.14 | 0.06 | 0.124 |
-| 0.50 | 0.10 | 3 | 0.38 | 0.23 | 0.123 |
-| 0.50 | 0.15 | 3 | 0.68 | 0.53 | 0.122 |
-| 0.50 | 0.20 | 3 | 0.88 | 0.78 | 0.121 |
-| 0.50 | 0.30 | 3 | 0.99 | 0.99 | 0.115 |
-| 0.75 | 0.10 | 3 | 0.38 | 0.20 | 0.111 |
-| 0.75 | 0.15 | 3 | 0.79 | 0.63 | 0.107 |
-| 0.75 | 0.20 | 3 | 0.97 | 0.95 | 0.102 |
-| 0.50 | 0.20 | 1 | 0.84 | 0.66 | 0.138 |
+**Settings:**
+- 2,000 replications per scenario, seed 20261124; Monte-Carlo SE ≤ 0.011.
+- The +33.2 pp engineering difference is **not** used as an expected effect.
+- Output `power-simulation.json`, `content_sha256` `db540edeed7e3a5518bde3b9fa0bbb4dc9e59e986ee34276b12e2658197254ec`, not committed. Regenerate with `python -m rq1.five_arm power --reps 2000 --grid all`.
 
-**Smaller populations** (mechanism subsets may be this size):
+**79 tasks, α = 0.05, power with Monte-Carlo SE in brackets** (precision = 1.96 × sampling SD of the estimate):
 
-| n | p_ref | Δ | seeds | Power α/3 |
+| p_ref | Δ | 1 seed | 3 seeds | 95% precision ±, 1 seed / 3 seeds |
 |---|---|---|---|---|
-| 40 | 0.50 | 0.20 | 3 | 0.50 |
-| 40 | 0.50 | 0.30 | 3 | 0.87 |
-| 40 | 0.75 | 0.20 | 3 | 0.67 |
-| 20 | 0.50 | 0.20 | 3 | 0.20 |
+| 0.3 | 0.05 | 0.13 (0.01) | 0.14 (0.01) | 0.13 / 0.12 |
+| 0.3 | 0.10 | 0.31 (0.01) | 0.42 (0.01) | 0.14 / 0.12 |
+| 0.3 | 0.15 | 0.59 (0.01) | 0.68 (0.01) | 0.13 / 0.12 |
+| 0.3 | 0.20 | **0.82** (0.01) | **0.90** (0.01) | 0.14 / 0.12 |
+| 0.3 | 0.25 | 0.95 | 0.99 | 0.14 / 0.12 |
+| 0.3 | 0.30 | 0.99 | 1.00 | 0.14 / 0.12 |
+| 0.5 | 0.05 | 0.12 (0.01) | 0.13 (0.01) | 0.14 / 0.12 |
+| 0.5 | 0.10 | 0.28 (0.01) | 0.36 (0.01) | 0.13 / 0.12 |
+| 0.5 | 0.15 | 0.55 (0.01) | 0.65 (0.01) | 0.14 / 0.12 |
+| 0.5 | 0.20 | **0.83** (0.01) | **0.90** (0.01) | 0.14 / 0.12 |
+| 0.5 | 0.25 | 0.96 | 0.98 | 0.13 / 0.12 |
+| 0.5 | 0.30 | 1.00 | 1.00 | 0.13 / 0.12 |
+| 0.7 | 0.05 | 0.13 (0.01) | 0.14 (0.01) | 0.13 / 0.11 |
+| 0.7 | 0.10 | 0.36 (0.01) | 0.45 (0.01) | 0.12 / 0.11 |
+| 0.7 | 0.15 | 0.70 (0.01) | **0.79** (0.01) | 0.12 / 0.11 |
+| 0.7 | 0.20 | **0.92** (0.01) | 0.97 | 0.12 / 0.11 |
+| 0.7 | 0.25 | 0.99 | 1.00 | 0.13 / 0.11 |
 
-**Sensitivity** (79 tasks, three seeds, p_ref 0.5, Δ 0.10, at the α/3 Holm bound):
+(p_ref + Δ > 0.95 is not simulated.)
 
-| Condition | Power |
-|---|---|
-| Independent seeds, no missing cells | 0.48 |
-| Fully deterministic seeds | 0.17 |
-| 10% missing cells (independent seeds) | 0.37 |
-| Template SD 0 | 0.19 |
-| Template SD 1.5 | 0.25 |
+**Dependence sensitivity** (79 tasks, 3 seeds, p_ref 0.5):
+
+| Assumption changed | Power Δ = 0.10 | Power Δ = 0.15 |
+|---|---|---|
+| default (seed determinism 0.7) | 0.36 | 0.65 |
+| seeds fully independent (determinism 0) | 0.61 | 0.94 |
+| seeds fully deterministic (determinism 1) | 0.32 | 0.59 |
+| task SD 0.5 (more discordant pairs) / 2.0 | 0.32 / 0.45 | 0.63 / 0.75 |
+| template SD 0 / 1.5 | 0.36 / 0.40 | 0.62 / 0.73 |
+| template effect heterogeneity SD 0 / 0.8 | 0.38 / 0.37 | 0.68 / 0.64 |
+| 0% / 10% missing cells | 0.38 / 0.33 | 0.69 / 0.66 |
+| skewed template allocation | 0.35 | 0.66 |
+| template-level sign-flip, skewed allocation | 0.22 | 0.44 |
+
+**Other observations:**
+- **Paired discordance:** 0.30–0.44 of task-seed pairs are discordant across scenarios, depending on p_ref and the task SD.
+- **Interval coverage:** Wald coverage of the marginal Δ is about 0.92–0.95 with task SEs and 0.92–0.95 with template-cluster SEs in all scenarios except near ceiling (p_ref 0.7, Δ 0.25: about 0.89–0.90). The percentile cluster bootstrap is used for reporting.
+
+**Smaller populations** (1 seed, p_ref 0.5):
+
+| n | Δ 0.10 | Δ 0.15 | Δ 0.20 | Δ 0.25 |
+|---|---|---|---|---|
+| 40 | 0.16 | 0.33 | 0.52 | 0.74 |
+| 60 | 0.25 | 0.46 | 0.72 | 0.89 |
 
 **Interpretation:**
-- With all 79 tasks, the design reliably detects (≥ 80% at the Holm bound) only absolute success differences of about **0.20 (p_ref 0.75) to 0.30 (p_ref 0.5)**.
-- The interval half-width is about ±0.10 to ±0.12.
-- Extra seeds help only if outputs actually vary across seeds at temperature 0.
-- Mechanism subsets of 20–40 tasks cannot support confirmatory claims for effects below about 0.30.
+- With all 79 tasks, the single primary comparison reaches 80% power for an absolute difference of about **20 percentage points** (about 15 points at p_ref 0.7 with three variable seeds).
+- The 95% precision is about **±12–14 points**.
+- Effects of 5–10 points cannot be reliably detected. They can only be bounded by the interval.
+- Mechanism subsets of 40–60 tasks are underpowered for anything below about 25 points. This is why they are exploratory.
 
-**Recommendations:**
-- Frame D18 − D0 as the one adequately powered confirmatory contrast, or present all contrasts as estimation with intervals.
-- Treat the Irr − Fill and Rel − Irr mechanism contrasts as exploratory unless their pre-frozen subsets are large.
-- Measure seed variability in the pilot before keeping three seeds.
+## 5. Inference-seed policy (SD-08; not approved)
 
-## 5. Decisions required before approval
+**Episode counts per confirmatory run:**
+- one seed per task: D0 (79) + D18 (79) + Fill (≤ 79) + |Rel| + |Irr| ≤ **395**;
+- three seeds: up to **1,185**;
+- one primary seed plus a reproducibility subset (12 tasks × 2 extra seeds × D0/D18): ≤ 395 + 48 = **443**.
 
-1. Primary family composition (keep three contrasts, or one primary plus secondaries).
-2. α and multiplicity.
-3. Retry limit.
-4. Missing-data bounds as sensitivity only.
-5. Seeds.
-6. Whether the confirmatory claim is hypothesis-testing or estimation-only.
+For example, with |Rel| = 40, |Irr| = 50 and Fill unblocked, the counts are 327, 981 and 375 respectively.
 
-See `PHASE2_FIVE_ARM_PROTOCOL_DRAFT.md` §11.
+| Policy | Episodes (upper bound) | Precision / power | Assumption for the gain |
+|---|---|---|---|
+| One seed | 395 | ±0.13–0.14; 80% at Δ ≈ 0.20 | none |
+| Three seeds | 1,185 (×3) | ±0.11–0.12; power +0.07–0.10 at default determinism, up to +0.39 if seeds are fully independent | seeds must produce **different** trajectories; at temperature 0 they may not |
+| One primary seed + reproducibility subset | ≈ 443 | as one seed; the subset measures seed variability without changing the primary analysis | none for the primary; the subset is descriptive |
+
+Seeds are never treated as extra tasks: the analysis averages within task.
+
+**Recommendation:** one primary seed plus a prospectively selected reproducibility subset.
+- If the diagnostic pilot shows low trajectory identity across seeds, adopting three seeds before confirmation is the documented alternative. In that case the decision must be taken before any confirmatory outcome.
+- Per-episode compute time must come from the pilot. It is not estimated here.
+
+## 6. Decisions required before approval
+
+SD-08 (seeds), SD-10 (hierarchy and primary test), SD-11 (retry and missingness), SD-20 (secondary multiplicity) and SD-21 (primary interval). See the register.

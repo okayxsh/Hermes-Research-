@@ -1,301 +1,385 @@
-# RQ1 Phase 2: five-arm protocol (DRAFT, PROPOSED)
+# RQ1 Phase 2B: five-arm protocol (DRAFT, PROPOSED)
 
 **Status: DRAFT. Nothing here is approved.**
-- No roster, label set, filler corpus, runtime digest, action cap or statistical plan has been approved.
-- No pilot or confirmatory model execution has taken place.
-- All tests use synthetic fixtures. They are not scientific evidence.
+- No roster, label set, filler corpus, runtime digest, action cap, threshold or statistical plan has been approved.
+- Every scientific decision is listed in `PHASE2_DECISION_REGISTER_DRAFT.md`; all 23 await author approval.
+- No pilot or confirmatory model execution has taken place. No provider, Ollama or GPU was used.
+- All tests use synthetic fixtures (scripted world, scripted provider). They are not scientific evidence.
 
 | | |
 |---|---|
 | Implementation | `src/rq1/five_arm/` |
-| Tests | `tests/test_five_arm_*.py` |
-| Branch | `sci/rq1-phase2-five-arm-runner`, based on `f71b4da` |
+| Tests | `tests/test_five_arm_*.py`, fixtures `tests/five_arm_fixtures.py`, `tests/five_arm_e2e_fixtures.py` |
+| Branch | `sci/rq1-phase2-five-arm-runner` (base `f71b4da`) |
+| Related drafts | `PHASE2_STATISTICAL_ANALYSIS_PLAN_DRAFT.md`, `PHASE2_DECISION_REGISTER_DRAFT.md`, `PHASE2_RATER_INSTRUCTIONS_DRAFT.md`, `PHASE2_WORKFLOW_HIERARCHY.md` |
 
-The historical six-arm implementation (`rq1.university_gpu`) is unchanged. Its records are refused by the five-arm analysis (`protocol.assert_five_arm_records`) and are never reinterpreted as five-arm records.
+The historical six-arm implementation (`rq1.university_gpu`) is unchanged. Its records and manifests are refused by the five-arm code and are never reinterpreted.
 
-## 1. Audit of the existing six-arm runner (code at `f71b4da`)
+## 1. Audits
 
-| # | University audit finding | Verified in code | Where |
+### 1.1 Six-arm runner (code at `f71b4da`), from Phase 2
+
+| # | University audit finding | Verified | Where |
 |---|---|---|---|
 | 1 | Six arms: D0, D18, Rel, Irr, Fill, Gate | **Confirmed** | `university_gpu/manifest.py` `CONDITIONS` |
 | 2 | Rel/Irr/Fill/filtered Gate add a model-visible `neutral_filler` key absent from D0 and D18 | **Confirmed** | `interventions._with_filler` |
-| 3 | Memory-availability flags differ by condition | **Confirmed.** `no_retrieved_skills_available` is true in D0 and Fill, false in D18/Rel/Irr. Fill tells the model there is no memory *and* shows filler | `interventions.py:165`, `retrieval/injection.py` |
-| 4 | Token matching covers only the serialised memory block | **Confirmed.** Only the inner JSON is counted; the rest of the prompt and the chat template are not | `interventions.token_count` |
-| 5 | Rel/Irr select from full-library label pools | **Confirmed** (seeded random choice among all 18 skills) | `manifest._select_skill_ids` |
+| 3 | Memory-availability flags differ by condition (Fill says "no memory" *and* shows filler) | **Confirmed** | `interventions.py:165`, `retrieval/injection.py` |
+| 4 | Token matching covers only the serialised memory block | **Confirmed** | `interventions.token_count` |
+| 5 | Rel/Irr select from full-library label pools | **Confirmed** | `manifest._select_skill_ids` |
 | 6 | Rel/Irr can inject skills outside the natural top 3 | **Confirmed** | as above |
-| 7 | Noise analysis uses retrieved, not injected, IDs | **Confirmed.** Rel/Irr/Fill noise is computed from the natural top 3 the model never saw | `analysis.analyze` |
-| 8 | D0 metadata incomplete | **Confirmed.** No budget, memory hash or filler fields | `interventions.intervene` (D0 branch) |
-| 9 | Gate can be an exact D18 no-op | **Confirmed.** If no item falls below the threshold, the D18 block is returned unchanged | `interventions.py:170` |
-| 10 | No confirmatory hypothesis tests or missingness policy | **Confirmed.** Exploratory bootstrap only; any missing unit aborts the analysis | `analysis.analyze` |
-| 11 | Runner expects a digest not installed at the university | **Confirmed.** `MODEL_DIGEST = 4eb23ef…`; `probe_endpoint` fails on any other digest | `manifest.py`, `ollama.probe_endpoint` |
+| 7 | Noise analysis uses retrieved, not injected, IDs | **Confirmed** | `analysis.analyze` |
+| 8 | D0 metadata incomplete | **Confirmed** | `interventions.intervene` |
+| 9 | Gate can be an exact D18 no-op | **Confirmed** | `interventions.py:170` |
+| 10 | No confirmatory hypothesis tests or missingness policy | **Confirmed** | `analysis.analyze` |
+| 11 | Runner expects a digest not installed at the university | **Confirmed** | `manifest.py`, `ollama.probe_endpoint` |
 
-**Additional findings:**
-- **IDs and ranks are model-visible.** Skill IDs and retrieval ranks appear in the memory JSON in every memory-bearing arm. In Rel/Irr the rank is always 1.
-- **The old manifest cannot represent the 79-task population.** It hard-requires exactly 6 or 30 tasks, with all six families including pick-two. The 79-task population has 0 pick-two tasks.
-- **Provider token counts are lost.** The provider's `prompt_eval_count` is parsed but never logged, so provider-side token accounting is unavailable.
-- **`AGENTS.md` is stale.** It still describes a superseded four-condition design (NoLib/Clean-24/Accum-60/Accum-96). It was left unchanged; reviewers should reconcile it.
+Additional Phase 2 findings: skill IDs and ranks were model-visible; the old manifest cannot represent the 79-task population (no pick-two tasks); provider `prompt_eval_count` was parsed but never logged.
 
-## 2. Conditions (protocol `rq1-five-arm-v1`)
+### 1.2 Phase 2 five-arm worker (commit `3de474a`), audited in Phase 2B
 
-| Arm | What the model sees | Active procedural skills |
+| Component | State at `3de474a` | State now |
 |---|---|---|
-| D0 | No memory (see §3; presentation is an open decision) | 0 |
-| D18 | The natural Sentence-BERT top 3 from the frozen Accum-18 library, in rank order (pinned `all-mpnet-base-v2`, cosine, ties broken by `(-score, skill_id)`) | 3 |
-| Rel | One adjudicated-RELEVANT skill in slot 1; reviewed neutral content in slots 2–3 | 1 |
-| Irr | One adjudicated-IRRELEVANT skill in slot 1; reviewed neutral content in slots 2–3 | 1 |
-| Fill | Reviewed neutral content in all three slots | 0 |
+| Executable scientific worker | `FiveArmWorker`: gate + single-unit wrapper around `AmendedEvaluationExecutor` | `FiveArmEpisodeExecutor` (`executor.py`), composed from the frozen harness, episode runner, retrieval boundary and prompt builder |
+| Provider token capture | **Broken**: `ProviderTokenRecorder` wrapped `driver._model_response`, which exists on `RealEpisodeSession`, not on `RealEpisodeDriver`; construction would fail and no count would be captured | `ProviderCallCapture` wraps every **session's** `_model_response`; every call is persisted (`provider_calls`) |
+| Manifest builder | present | v2: per-arm eligibility, exact cap and allowance per unit, exact-cap oracle requirement, diagnostic manifest |
+| Work-queue orchestration | **absent** | `queue.RunQueue`: ordered, single process, lock, journal, fsync'd records |
+| Five-arm intervention dispatch | memory policy only | memory policy + executor modes (`arm`, `diagnostic_undisturbed`, `diagnostic_detoured`) |
+| Environment reconstruction | via the frozen harness | unchanged frozen harness; checkpoint and post-detour digests verified every episode |
+| Termination handling | via executor | success / budget / invalid-action limit / environment terminal; provider, environment and interruption failures separated |
+| Measurement persistence | **absent** (returned a dict) | `records.jsonl` + `journal.jsonl` + per-attempt episode logs |
+| Resume / retry | **absent** | stale attempts closed as `infrastructure_interruption` on resume; only infrastructure failures retried, at most 2 times |
+| Post-run validation | **absent** | `RunQueue.validate()` + `analysis.resolve_units` |
+| Undisturbed pilot mode | **absent** | `UndisturbedContinuationHarness` |
+| University entry points | **absent** | `university_cli` (CPU tools and the gated `run-queue`) |
 
-Gate is **deferred** (finding 9).
+## 2. Hypotheses and claims boundary
 
-**Natural retrieval runs for every arm,** including D0, and is checked against the frozen ranking. Only the memory policy decides what the model sees. Retrieval scores and human labels never change the ranking.
+**Single primary comparison: D18 versus D0.**
+- **Primary outcome:** environment-reported task success within the approved total action horizon after the controlled disruption.
+- **Primary estimand:** the task-weighted mean, over the screened task population, of the within-task difference in recovery success between natural retrieval from the frozen Accum-18 library and no memory, averaging inference seeds within each task. It is reported in percentage points, with an interval (SAP §1).
+- **Interpretation:** this is the **total** effect of the specified natural-retrieval intervention (procedural content, memory presence and prompt length together). It does not isolate procedural relevance.
 
-**Rel and Irr are controlled single-skill substitutions.** Rel vs D18 also changes the number of active skills (1 vs 3), so it does **not** isolate relevance. The relevance contrast is Rel vs Irr, with matched count, slot, format and token anchor.
+**Secondary, exploratory comparisons** (separate multiplicity family, never presented as confirmatory discoveries):
+- D18 − Fill, Irr − Fill, Rel − Irr, Rel − Fill;
+- retrieval-relevance associations;
+- action efficiency (restricted-mean recovery actions), invalid actions, recovery latency;
+- acquisition-template-overlap sensitivity.
 
-## 3. Prompt construction
+**Claims boundary.** One fixed, frozen library is used. The experiment cannot establish:
+- the effect of progressive library growth;
+- an optimal library size;
+- efficacy on unrelated benchmarks or other model families;
+- autonomous improvement over time.
 
-The prompt is built by the frozen builder (`render_action_prompt`, unchanged) and sent as one user message with no system message. The memory-bearing block, placed in the existing `RECOVERY MEMORY:` section and serialised `json.dumps(..., ensure_ascii=False, sort_keys=True)`, is:
+The broader research motivation (whether accumulated procedural memory helps recovery) is retained as motivation only.
 
-```json
-{"memory_entries": [{"text": "…"}, {"text": "…"}, {"text": "…"}]}
-```
+## 3. Conditions (`rq1-five-arm-v1`)
 
-**The block is identical in form across D18, Rel, Irr and Fill:**
-- the same key and the same three slots;
-- no IDs, ranks, scores, labels, arm names or availability flags;
-- no condition-specific instructions.
+| Arm | Model-visible memory | Active skills | Scheduled for |
+|---|---|---|---|
+| D0 | none (SD-01 proposes no memory section) | 0 | every roster task |
+| D18 | natural top 3 from frozen Accum-18, rank order | 3 | every roster task |
+| Rel | adjudicated-RELEVANT skill (slot 1) + neutral slots 2–3 | 1 | frozen Rel subset |
+| Irr | adjudicated-IRRELEVANT skill (slot 1) + neutral slots 2–3 | 1 | frozen Irr subset |
+| Fill | neutral content in all 3 slots | 0 | every task whose Fill cell is not blocked |
 
-**D0 (decision `d0_representation`):**
-- **Proposed:** `absent_memory_section`. The section is omitted entirely, which works through the existing driver because `{"recovery_memory": None}` renders no section.
-- **Alternative:** the historical NoLib marker.
+Gate is deferred. Natural retrieval runs for **every** arm, including D0, and its live top 3 must equal the frozen ranking (otherwise a protocol violation stops the queue).
 
-Either way, D0 differs structurally from the memory-bearing arms. This difference is documented, and D0 is not claimed to be length-matched.
+## 4. Retrieval-freezing verification (SD-14)
 
-**Token anchor:** the task's D18 memory-block token count.
-- Neutral content is assembled deterministically from **whole reviewed sentences**, approaching the anchor from below.
-- Procedural text is never truncated. If a single active skill exceeds the anchor, the cell is flagged instead.
-- Cells outside the approved tolerance (proposed: max(8 tokens, 2% of anchor)) are **blocked** in the manifest, and a manifest with blocked cells cannot be frozen.
+The actual path was audited statically and is now asserted at run time:
 
-**Accounting levels** (`prompting.account_prompt`):
-
-| Level | Source | Notes |
+| Question | Finding | Evidence |
 |---|---|---|
-| Raw prompt tokens | local count | |
-| Memory-block tokens | local count | |
-| Chat-template tokens | local count | only with a renderer verified against the provider |
-| Provider `prompt_eval_count` | real requests | recorded by `ProviderTokenRecorder` |
+| Retrieves once at the recovery checkpoint? | **Yes.** One crossing of `SingleRetrievalBoundary`, on the post-detour failure context, before the first recovery action | `recovery_executor.run_recovery_episode` step 6; the boundary raises on a second crossing |
+| Retrieves repeatedly during recovery? | **No.** `run_model_loop` never calls retrieval | `episode_driver.run_model_loop`, `choose_action` |
+| Changes the query as observations evolve? | **No.** The query is built once from the failure context | as above |
+| Reloads skill memory in later calls? | **No.** The same `recovery_memory` dict is passed to every decision; the model is called directly through Ollama `/api/chat`, and Hermes is used only as the ALFWorld tool registry (no Hermes skill loading) | `harnesses.run_recovery`; `_RegistryWorker` config enables only the ALFWorld plugin |
+| Run-time assertion | `ProviderCallCapture` refuses any recovery prompt whose memory section differs from the first one | `executor.py`; e2e test |
 
-- Exact provider equality is never claimed.
-- A local prompt plus maximum output that exceeds `num_ctx` raises an error before any call.
-- A provider count at or above `num_ctx` turns the episode into `INVALID_MEASUREMENT`.
+So every skill that can enter a prompt is in the task's frozen natural top 3, and the candidate-set annotation (Rel/Irr scope `natural_top3`) covers every injectable or retrievable skill.
 
-**Automated paired checks** (`compare_arm_prompts`, `scan_leakage`) verify:
-- every non-memory section is byte-identical across arms;
-- the memory schema is exact, with no unexpected filler keys or condition flags;
-- no arm-name, label or meta-term leakage;
-- no skill IDs and no score-like numbers in the memory;
-- no oracle or expert action inside the memory;
-- no oracle continuation as executed history;
-- no future observations.
+**Departure from normal Hermes use.** The intervention is "retrieve once at the disruption checkpoint, then hold memory fixed". It is not Hermes's own skill loading. Manuscripts must say so.
 
-Natural skill texts are excluded from the term scan (they are legitimately visible).
+**Tie fragility.** The CPU ranking export records the rank-3/rank-4 score margin. Tasks with a margin below 1e-6 are flagged; if a live ranking differs from the frozen one, the unit is a protocol violation, never silently relabelled.
 
-## 4. Rel/Irr selection (`selection.py`)
+## 5. Prompt construction and leakage
 
-**Rule:**
-- **Rel** = the highest-ranked skill in the Rel scope whose frozen adjudicated label is RELEVANT.
-- **Irr** = the highest-ranked skill in the Irr scope labelled IRRELEVANT. That makes it a plausible retrieval false positive.
-- PARTIAL and UNCERTAIN labels are never injected. Low similarity is never treated as irrelevance.
-- Every skill in a scope must carry a frozen label, or selection fails. There are no fallback labels.
+- The unchanged builder `render_action_prompt` is used. There is one user message and no system message.
+- Shared block for D18/Rel/Irr/Fill: `{"memory_entries": [{"text": …} ×3]}`. It has no IDs, ranks, scores, labels, arm names or availability flags.
+- **Runtime guards** in the executor:
+  - the full leakage scan of the first recovery prompt runs **before** it is sent: arm names, label and meta terms, skill IDs, score-like decimals, oracle or expert actions in non-library memory content, oracle continuation as history, future observations;
+  - memory is checked to stay static;
+  - a local context-overflow check runs before each call.
+- Frozen library texts are legitimately visible. Acquired skills can quote concrete actions, so an oracle action counts as leakage only in memory content that is not a frozen library text.
+- **Remaining documented differences:**
+  - D0 has no memory section;
+  - Rel/Irr carry 1 skill versus 3 in D18;
+  - neutral prose reads differently from procedural text;
+  - token matching is approximate (§7).
 
-**Scopes (decisions `rel_candidate_scope`, `irr_candidate_scope`):**
-- **Proposed:** `natural_top3` for both.
-- **Alternative:** `full_ranking` for more coverage. It requires full-library annotation.
+## 6. Rel/Irr selection and annotation (SD-02/03/04/09)
 
-**Missing categories (pre-specified):**
-- A task with no qualifying skill gets no Rel (or Irr) unit and is excluded only from that mechanism contrast.
-- It remains in D0/D18/Fill and in D18-vs-D0. No substitute intervention is defined.
-- The mechanism subsets are fixed by `mechanism_subsets()` from frozen labels and rankings. They are hash-bound before any model outcome exists.
+- **Rel** = the highest-ranked RELEVANT skill within the natural top 3.
+- **Irr** = the highest-ranked IRRELEVANT skill within the natural top 3.
+- PARTIAL and UNCERTAIN are never injected, and there are no fallback labels.
+- Rel and Irr share slot layout, slot count, active-skill count and metadata keys.
+- Mechanism subsets (`arm_subsets`) are frozen from labels and rankings and hashed into the manifest before any outcome.
+- Tasks without a qualifying Rel or Irr skill stay in D0/D18/Fill.
+- **Annotation workload, natural top-3 candidate set** (planning estimates; recompute with `rating.workload_from_rankings` on the frozen rankings):
 
-## 5. Neutral filler
+  | Population | Distinct pairs | Judgments, 2 raters, before adjudication |
+  |---|---:|---:|
+  | 79 unseen contexts | 237 | 474 |
+  | 12 pilot contexts | 36 | 72 |
 
-- Filler comes from a corpus file. Its approval is a human review bound to the corpus SHA-256 (`FillerCorpus.approved`).
-- `lint_filler_sentence` screens for:
-  - action verbs;
-  - ALFWorld objects and receptacles;
-  - directive or meta terms (task, goal, memory, recovery, relevant, you, must, …);
-  - digits and markup.
-- Passing the lint **never** approves filler, and token length never approves it.
-- No real corpus exists yet; the test corpus is a fixture.
-- **Status: UNAPPROVED. A blocker.**
+- **Rater protocol:** see `PHASE2_RATER_INSTRUCTIONS_DRAFT.md`.
+  - Exports hide scores, ranks, arms, outcomes and oracle continuations (checked by `_export_leaks`).
+  - Order is per-rater random; item IDs are anonymous and stable.
+  - Declarations use pseudonymous codes and are paired with a coordinator receipt. A declaration is an attestation, not proof; the independence screen flags suspicious patterns for review.
 
-## 6. Measurements (`measurements.py`)
+## 7. Neutral filler (SD-06/12/23)
 
-**One schema for all arms.** It records:
-- task, template, scene, family, exposure policy and oracle hashes;
-- checkpoint and post-detour digests;
-- condition, seed and runtime identity;
-- **natural** top-3 IDs and scores, and the **injected** IDs and count;
-- analysis-only injected labels;
-- filler identity, memory hash and first-prompt hash;
-- the four token levels;
-- cap, prefix, detour and recovery actions;
-- success, termination reason and invalid actions;
-- wall-clock and inference latency;
-- outcome status.
+**Candidate corpus:** `configs/five_arm/neutral_filler_candidate_v1.json`.
+- 139 hand-written sentences about weather, landscape, nature, music, astronomy and history.
+- 30 of them are short (≤ 4 words), for fine length control.
+- Canonical SHA-256: `cd9f3e07f848c0f289310a431bf1adb483b4a710cbf50a521d9c04ba60c2ca31`.
+- **Status: PROPOSED_CANDIDATE_NOT_APPROVED** (empty review record).
 
-D0 carries every field, with explicit empty or not-applicable values.
+**Lint** (`lint_filler_sentence`) screens for:
+- action verbs;
+- directive and meta terms;
+- digits and markup;
+- ALFWorld objects and receptacles;
+- spatial and navigation words;
+- task-family concepts (heating, cooling, cleaning, light, opening);
+- household and object words;
+- advice and evaluation language;
+- leakage label terms.
 
-**Relevance metrics:**
-- **Retrieved Precision@3** uses the natural top 3 (strict primary; lenient sensitivity).
-- **Injected relevance** uses the injected IDs only. It is `not_applicable_zero_injected` for D0 and Fill.
+All 139 sentences pass. **Passing the lint does not show the prose is behaviourally inert**, and it never approves the corpus.
 
-**Statuses** separate:
-- outcomes: success, budget exhaustion, invalid-action limit, environment terminal failure;
-- infrastructure: provider, environment, interruption;
-- missing cell, unapproved intervention and invalid measurement.
+**Matching** (synthetic-tokenizer demonstration in `test_five_arm_governance`):
+- whole sentences are added deterministically, approaching the D18 anchor from below;
+- procedural skills are never truncated;
+- total memory-block tokens are matched within max(8, 2% of anchor);
+- Rel and Irr have identical slot structure and metadata keys;
+- matching is deterministic per task.
 
-A non-valid record has `success = None` and is never coerced into a failure.
+**What is matched:** only the total memory-block length. Slot-level lengths are **not** matched: in Rel/Irr the neutral slots absorb the difference between the active skill and the anchor.
 
-## 7. Runtime identity (`runtime.py`)
+**Remaining confounds:**
+- *Position:* the active skill is always in slot 1, while D18 skills occupy ranks 1–3.
+- *Semantic:* neutral prose is a different register and may itself act as a cue ("memory present but unhelpful").
+- *Length:* Rel and Irr skills differ in length, so their neutral portions differ.
 
-**Digests:**
+**Real-tokenizer audit:** a university CPU step. Cells outside tolerance are **BLOCKED** and excluded prospectively from the contrasts that need them. They never remove a task's D18/D0 pair (SD-23).
+
+## 8. Measurements (`measurements.py`, schema v2)
+
+The v1 fields are kept, plus:
+- `executor_mode`;
+- a per-decision `recovery_trace` (action, rejected attempts, environment validity, done, success, selection exhaustion);
+- `provider_calls` (provider `prompt_eval_count` next to local raw and chat-template counts, latency, errors);
+- `prompt_sequence_sha256`;
+- `requested_provider_options`;
+- `recovery_action_allowance`;
+- `failure_detail`.
+
+Pilot-diagnostic records use a separate schema (`rq1-five-arm-diagnostic-v1`). The five-arm analysis refuses them.
+
+## 9. Execution path
+
+`university_cli run-queue` → `runner.build_university_queue`:
+
+1. **Artifact hashes and gates.** Artifact hashes are computed from the configured files. Then the gates run:
+   - readiness for the manifest's stage;
+   - observed versus approved runtime;
+   - frozen manifest with a bound human approval;
+   - manifest built from the reviewed commit.
+2. **Real components** (only after the gates pass):
+   - provider metadata preflight;
+   - tokenizer and the hash-bound chat-template counter;
+   - `RealEpisodeDriver`;
+   - Sentence-BERT (arm mode only);
+   - the approved filler (arm mode only);
+   - the memory policy and the executor.
+3. **`RunQueue.run()`.** Units run in global order. Each attempt gets a fresh directory and a durable journal entry, and the record is validated before it is appended.
+   - A protocol violation halts the queue.
+   - Resume closes stale attempts and never re-runs a unit with a final non-infrastructure outcome.
+4. **`RunQueue.validate()`.**
+
+**Real versus synthetic separation:**
+- A synthetic configuration can never drive the real driver.
+- A non-real driver can never produce non-synthetic records.
+- A real queue refuses synthetic manifests.
+- Fixture or synthetic approvals are refused under real semantics.
+
+## 10. Pilot failure-manipulation diagnostic (pilot only; SD-15/16)
+
+**Conditions.** Both are run without memory (the D0 presentation from SD-01) on the pilot roster (valid_seen), with matched seeds and provider settings:
+- **UNDISTURBED:** frozen checkpoint, no detour.
+- **DETOURED:** frozen checkpoint plus the frozen detour.
+
+**Construction:**
+- Both start from the same task reset and the same scripted prefix. The checkpoint digest is verified in both, and the undisturbed run also verifies that the detour rule *would* select the frozen detour.
+- **Allowance (SD-15):** an identical post-checkpoint model-action allowance R = cap − prefix − 1. The undisturbed bridge limit is therefore cap − 1.
+- **History rule:** every executed step is shown, oldest first. The detoured history contains the detour step and its observation; the undisturbed history does not.
+- **Documented prompt difference:** the detour changes the history and the current observation. The prompts are **not** identical, by design.
+- **Isolation:** separate manifest schema, separate queue run and separate record schema. Diagnostic episodes are never merged into five-arm data.
+
+**Proposed thresholds** (`pilot.PROPOSED_DIAGNOSTIC_THRESHOLDS`, SD-16; not approved; each with a stated reason):
+
+| Criterion | Proposed rule | Why |
+|---|---|---|
+| Meaningful disruption (any one) | completion drop ≥ 0.15 (interval lower bound); median extra actions when both succeed ≥ 2; extra rejected selections ≥ 0.5 per episode (interval lower bound) | 0.15 ≈ 1 task-level SE with 12 tasks; the oracle needs exactly +1 action, so ≥ 2 means re-orientation |
+| Weak disruption | drop ≥ 0.05 but no criterion met | inert below 5 points |
+| Insufficient disruption | drop < 0.05 and no criterion met | — |
+| Indeterminate | any criterion's interval straddles its threshold | 12 tasks cannot settle it; design review, never automatic GO |
+| Ceiling | detoured completion ≥ 0.90 | ≤ 10 points of headroom |
+| Floor | detoured completion ≤ 0.10 | memory effects floor-limited |
+| Task-ability floor | undisturbed completion ≤ 0.20 | disruption not measurable |
+| Interface problem | > 1.0 rejected selections per episode, or > 10% selection exhaustion | action interface, not disruption |
+| Infrastructure unstable | > 5% units missing after retries | complete-case validity |
+
+**Recommendation logic:**
+- MEANINGFUL with no findings → proceed to five-arm pilot review.
+- WEAK or INSUFFICIENT → narrow the claim to "recovery after a controlled navigation perturbation", or strengthen the manipulation.
+- Anything else → design review.
+
+A one-action detour is never described as a validated long-horizon failure.
+
+**Sensitivity:** with 12 tasks the completion-drop interval is about ±0.25 wide, so INDETERMINATE is the expected result unless effects are large. Seed variability (`pilot.seed_variability`) is measured in the same diagnostic. The proposal is 2–3 seeds in the diagnostic only.
+
+## 11. Action budget and cap equivalence (SD-07/17)
+
+**Budget-dependent behaviour audit:**
+
+| Behaviour | Depends on the cap? |
+|---|---|
+| Prompt construction | **No.** No remaining-budget or step-limit text; `action_count`/`action_limit` returned by the bridge are logged, not rendered |
+| Model calls | Each is stateless `/api/chat` with identical options |
+| Environment | The bridge sets `done` only when `action_count ≥ action_limit` (observation "Action limit reached."). ALFWorld receives `max_nb_steps_per_episode = action_limit`; TextWorld also terminates there only. Before the cap, transitions are identical (verified by `cap_invariance_replay`) |
+| Tool availability | Identical |
+| Checkpoint eligibility | **Yes:** the oracle route must fit (prefix + detour + continuation ≤ cap); the manifest requires an oracle replay at exactly the cap |
+| Worker stopping | `run_model_loop` stops at the allowance or on `done`; the allowance is cap-derived |
+| Retry logic | Independent of the cap |
+| Scheduling | Independent of the cap. No episode wall-clock limit (only the per-call provider timeout), so longer cap-100 episodes cannot hit a time limit a cap-50 episode would not |
+
+**Conclusion.** Truncating a cap-100 trajectory to cap 50 (`measurements.truncate_to_cap`, using the per-decision trace) is valid under these assumptions:
+1. the prompt and model inputs at decision *k* do not depend on the cap (verified statically);
+2. environment transitions before the cap are identical (verified per task by the CPU cap-invariance replay);
+3. per-call provider behaviour depends only on the prompt and options (stateless calls; same nondeterminism in both).
+
+If (2) fails for any task, `budget_decision` refuses truncation and separate cap-specific diagnostic runs are required.
+
+**Rule (SD-17).** It uses **only DETOURED no-memory diagnostic records** at cap 100, so it uses baseline feasibility and ceiling/floor behaviour, never a treatment difference.
+- Choose 50 unless:
+  - more than 20% of baseline successes need more than the cap-50 allowance; or
+  - baseline success at 50 is ≤ 0.10 while higher at 100; or
+  - any task is infeasible at 50.
+
+**Exact-cap oracle replay:**
+- Diagnostic roster: at cap 100 before the diagnostic.
+- Five-arm pilot and confirmatory rosters: at the chosen cap.
+
+Command: `university_cli oracle-replay --cap <cap>`. The manifest refuses a task without `oracle_replay_total_action_limit == cap`. These replays are CPU-only and are **not** run locally.
+
+## 12. Runtime identity and provider measurements
+
+**Model digests:**
 - The historical pin `4eb23ef…` is preserved, and historical records keep it.
-- The installed `6114515d…` is **PROPOSED_UNVERIFIED**.
+- The installed `6114515d…` is the proposed Phase 2 runtime (PROPOSED_UNVERIFIED).
 
-**What must be verified on DESKTOP-AIPC-02** (all are null in the proposed config until observed):
-- manifest digest, every referenced blob digest, and quantisation (`ollama show`);
-- tokenizer hash and revision, linked to the GGUF tokenizer (vocabulary, special tokens, template);
-- chat-template hash;
-- Ollama, Hermes and ALFWorld versions;
-- Sentence-BERT revision and snapshot;
-- context length, temperature, top_p, top_k, `num_predict` and `think` (sent and reported);
-- inference seeds;
-- that a real request's `prompt_eval_count` equals the local chat-template count, within tolerance.
+**Static, CPU-only observation** (`university_cli observe-runtime`, metadata endpoints only):
+- tag and manifest digest;
+- blob digests from the modelfile;
+- quantisation;
+- template hash;
+- default `top_p`/`top_k`;
+- Ollama version;
+- locally supplied tokenizer, Hermes, ALFWorld and Sentence-BERT identities.
 
-**Seeds** are inference seeds only. ALFWorld state is fixed by the checkpoint, so seeds are not independent environment randomisations.
+**What needs real inference** (the separately authorised non-task probe, `provider_probe.py`):
+- whether `prompt_eval_count` is returned;
+- exact equality of the chat-template counter with provider counts (the counter spec is hash-bound as `chat_template_counter_sha256`);
+- repeat-call determinism at temperature 0.
 
-**Fail-closed checks:** `verify_runtime` blocks on:
-- missing or unbound approval;
-- any unset required field;
-- digest, tokenizer, template or Sentence-BERT mismatch;
-- `think` not false, or temperature not 0.
+The *effective* sampling parameters cannot be read back from Ollama. The requested options are logged per record (`requested_provider_options`).
 
-## 8. Readiness (`readiness.py`)
+**Per-episode persistence and guards:**
+- provider prompt count, local counts, prompt hashes, errors and done reasons are persisted per episode;
+- a provider count ≥ `num_ctx`, or a discrepancy beyond SD-22's tolerance, turns the episode INVALID_MEASUREMENT;
+- a missing provider count in real execution also turns it INVALID_MEASUREMENT.
 
-**Levels:**
-- local development;
-- university integration;
-- CPU oracle;
-- scientific pilot;
-- confirmatory.
+## 13. Readiness levels (`readiness.py`)
 
-Only the last two permit model execution. Both require valid human approval records, each `{approved, approved_by, approval_reference, artifact_sha256}`.
+| Level | Needs (in addition to the previous level) | Authorises |
+|---|---|---|
+| 1 `local_synthetic_development` | local synthetic suite passed | synthetic tests |
+| 2 `university_cpu_integration` | reviewed, pushed code commit | CPU tools, runtime metadata, ranking and rating exports, oracle and cap replays |
+| 3 `provider_compatibility_probe` | observed runtime record; authorisation bound to the probe-plan hash | non-task probe only |
+| 4 `d0_failure_manipulation_pilot` | probe results; runtime verification; pilot roster; pilot exposure acceptance; diagnostic protocol; diagnostic-cap oracle replay; decisions blocking this stage | D0 diagnostic only (no filler, no labels needed) |
+| 5 `five_arm_scientific_pilot` | diagnostic review; budget decision; filler; pilot labels; chosen-cap oracle replay; decisions | five-arm pilot |
+| 6 `confirmatory` | pilot GO; final protocol; SAP; sample-size justification; confirmatory roster, exposure acceptance and labels; chosen-cap oracle replay; decisions | confirmatory run |
 
-**Blockers enforced:**
-- incomplete exposure provenance;
-- unapproved pilot or confirmatory roster;
-- unverified model/runtime pin;
-- unverified tokenizer/provider linkage;
-- unapproved filler;
-- missing pilot or confirmatory relevance judgments;
-- unapproved checkpoint and action-budget policy;
-- no exact-cap oracle replay;
-- unvalidated failure manipulation;
-- unapproved statistical plan;
-- insufficient sample justification;
-- no pilot GO;
-- unapproved scientific decisions.
+- Every approval must be bound (`artifact_sha256`) to the hash of the artifact actually loaded.
+- Decision approvals are bound to the exact register entry plus the chosen option.
+- Synthetic or fixture records never authorise real execution.
+- The levels have no circular dependencies: CPU work needs no labels, filler or runtime approval, and the D0 diagnostic needs no filler or labels.
 
-**The worker runs its gate first.** `FiveArmWorker` checks readiness, then the runtime, then that the manifest is frozen and bound to the approved runtime. Only then does it import or contact any provider, environment or model component.
+## 14. Exposure-risk acceptance (SD-18)
 
-## 9. Human relevance rating (`rating.py`)
+**Inputs** (`exposure_acceptance.build_statement`):
+- the Phase 1 exposure ledger;
+- the closed university investigation coverage:
+  - 904 files examined;
+  - no located outcomes for the candidate tasks;
+  - no located rating calibration;
+  - outcome-blind oracle preparation;
+  - incomplete primary execution records for 15 September – 29 October 2026;
+  - undocumented ad hoc activity possible.
 
-**What raters see:** an anonymous item ID (salted hash), the task goal, the permitted recovery context, the skill text, and the rubric, with a rating and an optional rationale to fill in.
+**Output:** a hash-bound statement per roster. It:
+- preserves UNKNOWN;
+- describes the remaining tasks as `NO_LOCATED_MODEL_OUTCOME`, never `VERIFIED_UNEXPOSED`;
+- refuses any task with known model-outcome exposure (`EXPOSED`/`POSSIBLY_EXPOSED`);
+- binds the roster hash and the frozen protocol hash.
 
-**What raters never see:** rank, score, arm, outcome, other raters' answers, or the expert continuation. Forbidden strings are checked, and item order is shuffled per rater.
+**Acceptance:** a future author approval bound to `statement_sha256`. None exists, so execution stays blocked. No further broad audit is implied.
 
-**Rubric** (`rq1-five-arm-relevance-rubric-v1-draft`): RELEVANT / PARTIAL / IRRELEVANT / UNCERTAIN. Topical similarity is explicitly not relevance.
+**Proposed manuscript wording** (`exposure_acceptance.MANUSCRIPT_LIMITATION_TEXT`):
 
-**Binary mapping for injection:**
-- RELEVANT → relevant; IRRELEVANT → irrelevant;
-- PARTIAL → never injected;
-- UNCERTAIN → must be adjudicated.
+> Exposure limitation. Before the evaluation roster was frozen, we screened all local experiment records available to us (904 files) for model outcomes, human rating calibration and other prior use of the candidate evaluation tasks. We located no model outcomes and no rating calibration involving the N roster tasks, and the oracle preparation used for the controlled disruption was verified to be outcome-blind. However, primary execution records for part of the development period (15 September to 29 October 2026) are incomplete, and undocumented ad hoc use of these tasks cannot be ruled out. The absence of located outcomes therefore does not prove that the tasks were never previously exposed to the model or to the investigators; we treat their exposure status as unresolved rather than verified. Tasks with any known model-outcome exposure were excluded. The roster, analysis plan and protocol were frozen before any evaluation outcome was generated, and the residual risk was accepted explicitly by the authors against this documented coverage.
 
-**Workflow:**
-1. Each rater submits separately, with a declaration that the labels are human and that no other rater's answers were seen. AI labels are refused.
-2. Agreement is measured: percent agreement, 4-category and binary κ, and a confusion table.
-3. Every conflict, and every agreed UNCERTAIN, is adjudicated by a third person.
-4. The labels are frozen with provenance hashes as `frozen_pending_human_approval`.
+## 15. University integration and deployment
 
-**Workload, before adjudication:**
-
-| Design | Pairs (79 tasks) | Judgments (2 raters) | Pilot (12 tasks) |
-|---|---:|---:|---:|
-| A: full library (18 skills) | 1,422 | 2,844 | 216 pairs / 432 judgments |
-| B: candidate set (natural top 3), valid only if both scopes are `natural_top3` | 237 | 474 | 36 pairs / 72 judgments |
-
-Design B covers every skill that can be retrieved (for Precision@3) or injected under the frozen `natural_top3` rules (`required_annotation_candidates`). Under any `full_ranking` scope, Design A is required. B is not chosen merely because it is cheaper.
-
-## 10. Pilot (valid_seen; not executed)
-
-**Objectives:**
-- provider compatibility;
-- memory injection and prompt accounting (comparing provider and local counts);
-- retrieval and intervention behaviour;
-- ceiling and floor effects;
-- budget suitability;
-- infrastructure reliability;
-- compute estimates.
-
-**Failure-manipulation validation** (`pilot.disruption_report`):
-- For the same task, checkpoint and seed, without memory, the model continues either **undisturbed** (budget = cap − prefix) or **after the detour** (budget = cap − prefix − 1).
-- Evidence of disruption is a lower completion rate, more actions to success, or more invalid or repeated actions.
-- The thresholds (`min_completion_drop`, `min_extra_actions`, `ceiling`, `floor`) are decisions to be approved before the pilot.
-- A trivially solved detour is reported as a methodological issue.
-- The pilot needs a no-detour runner mode. This is a **remaining implementation item** for the university integration step; it is not yet wired into `FiveArmWorker`.
-
-**Action budget** (`pilot.budget_decision`):
-- Candidates are 50 (historical; every observed unseen witness ≤ 25 actions) and 100.
-- The pilot runs at 100. Because the prompt never shows the remaining budget, cap-50 outcomes follow by truncation.
-- **Choose 50** unless more than `late_success_threshold` of the pooled successes need more than the cap-50 recovery budget, or pooled cap-50 success is at the floor while cap-100 success is higher.
-- The rule is pooled over arms and never sees an arm difference.
-- **Before any confirmatory run:**
-  - the chosen cap is frozen;
-  - every roster task's oracle is replayed at exactly that cap (Phase 1 `oracle-validate --selection-cap <cap>`; readiness blocker `exact_cap_oracle_replay`).
-
-The confirmatory population is never changed after its outcomes are seen.
-
-## 11. Scientific decisions still open (`python -m rq1.five_arm decisions`)
-
-- `d0_representation`
-- `rel_candidate_scope`, `irr_candidate_scope`
-- `partial_label_policy`
-- `active_slot_position`
-- `token_tolerance`
-- `action_cap`
-- `inference_seeds`
-- `annotation_design`
-- `primary_inference`
-- `missing_data_policy`
-- `filler_corpus`
-- `runtime_model_digest`
-
-Each has an engineering *proposal*. None is a default used for execution.
-
-## 12. University deployment (after the branch is pushed with authorisation)
+**Prerequisite:** the branch is pushed with explicit authorisation. Until then, nothing below can run.
 
 ```sh
-git fetch origin sci/rq1-phase2-five-arm-runner && git worktree add ~/rq1-phase2 origin/sci/rq1-phase2-five-arm-runner
+git fetch origin sci/rq1-phase2-five-arm-runner
+git worktree add ~/rq1-phase2 origin/sci/rq1-phase2-five-arm-runner
 cd ~/rq1-phase2 && export PYTHONPATH=src:tests PYTHONDONTWRITEBYTECODE=1
-python3.11 -B -m unittest test_five_arm_interventions test_five_arm_prompts test_five_arm_runtime_readiness test_five_arm_rating test_five_arm_analysis test_five_arm_cli
+python3.11 -B -m unittest test_five_arm_interventions test_five_arm_prompts test_five_arm_runtime_readiness \
+    test_five_arm_rating test_five_arm_analysis test_five_arm_cli test_five_arm_governance test_five_arm_e2e
 python3.11 -B -m rq1.five_arm decisions
-python3.11 -B -m rq1.five_arm workload --tasks 79 --skills 18 --candidates-per-task 3 --pilot-tasks 12
-python3.11 -B -m rq1.five_arm readiness --state <state.json>        # expected: pilot/confirmatory BLOCKED
+python3.11 -B -m rq1.five_arm readiness --state state.json     # expect: CPU READY, all model levels BLOCKED
+python3.11 -B -m rq1.five_arm filler-audit --corpus configs/five_arm/neutral_filler_candidate_v1.json
 ```
 
-**Integration steps that remain** (no model calls until readiness passes):
-1. Record the observed runtime, including `ollama show` and the tokenizer/template linkage.
-2. Compute the frozen natural rankings for the pilot and roster tasks on CPU.
-3. Export the rating items.
-4. Wire the undisturbed-continuation pilot mode.
-5. Build the manifest audits with the real tokenizer.
+`state.json` for CPU integration: `{"local_tests_passed": true, "code_commit": "<pushed sha>"}`.
+
+**CPU-only integration steps** (no model calls):
+1. **Observe the runtime:**
+   `python3.11 -B -m rq1.five_arm.university_cli observe-runtime --state state.json --endpoint http://127.0.0.1:11434 --local-json local-identities.json --output-root <out> --label rt1`
+2. **Frozen rankings** for the pilot and roster tasks (valid_unseen preparation needs the task-preparation unseen-access authorisation):
+   `university_cli cpu-rankings --state state.json --config cpu-unseen.json --cap 100 --work-dir <new dir> --output-root <out> --label rank1`
+3. **Oracle replays:** `university_cli oracle-replay --cap 100 …` for the diagnostic roster, and `cap-invariance --caps 50 100 …`.
+4. **Annotation:**
+   - compute the candidate-set workload with `rating.workload_from_rankings`;
+   - build rating exports (`python -m rq1.five_arm rating-export`);
+   - distribute them per the rater instructions.
+5. **Filler:** a real-tokenizer matching audit of the candidate filler on the frozen top-3 texts, for review.
+6. **Exposure:** build the exposure-risk statements for the pilot and confirmatory rosters, for author review.
+
+Model-using steps (probe, diagnostic, pilot, confirmatory) require the readiness levels in §13 and separate authorisation.

@@ -1,11 +1,14 @@
 """CLI: ``python -m rq1.five_arm <command>`` -- preparation-only commands; none calls a model or a GPU.
 
-decisions        print the open scientific-decision register (all unapproved)
-readiness        evaluate readiness levels from a state file (approvals are read, never written)
+decisions        print the scientific-decision register and hypothesis hierarchy (all awaiting approval)
+readiness        evaluate the six readiness levels from a state file (+ optional declared artifact hashes)
+filler-audit     lint + structural audit of a filler corpus file (never approves it)
 workload         exact relevance-annotation workload for the supported designs
-power            run the prospective power/precision grid (synthetic) into a new versioned output directory
+power            run the single-primary power/precision grid (synthetic) into a new versioned output directory
 rating-export    write per-rater CSV exports and the coordinator key from an items-input JSON
 rating-agreement agreement/conflict report for two validated human submissions
+
+University workstation commands (CPU tools and the gated queue run) live in ``python -m rq1.five_arm.university_cli``.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from rq1.five_arm import power, rating, readiness
+from rq1.five_arm import memory, power, rating, readiness
 from rq1.five_arm.protocol import decision_register
 from rq1.scientific_prep.safety import (EXIT_BLOCKED, EXIT_OK, EXIT_REFUSED, OutputRefused, prepare_output_dir, stamp,
                                         write_json_once)
@@ -37,6 +40,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("decisions")
     p = sub.add_parser("readiness"); p.add_argument("--state", required=True)
+    p.add_argument("--artifacts", help="JSON {artifact_key: sha256} of the artifacts actually loaded (declared, not verified)")
+    p = sub.add_parser("filler-audit"); p.add_argument("--corpus", required=True)
     p = sub.add_parser("workload")
     p.add_argument("--tasks", type=int, default=79); p.add_argument("--skills", type=int, default=18)
     p.add_argument("--candidates-per-task", type=int, default=3); p.add_argument("--pilot-tasks", type=int, default=0)
@@ -45,7 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--output-root", required=True); p.add_argument("--label", required=True)
         p.add_argument("--protect", action="append", default=[])
         if name == "power":
-            p.add_argument("--reps", type=int, default=400); p.add_argument("--seed", type=int, default=20261124)
+            p.add_argument("--reps", type=int, default=2000); p.add_argument("--seed", type=int, default=20261124)
+            p.add_argument("--grid", choices=("key", "sensitivity", "all"), default="all")
         if name == "rating-export":
             p.add_argument("--items-input", required=True, help="JSON: tasks, skills, design, salt, candidate_sets?, forbidden_strings?, raters")
         if name == "rating-agreement":
@@ -57,18 +63,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "decisions":
             _emit(decision_register()); return EXIT_OK
         if args.command == "readiness":
-            report = readiness.evaluate(json.loads(Path(args.state).read_text(encoding="utf-8")))
+            artifacts = json.loads(Path(args.artifacts).read_text(encoding="utf-8")) if args.artifacts else {}
+            report = readiness.evaluate(json.loads(Path(args.state).read_text(encoding="utf-8")), artifacts)
             _emit(report); return EXIT_OK
+        if args.command == "filler-audit":
+            corpus = memory.load_filler_corpus(Path(args.corpus))
+            _emit(memory.audit_corpus(corpus)); return EXIT_OK
         if args.command == "workload":
             _emit(rating.workload(tasks=args.tasks, library_skills=args.skills, candidate_per_task=args.candidates_per_task,
                                   pilot_tasks=args.pilot_tasks)); return EXIT_OK
         if args.command == "power":
-            result = power.run_grid(power.default_grid(), reps=args.reps, seed=args.seed)
-            result["minimal_detectable_delta_80pct_bonferroni"] = power.minimal_detectable(result["rows"])
+            grid = {"key": power.key_grid(), "sensitivity": power.sensitivity_grid(),
+                    "all": power.key_grid() + power.sensitivity_grid()}[args.grid]
+            result = power.run_grid(grid, reps=args.reps, seed=args.seed)
+            result["minimal_detectable_delta_80pct"] = power.minimal_detectable(result["rows"])
             out = _out(args, "power")
             schema = result.pop("schema")
             write_json_once(out / "power-simulation.json", stamp(result, schema))
-            _emit({"status": "written", "output_dir": str(out), "minimal_detectable": result["minimal_detectable_delta_80pct_bonferroni"]})
+            _emit({"status": "written", "output_dir": str(out), "minimal_detectable": result["minimal_detectable_delta_80pct"]})
             return EXIT_OK
         if args.command == "rating-export":
             spec = json.loads(Path(args.items_input).read_text(encoding="utf-8"))

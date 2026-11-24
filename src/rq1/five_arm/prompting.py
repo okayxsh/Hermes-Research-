@@ -176,8 +176,14 @@ def scan_leakage(prompt: str, probe: LeakageProbe) -> list[str]:
         if re.search(rf"(?<![a-z]){re.escape(term)}", lowered):
             problems.append(f"relevance/label/meta term {term!r} is model-visible")
     memory = sections.get("RECOVERY MEMORY", "")
+    # Frozen library texts are legitimate, pre-outcome memory content (acquired skills may quote concrete actions); an
+    # oracle/expert action is a leak only when it appears in memory content that is NOT a frozen library text.
+    non_library_memory = memory
+    for text in probe.library_texts:
+        for form in (text, json.dumps(text, ensure_ascii=False)[1:-1]):
+            non_library_memory = non_library_memory.replace(form, " ")
     for action in (*probe.oracle_continuation, *( [probe.expected_next_action] if probe.expected_next_action else [])):
-        if action and action in memory:
+        if action and action in non_library_memory:
             problems.append(f"oracle/expert action {action!r} appears inside the memory block")
     history_actions = re.findall(r"^Action: (.*)$", sections.get("EPISODE HISTORY", ""), re.MULTILINE)
     cont = list(probe.oracle_continuation)

@@ -71,6 +71,18 @@ _DIRECTIVES = re.compile(r"\b(you|your|ignore|instruction|instructions|system|pr
                          r"respond|return|output|memory|skill|skills|relevant|irrelevant|filler|neutral|condition)\b",
                          re.IGNORECASE)
 _MARKUP = re.compile(r"[\d{}\[\]<>:`|#*_=]")
+# Semantic screen (Phase 2B): spatial/navigation language, task-family concepts (heating, cooling, cleaning, light,
+# opening), household/object words, advice or evaluation language, and the leakage probe's label/meta terms.
+_SEMANTIC = re.compile(r"(left|right|north|south|east|west|inside|outside|behind|beneath|underneath|under|below|above|"
+                       r"beside|near|nearby|toward|towards|corner|door|doors|wall|walls|hallway|path to|"
+                       r"hot|cold|warm|cool|cooled|cooling|heat|heated|heating|freeze|frozen|chilled|icy|clean|dirty|wash|"
+                       r"washed|rinse|soap|light|lights|lit|switch|opened|closed|shut|"
+                       r"house|home|furniture|object|objects|item|items|container|receptacle|appliance|hold|holds|holding|"
+                       r"held|carried|carrying|placed|returning|turned|moving|walked|"
+                       r"check|try|attempt|remember|hint|tip|advice|guide|rule|rules|procedure|method|approach|help|"
+                       r"helpful|success|successful|fail|failure|mistake|error|wrong|correct|"
+                       r"relevance|adjudicat\w*|synthetic|treatment|similarity|cosine|score|scores|rank|ranked|ranking|"
+                       r"experimental|control|baseline)", re.IGNORECASE)
 DEFAULT_ALFWORLD_VOCABULARY = frozenset("""
 alarmclock apple applesliced armchair baseballbat basketball bathtub bathtubbasin bed book bowl box bread breadsliced
 butterknife cabinet candle cart cd cellphone cloth coffeemachine coffeetable countertop creditcard cup desk desklamp
@@ -88,7 +100,8 @@ def lint_filler_sentence(sentence: str, vocabulary: frozenset[str] = DEFAULT_ALF
     problems = []
     if not sentence.strip():
         problems.append("empty sentence")
-    for name, pattern in (("action verb", _ACTION_VERBS), ("directive or meta term", _DIRECTIVES), ("digit or markup", _MARKUP)):
+    for name, pattern in (("action verb", _ACTION_VERBS), ("directive or meta term", _DIRECTIVES), ("digit or markup", _MARKUP),
+                          ("spatial, task-concept, household, advice or label term", _SEMANTIC)):
         hits = sorted({m.group(0).lower() for m in pattern.finditer(sentence)})
         if hits:
             problems.append(f"{name}: {', '.join(hits)}")
@@ -117,6 +130,19 @@ class FillerCorpus:
 
     def lint(self, vocabulary: frozenset[str] = DEFAULT_ALFWORLD_VOCABULARY) -> dict[int, list[str]]:
         return {i: p for i, s in enumerate(self.sentences) if (p := lint_filler_sentence(s, vocabulary))}
+
+
+def audit_corpus(corpus: FillerCorpus, vocabulary: frozenset[str] = DEFAULT_ALFWORLD_VOCABULARY) -> dict[str, Any]:
+    """Structural + lint audit for scientific review.  Never approves: approval is a separate human record."""
+    words = [len(re.findall(r"[A-Za-z']+", s)) for s in corpus.sentences]
+    problems = corpus.lint(vocabulary)
+    return {"corpus_id": corpus.corpus_id, "corpus_sha256": corpus.sha256, "sentences": len(corpus.sentences),
+            "unique": len(set(corpus.sentences)) == len(corpus.sentences),
+            "words_min": min(words), "words_median": sorted(words)[len(words) // 2], "words_max": max(words),
+            "short_sentences_le_4_words": sum(w <= 4 for w in words),
+            "lint_failures": {str(i): p for i, p in problems.items()}, "lint_passed": not problems,
+            "approved": corpus.approved,
+            "note": "lint/structure only; passing never approves the corpus and does not show it is behaviourally inert"}
 
 
 def load_filler_corpus(path: Path) -> FillerCorpus:

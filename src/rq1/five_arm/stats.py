@@ -27,11 +27,18 @@ def holm(pvalues: Mapping[str, float]) -> dict[str, float]:
 
 
 def sign_flip_test(diffs: Sequence[float], *, exact_max: int = 20, draws: int = 100_000, seed: int = 0) -> dict[str, float | int | str]:
-    """Two-sided paired sign-flip permutation test of mean(diffs) = 0 (task-level differences).
+    """Two-sided paired sign-flip permutation test on unit-level paired differences (statistic |sum d|).
+
+    Null hypothesis (SHARP): within every unit, the two arm labels are exchangeable -- the arm has no effect on that
+    unit's outcome distribution -- and, given unit-level latent factors, units are independent.  Then each d_i is
+    symmetric about 0 independently, and enumerating sign flips is exact conditional on |d_i|.  Shared template or scene
+    effects that act on BOTH arms cancel inside d_i, so they do not invalidate the test of the sharp null.  The test is
+    NOT an exact test of the weak null "average effect = 0" when effects are heterogeneous and correlated within
+    templates; the template-level variant (unit = template mean) is the prespecified sensitivity analysis for that case.
 
     Exact enumeration over the non-zero differences when there are at most ``exact_max`` of them; otherwise a seeded
-    Monte-Carlo with the (count+1)/(draws+1) correction.  With single binary outcomes per task this is the exact
-    McNemar / sign test on discordant tasks.
+    Monte-Carlo with the (count+1)/(draws+1) correction.  With single binary outcomes per unit this is the exact
+    McNemar / sign test on discordant units.
     """
     values = [float(d) for d in diffs]
     if not values:
@@ -85,6 +92,38 @@ def bootstrap_mean_ci(values: Sequence[float], *, seed: int, replicates: int = 1
     draws = sorted(fmean(vals[rng.randrange(len(vals))] for _ in vals) for _ in range(replicates))
     alpha = (1 - level) / 2
     return [percentile(draws, alpha), percentile(draws, 1 - alpha)]
+
+
+def cluster_bootstrap_ci(clusters: Mapping[str, Sequence[float]], *, seed: int, replicates: int = 10_000,
+                         level: float = 0.95) -> list[float] | None:
+    """Percentile CI for the TASK-WEIGHTED mean when tasks are dependent within clusters (goal templates): clusters are
+    resampled with replacement and every task of a drawn cluster is kept (ratio estimator sum/count)."""
+    groups = [list(v) for _, v in sorted(clusters.items()) if v]
+    if len(groups) < 2:
+        return None
+    rng = random.Random(seed)
+    draws = []
+    for _ in range(replicates):
+        total = count = 0.0
+        for _ in groups:
+            g = groups[rng.randrange(len(groups))]
+            total += sum(g)
+            count += len(g)
+        draws.append(total / count)
+    draws.sort()
+    alpha = (1 - level) / 2
+    return [percentile(draws, alpha), percentile(draws, 1 - alpha)]
+
+
+def normal_sign_flip_p(diffs: Sequence[float]) -> float:
+    """Two-sided p of the conditional (permutation-variance) normal approximation to the sign-flip test:
+    z = sum(d) / sqrt(sum(d^2)).  Used only in simulations, where exact enumeration is too slow."""
+    total = sum(diffs)
+    var = sum(d * d for d in diffs)
+    if var == 0:
+        return 1.0
+    z = abs(total) / math.sqrt(var)
+    return math.erfc(z / math.sqrt(2))
 
 
 # --- Student t via the regularised incomplete beta function (Numerical Recipes continued fraction) -------------------

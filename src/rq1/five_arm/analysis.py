@@ -1,14 +1,19 @@
-"""PROPOSED statistical analysis plan implementation (task-level paired inference).  Runs only from saved records.
+"""PROPOSED statistical analysis plan implementation (Phase 2B).  Runs only from saved five-arm records.
 
-* Unit of analysis: TASK.  Seeds within a task are repeated measurements; per task and contrast the outcome is the
-  mean over seeds where BOTH arms have a VALID outcome (pairwise complete case).
-* Primary family (Holm): D18-D0 and D18-Fill over all eligible tasks; Irr-Fill over the frozen Irr subset.
-* Test: two-sided task-level sign-flip permutation (exact when feasible); exact McNemar is reported only when every
-  task contributes exactly one paired binary outcome.
-* Sensitivity: template-level aggregation (27 templates), per-scene and leave-one-scene-out (descriptive only, three
-  scenes), missing-cell worst/best bounds, acquisition-template-overlap exclusion.
-* Missingness: infrastructure failures are retried (same unit identity, bounded); model failures, budget exhaustion and
-  invalid actions are outcomes.  Missing cells are never coerced into failures; denominators are reported by arm.
+* Unit of analysis: TASK.  Seeds within a task are repeated inference measurements; per task and contrast the outcome
+  is the mean over seeds where BOTH arms have a VALID outcome (pairwise complete case).
+* ONE primary comparison: D18 - D0 over every roster task.  Estimate: task-weighted mean difference (finite screened
+  population).  Test: two-sided task-level sign-flip permutation test of the SHARP null (no effect in any task); exact
+  under within-task arm exchangeability, irrespective of shared template/scene effects.  Interval (SD-21): template-
+  cluster bootstrap percentile 95% CI (tasks sharing a goal template are dependent); the task bootstrap is reported as a
+  sensitivity interval.  Template-level sign-flip (unit = template mean) is the dependence-robust sensitivity test.
+* Secondary, EXPLORATORY family (separate Holm adjustment; never pooled with the primary, never confirmatory):
+  D18-Fill, Irr-Fill, Rel-Irr, Rel-Fill over their frozen, outcome-blind subsets; recovery effort; invalid actions;
+  latency; retrieval relevance; acquisition-template-overlap sensitivity.
+* Three scenes: per-scene and leave-one-scene-out estimates are DESCRIPTIVE; family and scene are confounded (the
+  family x scene table is reported); no scene-cluster asymptotics.
+* Missingness: infrastructure failures are retried (same unit identity, bounded); model failures, budget exhaustion
+  and invalid actions are outcomes; missing cells are never coerced into failures; worst/best bounds are reported.
 """
 from __future__ import annotations
 
@@ -17,11 +22,15 @@ from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
 from rq1.five_arm.measurements import injected_relevance, retrieved_precision_at_3, validate_record
-from rq1.five_arm.protocol import (CONDITIONS, MECHANISM_ARMS, PRIMARY_CONTRASTS, SECONDARY_CONTRASTS,
+from rq1.five_arm.protocol import (CONDITIONS, FILLER_ARMS, NATURAL_ARMS, PRIMARY_CONTRAST, SECONDARY_CONTRASTS,
                                    assert_five_arm_records, contrast_name)
-from rq1.five_arm.stats import bootstrap_mean_ci, holm, mcnemar_exact, sign_flip_test
+from rq1.five_arm.stats import bootstrap_mean_ci, cluster_bootstrap_ci, holm, mcnemar_exact, sign_flip_test
 
-ANALYSIS_SCHEMA = "rq1-five-arm-analysis-v1"
+ANALYSIS_SCHEMA = "rq1-five-arm-analysis-v2"
+POPULATION_STATEMENT = (
+    "Estimates describe the finite screened task population (and the seeds run).  Inference to a broader population of "
+    "ALFWorld tasks assumes the screened tasks are exchangeable with that population, which the screening does not "
+    "guarantee; the template-cluster interval reflects dependence among tasks that share a goal template only.")
 
 
 class AnalysisError(ValueError):
@@ -58,24 +67,26 @@ def resolve_units(records: Sequence[Mapping[str, Any]], *, max_infrastructure_re
     return cells
 
 
-def _planned_cells(design: Mapping[str, Any]) -> set[tuple[str, str, int]]:
+def _arm_tasks(design: Mapping[str, Any], arm: str) -> list[str]:
     tasks = sorted(design["tasks"])
-    subsets = design["mechanism_subsets"]
-    planned = set()
-    for task in tasks:
-        for arm in CONDITIONS:
-            if arm in MECHANISM_ARMS and task not in subsets[arm]:
-                continue
-            for seed in design["seeds"]:
-                planned.add((task, arm, int(seed)))
-    return planned
+    if arm in NATURAL_ARMS:
+        return tasks
+    return sorted(design["arm_subsets"][arm])
+
+
+def _planned_cells(design: Mapping[str, Any]) -> set[tuple[str, str, int]]:
+    return {(task, arm, int(seed)) for arm in CONDITIONS for task in _arm_tasks(design, arm) for seed in design["seeds"]}
+
+
+def universe(design: Mapping[str, Any], treatment: str, reference: str) -> list[str]:
+    return sorted(set(_arm_tasks(design, treatment)) & set(_arm_tasks(design, reference)))
 
 
 def missingness(cells: Mapping[tuple[str, str, int], Mapping[str, Any]], design: Mapping[str, Any]) -> dict[str, Any]:
     planned = _planned_cells(design)
     unexpected = sorted(set(cells) - planned)
     if unexpected:
-        raise AnalysisError(f"records for unplanned cells (e.g. a mechanism arm outside its frozen subset): {unexpected[:3]}")
+        raise AnalysisError(f"records for unplanned cells (e.g. an arm outside its frozen subset): {unexpected[:3]}")
     table: dict[str, Any] = {}
     for arm in CONDITIONS:
         arm_planned = [c for c in planned if c[1] == arm]
@@ -91,14 +102,14 @@ def _outcome(cells, task, arm, seed):
     return None if cell is None or cell["outcome_status"] != "VALID" else int(bool(cell["success"]))
 
 
-def _contrast(cells, design, treatment, reference, universe, *, seed, replicates, draws) -> dict[str, Any]:
+def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, replicates, draws, role) -> dict[str, Any]:
     seeds = [int(s) for s in design["seeds"]]
     task_diffs: dict[str, float] = {}
     pairs_per_task: dict[str, int] = {}
     excluded: dict[str, str] = {}
     worst: dict[str, float] = {}
     best: dict[str, float] = {}
-    for task in universe:
+    for task in tasks_universe:
         diffs, w, b = [], [], []
         for s in seeds:
             yt, yr = _outcome(cells, task, treatment, s), _outcome(cells, task, reference, s)
@@ -111,55 +122,63 @@ def _contrast(cells, design, treatment, reference, universe, *, seed, replicates
             task_diffs[task], pairs_per_task[task] = fmean(diffs), len(diffs)
         else:
             excluded[task] = "no seed with VALID outcomes in both arms"
-    name = contrast_name(treatment, reference)
-    result: dict[str, Any] = {"treatment": treatment, "reference": reference, "tasks_in_universe": len(universe),
-                              "tasks_analysed": len(task_diffs), "paired_seed_observations": sum(pairs_per_task.values()),
-                              "excluded_tasks": excluded}
+    result: dict[str, Any] = {"role": role, "treatment": treatment, "reference": reference,
+                              "tasks_in_universe": len(tasks_universe), "tasks_analysed": len(task_diffs),
+                              "paired_seed_observations": sum(pairs_per_task.values()), "excluded_tasks": excluded}
     if not task_diffs:
-        result.update(estimate=None, p_value=None, test=None, ci_95_task_bootstrap=None)
+        result.update(estimate=None, p_value=None, test=None, ci_95_template_cluster_bootstrap=None, ci_95_task_bootstrap=None)
         return result
     values = [task_diffs[t] for t in sorted(task_diffs)]
     test = sign_flip_test(values, draws=draws, seed=seed)
-    result.update(estimate=fmean(values), p_value=test["p_value"], test=test,
-                  ci_95_task_bootstrap=bootstrap_mean_ci(values, seed=seed, replicates=replicates))
+    by_template: dict[str, list[float]] = defaultdict(list)
+    by_scene: dict[str, list[float]] = defaultdict(list)
+    for task, diff in sorted(task_diffs.items()):
+        by_template[str(design["tasks"][task]["goal_template"])].append(diff)
+        by_scene[str(design["tasks"][task]["scene"])].append(diff)
+    result.update(
+        estimate=fmean(values), estimate_percentage_points=100 * fmean(values), p_value=test["p_value"], test=test,
+        null_hypothesis="sharp null: within every task the two arms' outcome distributions are identical (arm labels "
+                        "exchangeable); task-level sign flips",
+        ci_95_template_cluster_bootstrap=cluster_bootstrap_ci(by_template, seed=seed, replicates=replicates),
+        ci_95_task_bootstrap=bootstrap_mean_ci(values, seed=seed, replicates=replicates),
+        discordant_tasks={"treatment_better": sum(v > 0 for v in values), "reference_better": sum(v < 0 for v in values),
+                          "tied": sum(v == 0 for v in values)})
     if all(n == 1 for n in pairs_per_task.values()):
         b = sum(1 for v in values if v > 0)
         c = sum(1 for v in values if v < 0)
         result["mcnemar_exact"] = {"discordant_treatment_better": b, "discordant_reference_better": c, "p_value": mcnemar_exact(b, c)}
     else:
         result["mcnemar_exact"] = "not applicable: tasks contribute several correlated seed outcomes"
-    # template-aware sensitivity
-    by_template: dict[str, list[float]] = defaultdict(list)
-    by_scene: dict[str, list[float]] = defaultdict(list)
-    for task, diff in task_diffs.items():
-        by_template[design["tasks"][task]["goal_template"]].append(diff)
-        by_scene[str(design["tasks"][task]["scene"])].append(diff)
     template_values = [fmean(v) for _, v in sorted(by_template.items())]
     result["template_sensitivity"] = {
-        "templates": len(template_values), "estimate": fmean(template_values),
-        "sign_flip": sign_flip_test(template_values, draws=draws, seed=seed + 1),
-        "ci_95_template_bootstrap": bootstrap_mean_ci(template_values, seed=seed + 1, replicates=replicates)}
+        "templates": len(template_values), "template_weighted_estimate": fmean(template_values),
+        "sign_flip_template_level": sign_flip_test(template_values, draws=draws, seed=seed + 1),
+        "note": "unit = goal-template mean difference; robust to within-template dependence of heterogeneous effects"}
+    families: dict[str, Counter] = defaultdict(Counter)
+    for task in task_diffs:
+        families[str(design["tasks"][task].get("family"))][str(design["tasks"][task]["scene"])] += 1
     result["scene_descriptive"] = {
-        "note": "three scenes: descriptive only; family and scene are confounded",
+        "note": "three scenes: descriptive only; family and scene are confounded (see family_by_scene)",
         "per_scene": {s: {"tasks": len(v), "mean_difference": fmean(v)} for s, v in sorted(by_scene.items())},
         "leave_one_scene_out": {s: fmean([d for t, d in task_diffs.items() if str(design["tasks"][t]["scene"]) != s])
                                 if any(str(design["tasks"][t]["scene"]) != s for t in task_diffs) else None
-                                for s in sorted(by_scene)}}
+                                for s in sorted(by_scene)},
+        "family_by_scene": {f: dict(sorted(c.items())) for f, c in sorted(families.items())}}
     result["missing_cell_bounds"] = {"worst_case_estimate": fmean(worst.values()), "best_case_estimate": fmean(best.values()),
                                      "note": "missing cells set to the least/most favourable outcome for the treatment"}
     return result
 
 
-def _secondary_effort(cells, design, treatment, reference, universe, field, seed, replicates, draws) -> dict[str, Any]:
+def _effort(cells, design, treatment, reference, tasks_universe, field, seed, replicates, draws) -> dict[str, Any]:
     diffs = []
-    for task in universe:
+    for task in tasks_universe:
         per = []
         for s in design["seeds"]:
             a, b = cells.get((task, treatment, int(s))), cells.get((task, reference, int(s)))
             if not a or not b or a["outcome_status"] != "VALID" or b["outcome_status"] != "VALID":
                 continue
-            value = lambda r: (r["recovery_actions"] if r["success"] else r["total_action_cap"] - r["prefix_actions"] - r["detour_actions"]) \
-                if field == "capped_recovery_actions" else r[field]
+            value = (lambda r: r["recovery_actions"] if r["success"] else r["recovery_action_allowance"]) \
+                if field == "capped_recovery_actions" else (lambda r: r[field])
             per.append(value(a) - value(b))
         if per:
             diffs.append(fmean(per))
@@ -167,49 +186,56 @@ def _secondary_effort(cells, design, treatment, reference, universe, field, seed
         return {"tasks_analysed": 0}
     return {"tasks_analysed": len(diffs), "mean_task_difference": fmean(diffs),
             "sign_flip": sign_flip_test(diffs, draws=draws, seed=seed),
-            "ci_95_task_bootstrap": bootstrap_mean_ci(diffs, seed=seed, replicates=replicates)}
+            "ci_95_task_bootstrap": bootstrap_mean_ci(diffs, seed=seed, replicates=replicates),
+            "note": "failures counted at the full recovery allowance (restricted mean), never success-only" if field == "capped_recovery_actions" else ""}
 
 
 def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
             labels: Mapping[tuple[str, str], str] | None = None, seed: int = 20261124,
             bootstrap_replicates: int = 10_000, permutation_draws: int = 100_000) -> dict[str, Any]:
+    if set(design.get("arm_subsets", {})) != set(FILLER_ARMS):
+        raise AnalysisError(f"design must carry frozen arm_subsets for {FILLER_ARMS}")
     cells = resolve_units(records, max_infrastructure_retries=int(design["max_infrastructure_retries"]))
     miss = missingness(cells, design)
-    tasks = sorted(design["tasks"])
-    subsets = design["mechanism_subsets"]
-    universes = {("D18", "D0"): tasks, ("D18", "Fill"): tasks, ("Irr", "Fill"): sorted(subsets["Irr"]),
-                 ("Rel", "Irr"): sorted(set(subsets["Rel"]) & set(subsets["Irr"])), ("Rel", "Fill"): sorted(subsets["Rel"])}
     kw = dict(replicates=bootstrap_replicates, draws=permutation_draws)
-    primary = {contrast_name(t, r): _contrast(cells, design, t, r, universes[(t, r)], seed=seed + i, **kw)
-               for i, (t, r) in enumerate(PRIMARY_CONTRASTS)}
-    available = {k: v["p_value"] for k, v in primary.items() if v["p_value"] is not None}
+    t, r = PRIMARY_CONTRAST
+    primary = _contrast(cells, design, t, r, universe(design, t, r), seed=seed, role="primary_confirmatory", **kw)
+    primary["alpha"] = 0.05
+    primary["multiplicity"] = "single primary comparison; no adjustment"
+    primary["estimand"] = ("task-weighted mean within-task difference in recovery success, natural Accum-18 retrieval minus "
+                           "no memory; TOTAL effect of the natural retrieval intervention (does not isolate relevance)")
+    secondary = {contrast_name(a, b): _contrast(cells, design, a, b, universe(design, a, b), seed=seed + 10 + i,
+                                                role="secondary_exploratory", **kw)
+                 for i, (a, b) in enumerate(SECONDARY_CONTRASTS)}
+    available = {k: v["p_value"] for k, v in secondary.items() if v["p_value"] is not None}
     adjusted = holm(available) if available else {}
-    for name, value in primary.items():
-        value["p_value_holm"] = adjusted.get(name)
-    secondary = {contrast_name(t, r): _contrast(cells, design, t, r, universes[(t, r)], seed=seed + 10 + i, **kw)
-                 for i, (t, r) in enumerate(SECONDARY_CONTRASTS)}
-    effort = {f"{contrast_name(t, r)}:{field}": _secondary_effort(cells, design, t, r, universes[(t, r)], field,
-                                                                   seed + 20 + i, bootstrap_replicates, permutation_draws)
-              for i, (t, r) in enumerate(PRIMARY_CONTRASTS) for field in ("capped_recovery_actions", "invalid_actions")}
+    for name, value in secondary.items():
+        value["p_value_holm_within_secondary_family"] = adjusted.get(name)
+    effort = {f"{contrast_name(a, b)}:{field}": _effort(cells, design, a, b, universe(design, a, b), field, seed + 20 + i,
+                                                        bootstrap_replicates, permutation_draws)
+              for i, (a, b) in enumerate((PRIMARY_CONTRAST, *SECONDARY_CONTRASTS))
+              for field in ("capped_recovery_actions", "invalid_actions")}
     valid = [c for c in cells.values() if c["outcome_status"] == "VALID"]
     latency = {arm: {"episodes_including_failures": len(rows),
-                     "wall_clock_seconds_median": median(r["wall_clock_seconds"] for r in rows) if rows else None,
-                     "inference_latency_seconds_median": median(r["inference_latency_seconds"] for r in rows) if rows else None,
-                     "recovery_actions_median_including_failures": median(r["recovery_actions"] for r in rows) if rows else None}
+                     "wall_clock_seconds_median": median(x["wall_clock_seconds"] for x in rows) if rows else None,
+                     "inference_latency_seconds_median": median(x["inference_latency_seconds"] for x in rows) if rows else None,
+                     "recovery_actions_median_including_failures": median(x["recovery_actions"] for x in rows) if rows else None}
                for arm in CONDITIONS for rows in [[c for c in valid if c["condition"] == arm]]}
     curves = {}
     for arm in CONDITIONS:
         rows = [c for c in valid if c["condition"] == arm]
         if rows:
-            horizon = max(r["total_action_cap"] - r["prefix_actions"] - r["detour_actions"] for r in rows)
-            curves[arm] = [sum(1 for r in rows if r["success"] and r["recovery_actions"] <= k) / len(rows) for k in range(horizon + 1)]
-    overlap_flagged = sorted(t for t in tasks if design["tasks"][t].get("acquisition_template_overlap"))
+            horizon = max(x["recovery_action_allowance"] for x in rows)
+            curves[arm] = [sum(1 for x in rows if x["success"] and x["recovery_actions"] <= k) / len(rows) for k in range(horizon + 1)]
+    tasks = sorted(design["tasks"])
+    overlap_flagged = sorted(x for x in tasks if design["tasks"][x].get("acquisition_template_overlap"))
     overlap_sensitivity = None
     if overlap_flagged:
-        kept = [t for t in tasks if t not in overlap_flagged]
+        kept = set(tasks) - set(overlap_flagged)
         overlap_sensitivity = {"excluded_tasks": overlap_flagged, "contrasts": {
-            contrast_name(t, r): _contrast(cells, design, t, r, [x for x in universes[(t, r)] if x in kept],
-                                           seed=seed + 30 + i, **kw) for i, (t, r) in enumerate(PRIMARY_CONTRASTS)}}
+            contrast_name(a, b): _contrast(cells, design, a, b, [x for x in universe(design, a, b) if x in kept],
+                                           seed=seed + 30 + i, role="sensitivity", **kw)
+            for i, (a, b) in enumerate((PRIMARY_CONTRAST, *SECONDARY_CONTRASTS))}}
     relevance = None
     if labels is not None:
         d18 = [c for c in valid if c["condition"] == "D18"]
@@ -217,20 +243,23 @@ def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
                                                   for mode in ("strict", "lenient")},
                      "injected_relevance_by_arm": {
                          arm: _summarise_injected([injected_relevance(c, labels) for c in valid if c["condition"] == arm])
-                         for arm in CONDITIONS}}
-    synthetic = any(bool(r.get("synthetic")) for r in records)
+                         for arm in CONDITIONS},
+                     "role": "secondary_exploratory_association"}
+    synthetic = any(bool(x.get("synthetic")) for x in records)
     return {"schema": ANALYSIS_SCHEMA, "synthetic_input": synthetic, "missingness_by_arm": miss,
-            "primary": primary, "primary_family": "Holm over " + ", ".join(primary),
-            "secondary": secondary, "secondary_effort": effort, "latency_descriptive": latency,
+            "primary": {contrast_name(t, r): primary},
+            "secondary_exploratory": secondary,
+            "secondary_multiplicity": "Holm within the secondary family only; exploratory, not confirmatory discoveries",
+            "secondary_effort": effort, "latency_descriptive": latency,
             "cumulative_success_by_recovery_actions": curves, "acquisition_overlap_sensitivity": overlap_sensitivity,
-            "relevance": relevance,
+            "relevance": relevance, "population_statement": POPULATION_STATEMENT,
             "status": "analysis output only; not a scientific claim until the SAP, roster and data are approved",
             "settings": {"seed": seed, "bootstrap_replicates": bootstrap_replicates, "permutation_draws": permutation_draws,
                          "unit": "task", "max_infrastructure_retries": design["max_infrastructure_retries"]}}
 
 
 def _summarise_injected(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    computed = [r for r in rows if r["status"] == "computed"]
+    computed = [x for x in rows if x["status"] == "computed"]
     return {"episodes": len(rows), "not_applicable_zero_injected": len(rows) - len(computed),
-            "mean_injected_relevant_fraction": fmean(r["injected_relevant_fraction"] for r in computed) if computed else None,
-            "mean_injected_irrelevant_count": fmean(r["injected_irrelevant_count"] for r in computed) if computed else None}
+            "mean_injected_relevant_fraction": fmean(x["injected_relevant_fraction"] for x in computed) if computed else None,
+            "mean_injected_irrelevant_count": fmean(x["injected_irrelevant_count"] for x in computed) if computed else None}

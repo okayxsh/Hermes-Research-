@@ -39,16 +39,16 @@ SKILL_TEXTS = {f"skill_{i:02d}": text for i, text in enumerate([
 LIBRARY_SCORES = {skill_id: round(0.9 - index * 0.03, 6) for index, skill_id in enumerate(sorted(SKILL_TEXTS))}
 
 NEUTRAL_SENTENCES = (
-    "Autumn leaves drift slowly across the quiet meadow.", "The old lighthouse stands tall beside the harbour.",
+    "Autumn leaves drift slowly across the quiet meadow.", "The old lighthouse stands tall by the harbour.",
     "Gentle rain softens the colours of the distant hills.", "A small orchestra rehearsed a cheerful melody yesterday.",
-    "Clouds gathered above the valley before sunset.", "The library catalogue lists many historical maps.",
-    "Migrating birds rested briefly near the river delta.", "An artist painted a calm seascape in pale blue tones.",
+    "Clouds gathered over the valley before sunset.", "The library catalogue lists many historical maps.",
+    "Migrating birds rested briefly along the river delta.", "An artist painted a calm seascape in pale blue tones.",
     "Snow covered the mountain pass during the winter months.", "A narrow footpath winds through the pine forest.",
     "The museum displays fossils from an ancient coastline.", "Bright lanterns decorated the festival streets.",
     "Quiet evenings in the countryside feel unhurried.", "The telescope revealed faint rings around a distant planet.",
     "Wildflowers bloom along the edges of the old railway.", "Sailors once relied on the stars for orientation.",
-    "The poem describes a journey across a frozen lake.", "Morning fog lifted slowly from the harbour.",
-    "A gentle breeze carried the scent of salt and seaweed.", "Rain fell.", "Birds sang softly.", "Waves rolled.",
+    "The poem describes a journey across a silent lake.", "Morning fog lifted slowly from the harbour.",
+    "A gentle breeze brought the scent of salt and seaweed.", "Rain fell.", "Birds sang softly.", "Waves rolled.",
     "Stars shone.", "Leaves rustled.", "Bells rang.", "Snow melted.", "Owls called.", "Tides turned.",
 )
 

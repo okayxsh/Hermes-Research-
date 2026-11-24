@@ -170,7 +170,8 @@ class ManifestTests(unittest.TestCase):
             task_id = f"valid_seen:task-{i}/trial_T1"
             self.tasks.append({"task_id": task_id, "goal_template": f"tpl{i}", "scene": "1", "family": "clean_and_place",
                                "oracle_sha256": "c" * 64, "checkpoint_digest": "d" * 64, "post_detour_digest": "e" * 64,
-                               "prefix_actions": 3, "detour_actions": 1, "continuation_actions": 4})
+                               "prefix_actions": 3, "detour_actions": 1, "continuation_actions": 4,
+                               "oracle_replay_total_action_limit": 50})
             sel = select_interventions(task_id, self.ranking, labels, rel_scope="natural_top3", irr_scope="natural_top3")
             self.selections[task_id] = sel
             self.audits[task_id] = {}
@@ -201,16 +202,39 @@ class ManifestTests(unittest.TestCase):
             self.make(stage="confirmatory")                              # valid_seen tasks cannot be confirmatory
         with self.assertRaises(M.FiveArmManifestError):
             self.make(total_action_cap=7)                                 # oracle does not fit the cap
+        with self.assertRaises(M.FiveArmManifestError):
+            self.make(total_action_cap=100)                               # no oracle replay at exactly this cap
         bad = json.loads(json.dumps(self.audits)); bad[self.tasks[0]["task_id"]]["Fill"]["within_token_tolerance"] = False
         man = self.make(memory_audits=bad)
+        first = self.tasks[0]["task_id"]
         self.assertEqual(man["blocked_cells"][0]["condition"], "Fill")
-        with self.assertRaises(M.FiveArmManifestError):
-            M.freeze_manifest(man, approval(man["manifest_sha256"]), {})
+        self.assertNotIn(first, man["arm_subsets"]["Fill"])
+        arms = sorted({u["condition"] for u in man["units"] if u["task_id"] == first})
+        self.assertEqual(arms, ["D0", "D18", "Irr", "Rel"])            # the primary pair survives a blocked filler cell
+        self.assertEqual(M.validate_manifest(man), [])
         good = self.make()
-        with self.assertRaises(Exception):                                # no readiness state -> blocked
-            M.freeze_manifest(good, approval(good["manifest_sha256"]), {})
+        with self.assertRaises(M.FiveArmManifestError):                   # fixture approval never freezes for real execution
+            M.freeze_manifest(good, approval(good["manifest_sha256"]), {}, {})
+        with self.assertRaises(Exception):                                # readiness blocks even when approval semantics are synthetic
+            M.freeze_manifest(good, approval(good["manifest_sha256"]), {}, {}, real=False)
         with self.assertRaises(M.FiveArmManifestError):
-            M.freeze_manifest(good, approval("0" * 64), {})               # approval not bound to this manifest
+            M.freeze_manifest(good, approval("0" * 64), {}, {}, real=False)   # approval not bound to this manifest
+        tampered = dict(good); tampered["blocked_cells"] = [{"task_id": first, "condition": "D0", "reason": "x"}]
+        self.assertTrue(any("only filler-bearing" in p for p in M.validate_manifest(tampered)))
+
+    def test_units_carry_exact_cap_and_allowance_and_diagnostic_manifest(self):
+        man = self.make()
+        self.assertTrue(all(u["total_action_cap"] == 50 and u["recovery_action_allowance"] == 46 for u in man["units"]))
+        diag = M.build_diagnostic_manifest(run_id="diag-1", tasks=self.tasks, seeds=[11], total_action_cap=50, source_commit="0" * 40,
+                                           input_hashes={k: "f" * 64 for k in M.DIAGNOSTIC_INPUT_HASHES})
+        self.assertEqual(sorted({u["condition"] for u in diag["units"]}), ["DETOURED", "UNDISTURBED"])
+        self.assertEqual({u["recovery_action_allowance"] for u in diag["units"]}, {46})
+        self.assertEqual(M.validate_manifest(diag), [])
+        self.assertEqual(M.STAGE_LEVEL[diag["stage"]], "d0_failure_manipulation_pilot")
+        with self.assertRaises(M.FiveArmManifestError):
+            M.build_diagnostic_manifest(run_id="diag-2", tasks=[{**self.tasks[0], "detour_actions": 2}], seeds=[11],
+                                        total_action_cap=50, source_commit="0" * 40,
+                                        input_hashes={k: "f" * 64 for k in M.DIAGNOSTIC_INPUT_HASHES})
 
 
 class HistoricalCompatibilityTests(unittest.TestCase):
