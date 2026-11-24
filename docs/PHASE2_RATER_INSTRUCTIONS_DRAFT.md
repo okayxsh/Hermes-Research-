@@ -68,8 +68,31 @@ The coordinator fills in `coordinator_receipt` on receipt. The tooling refuses s
 1. The coordinator gives you only the items in `requires_adjudication`: the conflicts plus every item both raters marked UNCERTAIN.
 2. For each item, choose RELEVANT, PARTIAL or IRRELEVANT. UNCERTAIN is not allowed at this stage. Give a one-sentence reason.
 3. Record your adjudicator code. It must differ from both raters' codes.
-4. Sign an adjudicator declaration. Use the same form with `"role": "adjudicator"`; you will have seen both ratings, and that is expected.
+4. Sign the **adjudicator declaration** below. Do not use the rater form: as adjudicator you necessarily see both ratings, so `saw_other_ratings` is `true` for you. The tooling refuses an adjudicator who submits the rater form, and refuses adjudication records signed by anyone other than the declared adjudicator.
 5. Like the raters, you never see model outcomes, ranks, scores or arms.
+
+```json
+{
+  "declaration_version": "rq1-five-arm-rater-declaration-v1",
+  "label_source": "human",
+  "rater_id": "<your adjudicator code, different from both rater codes>",
+  "role": "adjudicator",
+  "declared_at": "<date and time>",
+  "produced_personally": true,
+  "no_ai_or_automated_assistance": true,
+  "worked_independently": true,
+  "saw_other_ratings": true,
+  "is_one_of_the_raters": false,
+  "saw_model_outcomes": false,
+  "saw_retrieval_ranks_or_scores": false,
+  "saw_treatment_assignments": false,
+  "saw_oracle_or_expert_continuations": false,
+  "coordinator_receipt": {"received_by_code": "<coordinator code>", "received_at": "<time>",
+                          "channel": "<how the file was returned>", "export_sha256": "<hash of the adjudication sheet>"}
+}
+```
+
+Here `worked_independently` means you did not discuss items with either rater.
 
 ## Coordinator procedure
 

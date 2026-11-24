@@ -114,12 +114,42 @@ def cap_invariance_replay(driver: Any, task: Any, *, caps: Sequence[int], output
     runs = {cap: _scripted(driver, task, cap=cap, actions=padded, output_dir=output_dir / f"cap{cap}", split=split)
             for cap in (small, large)}
     a, b = runs[small], runs[large]
+    detour_index = len(route) - 1                       # the post-detour transition is state index len(route) - 1
+
+    def reached_post_detour(states: Sequence[Mapping[str, Any]]) -> bool:
+        return (len(states) > detour_index and all(s.get("admissible") is True for s in states[: detour_index + 1])
+                and states[detour_index].get("done") is False)
+
     shared = min(len(a), len(b), small - 1)
     identical = all(a[i].get("digest") == b[i].get("digest") for i in range(shared))
     small_terminates_at_cap = len(a) == small and a[-1].get("done") is True and a[-1].get("success") is False
     large_live_at_small_cap = len(b) > small - 1 and b[small - 1].get("done") is False
-    return {"task_id": task.task_id, "caps": [small, large], "compared_pre_cap_steps": shared,
+    post_detour = {cap: reached_post_detour(states) for cap, states in runs.items()}
+    digest_ok = {cap: (post_detour[cap] and states[detour_index].get("digest") == task.post_detour_digest)
+                 for cap, states in runs.items()}
+    # Classification (Phase 2E fix): a comparison that never reached the post-detour transition under BOTH caps -- or that
+    # compared no post-detour state at all -- is UNTESTED, never PASS (identity over zero or pre-detour states is vacuous).
+    if detour_index + 1 >= small:
+        status, reason = "UNTESTED", (f"prefix + detour ({detour_index + 1} actions) does not leave a post-detour decision "
+                                      f"below the smaller cap {small}")
+    elif not all(post_detour.values()):
+        status, reason = "UNTESTED", "the post-detour transition was not reached under both caps (inadmissible or terminal route)"
+    elif not all(digest_ok.values()):
+        status, reason = "FAIL", "the replay did not reproduce the frozen post-detour state digest"
+    elif shared <= detour_index:
+        status, reason = "UNTESTED", "no post-detour state was compared before the smaller cap"
+    elif not identical:
+        status, reason = "FAIL", "pre-cap bridge states differ between caps"
+    elif not small_terminates_at_cap or not large_live_at_small_cap:
+        status, reason = "FAIL", "the smaller cap did not terminate exactly at its limit while the larger cap continued"
+    else:
+        status, reason = "PASS", "post-detour states identical before the smaller cap; termination only at the cap"
+    return {"task_id": task.task_id, "caps": [small, large], "status": status, "reason": reason,
+            "compared_pre_cap_steps": shared, "post_detour_states_compared": max(0, shared - detour_index),
+            "post_detour_reached": {str(c): v for c, v in post_detour.items()},
             "pre_cap_states_identical": identical, "small_cap_terminates_exactly_at_cap": small_terminates_at_cap,
             "large_cap_live_at_small_cap": large_live_at_small_cap,
-            "truncation_environment_assumptions_hold": identical and small_terminates_at_cap and large_live_at_small_cap,
+            "truncation_environment_assumptions_hold": status == "PASS",
+            "model_trajectory_equivalence": "UNVERIFIED: deterministic environment invariance only; model trajectories "
+                                            "are not executed by this CPU check",
             "padding_action": padding_action, "model_calls": 0}

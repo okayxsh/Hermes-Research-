@@ -130,10 +130,22 @@ DECLARATION_STATEMENTS = {
     "saw_treatment_assignments": False,
     "saw_oracle_or_expert_continuations": False,
 }
+# The adjudicator necessarily sees both raters' labels (that is what adjudication is), so the rater statement
+# "saw_other_ratings: false" cannot apply.  Phase 2E fix: before this, one rater-only statement set was enforced for every
+# role, so a truthful adjudicator declaration could never validate while adjudicate() never checked one at all.
+ADJUDICATOR_STATEMENTS = {
+    **DECLARATION_STATEMENTS,
+    "worked_independently": True,             # no discussion of items with either rater
+    "saw_other_ratings": True,                # both raters' labels for the conflicting items are shown -- expected
+    "is_one_of_the_raters": False,            # the adjudicator never rated these items
+}
+ROLE_STATEMENTS = {"rater": DECLARATION_STATEMENTS, "adjudicator": ADJUDICATOR_STATEMENTS}
 RECEIPT_FIELDS = ("received_by_code", "received_at", "channel", "export_sha256")
 
 
 def validate_declaration(declaration: Mapping[str, Any], *, rater_id: str, role: str) -> list[str]:
+    if role not in ROLE_STATEMENTS:
+        return [f"unknown declaration role {role!r}; expected one of {sorted(ROLE_STATEMENTS)}"]
     problems = []
     if declaration.get("declaration_version") != DECLARATION_VERSION:
         problems.append(f"declaration_version must be {DECLARATION_VERSION}")
@@ -143,7 +155,7 @@ def validate_declaration(declaration: Mapping[str, Any], *, rater_id: str, role:
         problems.append("declaration rater_id differs from the submitting rater code")
     if declaration.get("role") != role:
         problems.append(f"declaration role must be {role!r}")
-    for key, expected in DECLARATION_STATEMENTS.items():
+    for key, expected in ROLE_STATEMENTS[role].items():
         if declaration.get(key) is not expected:
             problems.append(f"declaration statement {key} must be {expected}")
     if not str(declaration.get("declared_at", "")).strip():
@@ -221,7 +233,13 @@ def agreement(a: Mapping[str, Mapping[str, str]], b: Mapping[str, Mapping[str, s
 
 
 def adjudicate(a: Mapping[str, Mapping[str, str]], b: Mapping[str, Mapping[str, str]], adjudication: Mapping[str, Mapping[str, str]],
-               *, rater_ids: tuple[str, str]) -> dict[str, str]:
+               *, rater_ids: tuple[str, str], adjudicator_declaration: Mapping[str, Any]) -> dict[str, str]:
+    adjudicator = str((adjudicator_declaration or {}).get("rater_id", ""))
+    if not adjudicator.strip() or adjudicator in rater_ids:
+        raise RatingError("the adjudicator declaration must name a pseudonymous code distinct from both raters")
+    problems = validate_declaration(adjudicator_declaration, rater_id=adjudicator, role="adjudicator")
+    if problems:
+        raise RatingError("adjudicator declaration refused: " + "; ".join(problems))
     needed = set(agreement(a, b)["requires_adjudication"])
     missing = needed - set(adjudication)
     if missing:
@@ -235,6 +253,8 @@ def adjudicate(a: Mapping[str, Mapping[str, str]], b: Mapping[str, Mapping[str, 
             record = adjudication[iid]
             if record.get("adjudicator_id") in (None, "", *rater_ids):
                 raise RatingError(f"{iid}: the adjudicator must be a named person distinct from both raters")
+            if record.get("adjudicator_id") != adjudicator:
+                raise RatingError(f"{iid}: adjudicated by {record.get('adjudicator_id')!r}, not the declared adjudicator")
             label = str(record.get("label", "")).upper()
             if label not in ("RELEVANT", "PARTIAL", "IRRELEVANT"):
                 raise RatingError(f"{iid}: adjudicated label must resolve to RELEVANT, PARTIAL or IRRELEVANT")

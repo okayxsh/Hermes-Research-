@@ -5,9 +5,19 @@ All functions run on saved pilot-diagnostic records only (UNDISTURBED / DETOURED
 arguments; ``PROPOSED_DIAGNOSTIC_THRESHOLDS`` is the engineering proposal for SD-16 and is NOT approved.
 
 A 12-task pilot is a diagnostic exercise, not a hypothesis test: every classification is reported with a task-bootstrap
-interval, and a classification whose interval straddles a threshold is reported as INDETERMINATE (design review), never
-as an automatic GO.  A one-action detour is a controlled navigation perturbation; it is not described as a validated
-long-horizon failure merely because the oracle can recover from it.
+interval.  Phase 2E rules (prespecified, before any diagnostic outcome exists):
+
+* nothing here produces a GO: every class is evidence for author review;
+* more recovery actions ALONE never count as meaningful disruption (``EFFORT_ONLY_INCREASE``);
+* ``INADEQUATE_MANIPULATION`` needs positive evidence of no disruption (upper interval bounds below the thresholds), as
+  distinct from ``INCONCLUSIVE`` (intervals too wide to decide);
+* a competence floor (the model rarely completes tasks even WITHOUT the detour) makes the manipulation unjudgeable
+  (``UNINFORMATIVE_COMPETENCE_FLOOR``) rather than inadequate;
+* ``family_stratified_diagnostic`` separates competence, perturbation difficulty, ceiling/floor, effort and interface
+  problems per task family, and derives the prospective floor-family sensitivity set (never a confirmatory exclusion).
+
+A one-action detour is a controlled navigation perturbation; it is not described as a validated long-horizon failure
+merely because the oracle can recover from it.
 """
 from __future__ import annotations
 
@@ -23,6 +33,8 @@ PROPOSED_DIAGNOSTIC_THRESHOLDS: dict[str, Any] = {
     "min_median_extra_actions_when_both_succeed": 2,
     "min_mean_extra_invalid_selections": 0.5,
     "weak_completion_drop": 0.05,
+    "inadequate_max_drop_upper": 0.10,
+    "max_mechanical_extra_actions": 1,
     "detoured_ceiling": 0.90,
     "detoured_floor": 0.10,
     "undisturbed_ability_floor": 0.20,
@@ -40,6 +52,12 @@ PROPOSED_DIAGNOSTIC_THRESHOLDS: dict[str, Any] = {
                                "detour; a median of 2 or more extra actions indicates re-orientation, not a mechanical return.",
         "min_mean_extra_invalid_selections": "half an extra rejected selection per episode is a visible behavioural cost.",
         "weak_completion_drop": "below 5 points with no effort or invalid-action cost the detour is behaviourally inert.",
+        "inadequate_max_drop_upper": "positive evidence of an inadequate manipulation requires the UPPER 95% bound of the "
+                                     "completion drop to lie below 10 points; otherwise the pilot is inconclusive, not negative.",
+        "max_mechanical_extra_actions": "the oracle needs exactly one extra navigation action; a median extra cost of at most "
+                                        "one action is a mechanical return, not re-orientation.",
+        "effort_only": "extra actions alone never establish meaningful disruption: action counts are sensitive to small "
+                       "behavioural changes and say nothing about completion; they are reported as EFFORT_ONLY_INCREASE.",
         "detoured_ceiling": "a no-memory baseline above 0.90 leaves at most 10 points of headroom for any memory effect.",
         "detoured_floor": "below 0.10 recovery is near-infeasible at this budget; memory effects would be floor-limited.",
         "undisturbed_ability_floor": "if the model rarely completes tasks even without disruption, disruption cannot be measured.",
@@ -152,23 +170,89 @@ def disruption_report(records: Sequence[Mapping[str, Any]], thresholds: Mapping[
                                  "meets" if extra_median >= t["min_median_extra_actions_when_both_succeed"] else "below"),
                 "extra_invalid": _classify(invalid_extra, invalid_ci, t["min_mean_extra_invalid_selections"])}
     report["criteria"] = criteria
-    if any(v == "meets" for v in criteria.values()):
-        disruption = "MEANINGFUL_DISRUPTION"
-    elif any(v == "indeterminate" for v in criteria.values()):
-        disruption = "INDETERMINATE"
-    elif drop >= t["weak_completion_drop"]:
-        disruption = "WEAK_DISRUPTION"
-    else:
-        disruption = "INSUFFICIENT_DISRUPTION"
-    report["disruption_class"] = disruption
+    report["disruption_class"] = _disruption_class(criteria, drop, drop_ci, extra_median, invalid_ci, findings, t)
     report["methodological_findings"] = findings
-    report["recommendation"] = (
-        "proceed to five-arm pilot review" if disruption == "MEANINGFUL_DISRUPTION" and not findings else
-        "narrow the claim to recovery after a controlled navigation perturbation, or strengthen the manipulation"
-        if disruption in ("WEAK_DISRUPTION", "INSUFFICIENT_DISRUPTION") else
-        "design review required before any five-arm execution")
-    report["status"] = "diagnostic evidence for author review; not an approval"
+    report["recommendation"] = RECOMMENDATIONS[report["disruption_class"]]
+    report["status"] = "diagnostic evidence for author review; not an approval and never an automatic GO"
     return report
+
+
+RECOMMENDATIONS = {
+    "MEANINGFUL_DISRUPTION": "author review: completion evidence supports a disruptive perturbation; check findings and "
+                             "family table before considering the five-arm pilot",
+    "EFFORT_ONLY_INCREASE": "author review: only extra actions, no completion or invalid-action evidence; treat the detour as "
+                            "a mild perturbation and keep the claim to task completion after a navigation perturbation",
+    "INADEQUATE_MANIPULATION": "author review: positive evidence that the detour does not disrupt; strengthen the manipulation "
+                               "or narrow the claim to task continuation (no recovery claim)",
+    "UNINFORMATIVE_COMPETENCE_FLOOR": "author review: the model rarely completes tasks even without the detour; the "
+                                      "manipulation cannot be judged; consider the budget, the population or the claim",
+    "INCONCLUSIVE": "author review: intervals too wide to decide; do not treat as evidence of an adequate or an inadequate "
+                    "manipulation",
+}
+
+
+def _disruption_class(criteria, drop, drop_ci, extra_median, invalid_ci, findings, t) -> str:
+    if criteria["completion_drop"] == "meets" or (criteria["extra_invalid"] == "meets" and drop >= t["weak_completion_drop"]):
+        return "MEANINGFUL_DISRUPTION"
+    if "TASK_ABILITY_FLOOR" in findings:
+        return "UNINFORMATIVE_COMPETENCE_FLOOR"
+    drop_upper = drop_ci[1] if drop_ci is not None else drop
+    invalid_upper = invalid_ci[1] if invalid_ci is not None else None
+    mechanical = extra_median is None or extra_median <= t["max_mechanical_extra_actions"]
+    no_invalid_cost = invalid_upper is None or invalid_upper < t["min_mean_extra_invalid_selections"]
+    if drop_upper < t["inadequate_max_drop_upper"] and mechanical and no_invalid_cost:
+        return "INADEQUATE_MANIPULATION"
+    if criteria["extra_effort"] == "meets" and criteria["completion_drop"] == "below" and criteria["extra_invalid"] != "meets":
+        return "EFFORT_ONLY_INCREASE"
+    return "INCONCLUSIVE"
+
+
+def family_stratified_diagnostic(records: Sequence[Mapping[str, Any]], thresholds: Mapping[str, Any]) -> dict[str, Any]:
+    """Per-family DESCRIPTIVE table (a 12-task pilot has 2-3 tasks per family): basic competence (UNDISTURBED completion),
+    perturbation difficulty (completion drop), ceiling/floor, extra capped effort and interface problems.  Families whose
+    UNDISTURBED completion is at or below the competence floor form the prospective floor-family SENSITIVITY set for the
+    confirmatory analysis (defined from pilot valid_seen tasks only; confirmatory tasks are never excluded on their own
+    D18-vs-D0 outcomes, and the primary analysis keeps every roster task)."""
+    final = _final(_validated(records))
+    t = thresholds
+    families: dict[str, dict[str, list[Mapping[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for (task, condition, s), record in final.items():
+        if record["outcome_status"] == "VALID":
+            families[str(record["family"])][condition].append(record)
+    rows = {}
+    for family, by in sorted(families.items()):
+        und, det = by.get("UNDISTURBED", []), by.get("DETOURED", [])
+        rate = lambda rs: fmean(int(r["success"]) for r in rs) if rs else None
+        u, d = rate(und), rate(det)
+        pairs = {(r["task_id"], r["seed"]): r for r in und}
+        matched = [(pairs[(r["task_id"], r["seed"])], r) for r in det if (r["task_id"], r["seed"]) in pairs]
+        both = [dd["recovery_actions"] - uu["recovery_actions"] for uu, dd in matched if uu["success"] and dd["success"]]
+        episodes = und + det
+        invalid = fmean(r["invalid_actions"] for r in episodes) if episodes else None
+        flags = []
+        if u is not None and u <= t["undisturbed_ability_floor"]:
+            flags.append("COMPETENCE_FLOOR")
+        if u is not None and d is not None and u >= t["detoured_ceiling"] and d >= t["detoured_ceiling"]:
+            flags.append("CEILING")
+        if d is not None and d <= t["detoured_floor"] and "COMPETENCE_FLOOR" not in flags:
+            flags.append("PERTURBATION_FLOOR")
+        if invalid is not None and invalid > t["max_mean_invalid_selections_per_episode"]:
+            flags.append("INTERFACE_PROBLEM")
+        median_extra = median(both) if both else None
+        rows[family] = {"tasks": len({r["task_id"] for r in episodes}), "matched_pairs": len(matched),
+                        "competence_undisturbed_completion": u, "detoured_completion": d,
+                        "perturbation_completion_drop": (u - d) if u is not None and d is not None else None,
+                        "median_extra_actions_when_both_succeed": median_extra,
+                        "effort_beyond_mechanical_return": (median_extra is not None
+                                                            and median_extra > t["max_mechanical_extra_actions"]),
+                        "mean_invalid_selections_per_episode": invalid, "flags": flags,
+                        "inference": "descriptive only (too few tasks per family for any test)"}
+    sensitivity = sorted(f for f, r in rows.items() if "COMPETENCE_FLOOR" in r["flags"])
+    return {"families": rows, "prospective_floor_family_sensitivity_set": sensitivity,
+            "rule": "confirmatory primary analysis keeps every roster task; a prespecified sensitivity analysis excludes "
+                    "the families listed here (flagged from pilot valid_seen tasks only, before confirmatory outcomes)",
+            "overall": disruption_report(records, thresholds, replicates=2000),
+            "status": "descriptive diagnostic for author review; not an approval"}
 
 
 def seed_variability(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

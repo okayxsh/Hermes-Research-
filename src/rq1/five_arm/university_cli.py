@@ -117,9 +117,12 @@ def cmd_cap_invariance(args, config) -> dict[str, Any]:
     rows = _with_driver(config, lambda d: [cap_invariance_replay(d, task, caps=args.caps, output_dir=work_root / f"inv-{i:03d}",
                                                                  split=config["split"])
                                            for i, task in enumerate(_tasks(config).values())])
-    return {"name": "cap-invariance.json", "schema": "rq1-five-arm-cap-invariance-v1",
-            "body": {"caps": sorted(args.caps), "tasks": rows,
-                     "all_hold": all(r["truncation_environment_assumptions_hold"] for r in rows)}}
+    counts = {s: sum(r["status"] == s for r in rows) for s in ("PASS", "FAIL", "UNTESTED")}
+    return {"name": "cap-invariance.json", "schema": "rq1-five-arm-cap-invariance-v2",
+            "body": {"caps": sorted(args.caps), "tasks": rows, "status_counts": counts,
+                     "untested_tasks": [r["task_id"] for r in rows if r["status"] == "UNTESTED"],
+                     "all_hold": bool(rows) and counts["PASS"] == len(rows),
+                     "model_trajectory_equivalence": "UNVERIFIED (environment-only check)"}}
 
 
 def cmd_run_queue(args) -> dict[str, Any]:

@@ -229,7 +229,25 @@ class FiveArmEndToEndTests(_Base):
         self.assertTrue(replay["validated"])
         self.assertFalse(exact_cap_oracle_replay(free, task, cap=4, output_dir=self.root / "oracle4", split="valid_seen")["validated"])
         inv = cap_invariance_replay(free, task, caps=(8, 12), output_dir=self.root / "inv", split="valid_seen")
+        self.assertEqual(inv["status"], "PASS")
         self.assertTrue(inv["truncation_environment_assumptions_hold"])
+        self.assertIn("UNVERIFIED", inv["model_trajectory_equivalence"])
+
+    def test_cap_invariance_never_counts_an_untested_comparison_as_pass(self):
+        """Regression (Phase 2E): a route whose prefix + detour cannot run below the smaller cap compared only pre-detour
+        (or zero) states and was reported as holding."""
+        spec = E.build_pilot(self.root, task_ids=("valid_seen:alpha/trial_T1",))
+        task = spec["tasks"]["valid_seen:alpha/trial_T1"]
+        free = E.ScriptedDriver(E.solver)
+        untested = cap_invariance_replay(free, task, caps=(2, 12), output_dir=self.root / "inv2", split="valid_seen")
+        self.assertEqual(untested["status"], "UNTESTED")
+        self.assertFalse(untested["truncation_environment_assumptions_hold"])
+        self.assertEqual(untested["post_detour_states_compared"], 0)
+        from dataclasses import replace
+        tampered = replace(task, post_detour_digest="0" * 64)
+        failed = cap_invariance_replay(free, tampered, caps=(8, 12), output_dir=self.root / "inv3", split="valid_seen")
+        self.assertEqual(failed["status"], "FAIL")
+        self.assertFalse(failed["truncation_environment_assumptions_hold"])
         self.assertEqual(free.prompts, [])                                                 # no model calls from CPU tools
         with self.assertRaises(ProtocolViolation):
             harness_driver = E.ScriptedDriver(E.solver)
@@ -269,7 +287,7 @@ class DiagnosticEndToEndTests(_Base):
         th = dict(pilot.PROPOSED_DIAGNOSTIC_THRESHOLDS)
         report = pilot.disruption_report(recs, th, replicates=200)
         self.assertEqual(report["tasks"], 2)
-        self.assertIn(report["disruption_class"], ("MEANINGFUL_DISRUPTION", "INDETERMINATE", "WEAK_DISRUPTION", "INSUFFICIENT_DISRUPTION"))
+        self.assertIn(report["disruption_class"], tuple(pilot.RECOMMENDATIONS))
         self.assertIn("CEILING", report["methodological_findings"])                                   # scripted solver always succeeds
         variability = pilot.seed_variability(recs)
         self.assertEqual(variability["identical_trajectory_rate"], 1.0)                               # scripted = deterministic

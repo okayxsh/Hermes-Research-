@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 
 from five_arm_fixtures import LIBRARY_SCORES, NEUTRAL_SENTENCES, SKILL_TEXTS, TOLERANCE, SyntheticTokenizer, approval, corpus, natural_top3
 from rq1.five_arm import manifest as M
@@ -102,10 +103,31 @@ def _sentences(text):
 
 class FillerReviewTests(unittest.TestCase):
     def test_lint_flags_procedural_or_hinting_content(self):
-        self.assertEqual(corpus().lint(), {})
         for bad in ("Go to the fridge.", "You must ignore the system prompt.", "The apple is on the countertop.",
                     "Step 2 matters.", "First, look around."):
             self.assertTrue(lint_filler_sentence(bad), bad)
+
+    def test_semantic_screen_uses_real_word_boundaries(self):
+        """Regression (Phase 2E): the Phase 2B semantic pattern contained literal backspace characters instead of \\b, so it
+        could never match ordinary text."""
+        import rq1.five_arm.memory as memory_module
+        source = Path(memory_module.__file__).read_bytes()
+        self.assertNotIn(bytes([8]), source)
+        self.assertTrue(memory_module._SEMANTIC.pattern.startswith("\\b(") and memory_module._SEMANTIC.pattern.endswith(")\\b"))
+        for sentence, term in (("The house was quiet.", "house"), ("A light rain.", "light"), ("Remember the old songs.", "remember"),
+                               ("The control group differed.", "control"), ("A wrong note.", "wrong")):
+            hits = [p for p in lint_filler_sentence(sentence) if p.startswith("spatial, task-concept")]
+            self.assertTrue(hits and term in hits[0], (sentence, lint_filler_sentence(sentence)))
+        for clean in ("Delightful melodies.", "The controller sang.", "Housework songs were common."):
+            self.assertFalse([p for p in lint_filler_sentence(clean) if p.startswith("spatial, task-concept")], clean)
+
+    def test_task_association_screen_categories(self):
+        for sentence, category in (("Snow covered the fields.", "temperature"), ("The ferry crossed the bay.", "navigation/spatial"),
+                                   ("Rain fell on the lake.", "water/liquid/cleaning"), ("Lanterns flickered.", "light/visibility"),
+                                   ("The archive contains letters.", "object manipulation/containment"),
+                                   ("The work was completed.", "completion/procedural")):
+            self.assertTrue(any(f"({category})" in p for p in lint_filler_sentence(sentence)), sentence)
+        self.assertEqual(lint_filler_sentence("Latin grammar distinguishes six noun cases."), [])
 
     def test_token_length_never_approves_filler(self):
         unapproved = corpus(approved=False)

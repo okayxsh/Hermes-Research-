@@ -145,8 +145,8 @@ SCIENTIFIC_DECISIONS: dict[str, dict[str, Any]] = {
     "filler_corpus": _d(
         "SD-12", "Which neutral filler corpus is approved?",
         "Filler defines Fill and the neutral slots of Rel/Irr; lint and token length never approve it.",
-        "candidate corpus rq1-five-arm-neutral-filler-candidate-v1 after human review", ["revised corpus"],
-        "Human content review; real-tokenizer matching audit.", _FIVE),
+        "candidate corpus rq1-five-arm-neutral-filler-candidate-v2 after human review (v1 superseded)", ["further revised corpus", "out-of-domain procedural filler"],
+        "Human content review; embedding-similarity screen; real-tokenizer matching audit.", _FIVE),
     "runtime_model_digest": _d(
         "SD-13", "Which Gemma 4 12B digest may scientific execution use?",
         "Same tag and quantisation do not establish equivalence; historical records keep the historical pin.",

@@ -94,7 +94,12 @@ class UniversityCliTests(unittest.TestCase):
         code, out = self.cli(self.common("oracle-replay", "o1") + ["--cap", "12"])
         self.assertTrue(json.loads(Path(out["output"]).read_text(encoding="utf-8"))["all_validated"])
         code, out = self.cli(self.common("cap-invariance", "c1") + ["--caps", "8", "12"])
-        self.assertTrue(json.loads(Path(out["output"]).read_text(encoding="utf-8"))["all_hold"])
+        body = json.loads(Path(out["output"]).read_text(encoding="utf-8"))
+        self.assertTrue(body["all_hold"])
+        self.assertEqual(body["status_counts"], {"PASS": 1, "FAIL": 0, "UNTESTED": 0})
+        code, out = self.cli(self.common("cap-invariance", "c2") + ["--caps", "2", "12"])
+        body = json.loads(Path(out["output"]).read_text(encoding="utf-8"))
+        self.assertEqual((body["all_hold"], body["status_counts"]["UNTESTED"]), (False, 1))   # untested never counted as PASS
         self.assertEqual(self.cli(self.common("oracle-replay", "o1") + ["--cap", "12"])[0], 3)   # work dir / output never reused
 
     def test_cpu_commands_require_cpu_readiness(self):

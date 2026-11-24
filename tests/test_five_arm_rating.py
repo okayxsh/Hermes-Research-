@@ -21,6 +21,11 @@ def DECL(rater, **override):
     return base
 
 
+def ADJ_DECL(code, **override):
+    """An adjudicator-declaration-SHAPED record (tooling test only)."""
+    return DECL(code, role="adjudicator", **{**rating.ADJUDICATOR_STATEMENTS, **override})
+
+
 def fill(csv_text: str, labeler) -> bytes:
     rows = list(csv.DictReader(io.StringIO(csv_text)))
     out = io.StringIO()
@@ -108,13 +113,17 @@ class SubmissionTests(unittest.TestCase):
         self.assertTrue(conflicts)
         self.assertTrue(all(a[i]["label"] != b[i]["label"] or a[i]["label"] == "UNCERTAIN" for i in conflicts))
         self.assertIsNotNone(report["kappa_four_category"])
+        adj = ADJ_DECL("C")
         with self.assertRaises(rating.RatingError):
-            rating.adjudicate(a, b, {}, rater_ids=("A", "B"))
+            rating.adjudicate(a, b, {}, rater_ids=("A", "B"), adjudicator_declaration=adj)
         with self.assertRaises(rating.RatingError):
-            rating.adjudicate(a, b, {i: {"label": "RELEVANT", "adjudicator_id": "A"} for i in conflicts}, rater_ids=("A", "B"))
+            rating.adjudicate(a, b, {i: {"label": "RELEVANT", "adjudicator_id": "A"} for i in conflicts}, rater_ids=("A", "B"),
+                              adjudicator_declaration=adj)
         with self.assertRaises(rating.RatingError):
-            rating.adjudicate(a, b, {i: {"label": "UNCERTAIN", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"))
-        final = rating.adjudicate(a, b, {i: {"label": "PARTIAL", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"))
+            rating.adjudicate(a, b, {i: {"label": "UNCERTAIN", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"),
+                              adjudicator_declaration=adj)
+        final = rating.adjudicate(a, b, {i: {"label": "PARTIAL", "adjudicator_id": "C"} for i in conflicts}, rater_ids=("A", "B"),
+                                  adjudicator_declaration=adj)
         self.assertTrue(all(final[i] == "PARTIAL" for i in conflicts))
         prov = {k: "a" * 64 for k in ("export_sha256", "rater_a_submission_sha256", "rater_b_submission_sha256", "adjudication_sha256",
                                       "rater_a_declaration_sha256", "rater_b_declaration_sha256", "adjudicator_declaration_sha256")}
@@ -137,6 +146,33 @@ class ProvenanceTests(unittest.TestCase):
         for leak in ("Retrieval rank 1 was shown.", "similarity 0.8123", "the D18 condition"):
             with self.assertRaises(rating.RatingError):
                 rating.build_items([{**TASKS[0], "recovery_context": leak}], SKILL_TEXTS, design="full_library", salt=SALT)
+
+
+class AdjudicatorDeclarationTests(unittest.TestCase):
+    """Regression (Phase 2E): the adjudicator sees both ratings, so the rater form (saw_other_ratings: false) can never be
+    truthful for an adjudicator; adjudicate() previously validated no declaration at all."""
+
+    def setUp(self):
+        items, key = rating.build_items(TASKS[:1], SKILL_TEXTS, design="full_library", salt=SALT)
+        ids = sorted(key["items"])
+        self.a = {i: {"label": "RELEVANT", "rationale": ""} for i in ids}
+        self.b = {i: {"label": "IRRELEVANT" if n == 0 else "RELEVANT", "rationale": ""} for n, i in enumerate(ids)}
+        self.records = {ids[0]: {"label": "RELEVANT", "adjudicator_id": "C"}}
+
+    def test_role_specific_statements(self):
+        self.assertEqual(rating.validate_declaration(ADJ_DECL("C"), rater_id="C", role="adjudicator"), [])
+        rater_form = DECL("C", role="adjudicator")                                  # the old instruction: reuse the rater form
+        self.assertTrue(any("saw_other_ratings" in p for p in rating.validate_declaration(rater_form, rater_id="C", role="adjudicator")))
+        self.assertTrue(rating.validate_declaration(ADJ_DECL("C"), rater_id="C", role="rater"))
+        self.assertTrue(rating.validate_declaration(ADJ_DECL("C"), rater_id="C", role="reviewer"))
+
+    def test_adjudicate_requires_a_valid_bound_declaration(self):
+        self.assertEqual(len(rating.adjudicate(self.a, self.b, self.records, rater_ids=("A", "B"),
+                                               adjudicator_declaration=ADJ_DECL("C"))), len(self.a))
+        for bad in (DECL("C", role="adjudicator"), ADJ_DECL("A"), ADJ_DECL("C", is_one_of_the_raters=True),
+                    ADJ_DECL("C", no_ai_or_automated_assistance=False), ADJ_DECL("D")):
+            with self.assertRaises(rating.RatingError):
+                rating.adjudicate(self.a, self.b, self.records, rater_ids=("A", "B"), adjudicator_declaration=bad)
 
 
 class WorkloadTests(unittest.TestCase):

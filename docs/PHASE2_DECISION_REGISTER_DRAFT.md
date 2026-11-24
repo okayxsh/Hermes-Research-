@@ -26,7 +26,7 @@
 | SD-09 | `annotation_design` | candidate_set_natural_top3 | five-arm pilot, confirmation | awaiting author approval |
 | SD-10 | `hypothesis_hierarchy_and_primary_test` | single_primary_D18_vs_D0__task_level_sign_flip_sharp_null__template_level_sensitivity | confirmation | awaiting author approval |
 | SD-11 | `missing_data_and_retry_policy` | retry_infrastructure_up_to_2__pairwise_complete_case__bounds_sensitivity | diagnostic pilot, five-arm pilot, confirmation | awaiting author approval |
-| SD-12 | `filler_corpus` | candidate corpus rq1-five-arm-neutral-filler-candidate-v1 after human review | five-arm pilot, confirmation | awaiting author approval |
+| SD-12 | `filler_corpus` | candidate corpus rq1-five-arm-neutral-filler-candidate-v2 after human review (v1 superseded) | five-arm pilot, confirmation | awaiting author approval |
 | SD-13 | `runtime_model_digest` | installed 6114515d... after runtime/tokenizer verification and an explicit amendment | diagnostic pilot, five-arm pilot, confirmation | awaiting author approval |
 | SD-14 (new in 2B) | `frozen_retrieval_intervention` | single_checkpoint_retrieval_static_memory__live_top3_must_equal_frozen__tie_fragile_tasks_flagged | five-arm pilot, confirmation | awaiting author approval |
 | SD-15 (new in 2B) | `diagnostic_action_allowance` | equal_model_action_allowance | diagnostic pilot | awaiting author approval |
@@ -155,9 +155,9 @@
 
 - **Question:** Which neutral filler corpus is approved?
 - **Scientific consequence:** Filler defines Fill and the neutral slots of Rel/Irr; lint and token length never approve it.
-- **Recommended option:** candidate corpus rq1-five-arm-neutral-filler-candidate-v1 after human review
-- **Alternatives:** revised corpus
-- **Evidence required before approval:** Human content review; real-tokenizer matching audit.
+- **Recommended option:** candidate corpus rq1-five-arm-neutral-filler-candidate-v2 after human review (v1 superseded)
+- **Alternatives:** further revised corpus, out-of-domain procedural filler
+- **Evidence required before approval:** Human content review; embedding-similarity screen; real-tokenizer matching audit.
 - **Blocks:** five-arm pilot, confirmation
 - **Status:** NOT APPROVED (awaiting author approval)
 

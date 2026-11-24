@@ -73,7 +73,7 @@ _DIRECTIVES = re.compile(r"\b(you|your|ignore|instruction|instructions|system|pr
 _MARKUP = re.compile(r"[\d{}\[\]<>:`|#*_=]")
 # Semantic screen (Phase 2B): spatial/navigation language, task-family concepts (heating, cooling, cleaning, light,
 # opening), household/object words, advice or evaluation language, and the leakage probe's label/meta terms.
-_SEMANTIC = re.compile(r"(left|right|north|south|east|west|inside|outside|behind|beneath|underneath|under|below|above|"
+_SEMANTIC = re.compile(r"\b(left|right|north|south|east|west|inside|outside|behind|beneath|underneath|under|below|above|"
                        r"beside|near|nearby|toward|towards|corner|door|doors|wall|walls|hallway|path to|"
                        r"hot|cold|warm|cool|cooled|cooling|heat|heated|heating|freeze|frozen|chilled|icy|clean|dirty|wash|"
                        r"washed|rinse|soap|light|lights|lit|switch|opened|closed|shut|"
@@ -82,7 +82,40 @@ _SEMANTIC = re.compile(r"(left|right|north|south|east|west|inside|outside|behin
                        r"check|try|attempt|remember|hint|tip|advice|guide|rule|rules|procedure|method|approach|help|"
                        r"helpful|success|successful|fail|failure|mistake|error|wrong|correct|"
                        r"relevance|adjudicat\w*|synthetic|treatment|similarity|cosine|score|scores|rank|ranked|ranking|"
-                       r"experimental|control|baseline)", re.IGNORECASE)
+                       r"experimental|control|baseline)\b", re.IGNORECASE)
+# Task-association screen (Phase 2E, after the pre-pilot review found ~45 cue-bearing sentences in candidate v1): words
+# whose imagery maps onto the ALFWorld task families or onto navigation.  Grouped so each hit names its category.
+TASK_ASSOCIATION_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "navigation/spatial": ("travel", "travels", "travelled", "traveller", "travellers", "journey", "journeys", "voyage",
+                           "voyages", "route", "routes", "road", "roads", "path", "paths", "footpath", "map", "maps",
+                           "mapped", "mapmakers", "explore", "explored", "explorer", "explorers", "cross", "crossed",
+                           "crossing", "wander", "wandered", "wanders", "winding", "winds", "across", "along", "beyond",
+                           "distant", "distance", "far", "away", "ahead", "location", "locations", "position", "direction",
+                           "room", "rooms", "hall", "halls", "corridor", "migrating", "migration", "ferry", "ships", "sailing",
+                           "sailors"),
+    "temperature": ("snow", "snowy", "snowfall", "snowflakes", "winter", "summer", "ice", "glacier", "glaciers", "frost",
+                    "melt", "melting", "arctic", "volcanic", "volcano", "fire", "flame", "flames", "burn", "burning", "sun",
+                    "sunny", "sunlight", "sunset", "desert", "boil", "boiling", "steam", "chill", "temperature", "bonfire"),
+    "water/liquid/cleaning": ("rain", "rainy", "raindrops", "river", "rivers", "sea", "seas", "seascape", "ocean", "oceans",
+                              "lake", "lakes", "pond", "ponds", "stream", "streams", "tide", "tides", "wave", "waves", "water",
+                              "waters", "wet", "dew", "mist", "fog", "liquid", "pour", "poured", "drink", "flood", "harbour",
+                              "bay", "shore", "coast", "coastline", "coastal", "marsh", "delta", "lagoon", "kelp", "bath",
+                              "fresh", "pure", "spotless"),
+    "light/visibility": ("lamp", "lamps", "lantern", "lanterns", "lighthouse", "moon", "moonlight", "star", "stars",
+                         "shine", "shone", "shining", "glow", "glowed", "glowing", "bright", "brightly", "dark", "darkness",
+                         "dim", "shadow", "shadows", "visible", "see", "seen", "saw", "view", "watched", "fireflies",
+                         "flickered", "golden", "silver", "colour", "colours", "colourful", "illuminate", "telescope", "aurora"),
+    "object manipulation/containment": ("lift", "lifted", "hand", "hands", "grasp", "grasped", "contain", "contains",
+                                        "contained", "full", "filled", "empty", "kept", "store", "stored", "storage",
+                                        "basket", "jar", "bottle", "roof", "building", "buildings", "tower", "chapel",
+                                        "church", "cathedral", "inn", "inns", "orchard", "harvest", "fruit", "cook", "bake"),
+    "completion/procedural": ("complete", "completed", "completion", "finish", "finished", "done", "succeed", "succeeded",
+                              "achieve", "achieved", "solve", "solved", "accomplish", "accomplished", "process", "sequence",
+                              "procedural", "begin", "began", "start", "started"),
+}
+_TASK_ASSOCIATION = {category: re.compile(r"\b(" + "|".join(words) + r")\b", re.IGNORECASE)
+                     for category, words in TASK_ASSOCIATION_CATEGORIES.items()}
+SHORT_FRAGMENT_WORDS = 4
 DEFAULT_ALFWORLD_VOCABULARY = frozenset("""
 alarmclock apple applesliced armchair baseballbat basketball bathtub bathtubbasin bed book bowl box bread breadsliced
 butterknife cabinet candle cart cd cellphone cloth coffeemachine coffeetable countertop creditcard cup desk desklamp
@@ -105,6 +138,10 @@ def lint_filler_sentence(sentence: str, vocabulary: frozenset[str] = DEFAULT_ALF
         hits = sorted({m.group(0).lower() for m in pattern.finditer(sentence)})
         if hits:
             problems.append(f"{name}: {', '.join(hits)}")
+    for category, pattern in _TASK_ASSOCIATION.items():
+        hits = sorted({m.group(0).lower() for m in pattern.finditer(sentence)})
+        if hits:
+            problems.append(f"task-associated cue ({category}): {', '.join(hits)}")
     words = {w.lower() for w in re.findall(r"[A-Za-z]+", sentence)}
     objects = sorted(words & vocabulary)
     if objects:
@@ -136,10 +173,13 @@ def audit_corpus(corpus: FillerCorpus, vocabulary: frozenset[str] = DEFAULT_ALFW
     """Structural + lint audit for scientific review.  Never approves: approval is a separate human record."""
     words = [len(re.findall(r"[A-Za-z']+", s)) for s in corpus.sentences]
     problems = corpus.lint(vocabulary)
+    categories = {c: sum(any(f"({c})" in p for p in probs) for probs in problems.values()) for c in TASK_ASSOCIATION_CATEGORIES}
     return {"corpus_id": corpus.corpus_id, "corpus_sha256": corpus.sha256, "sentences": len(corpus.sentences),
             "unique": len(set(corpus.sentences)) == len(corpus.sentences),
             "words_min": min(words), "words_median": sorted(words)[len(words) // 2], "words_max": max(words),
-            "short_sentences_le_4_words": sum(w <= 4 for w in words),
+            "short_sentences_le_4_words": sum(w <= SHORT_FRAGMENT_WORDS for w in words),
+            "sentences_with_task_associated_cues": sum(any("task-associated cue" in p for p in probs) for probs in problems.values()),
+            "task_association_hits_by_category": categories,
             "lint_failures": {str(i): p for i, p in problems.items()}, "lint_passed": not problems,
             "approved": corpus.approved,
             "note": "lint/structure only; passing never approves the corpus and does not show it is behaviourally inert"}

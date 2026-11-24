@@ -233,13 +233,34 @@ class PilotDiagnosticTests(unittest.TestCase):
         self.assertEqual(meaningful["criteria"]["extra_effort"], "meets")
         ceiling = pilot.disruption_report(self.records(12, lambda i: True, lambda i: True, det_actions=5), self.TH, replicates=500)
         self.assertIn("CEILING", ceiling["methodological_findings"])
-        self.assertEqual(ceiling["disruption_class"], "INSUFFICIENT_DISRUPTION")
+        self.assertEqual(ceiling["disruption_class"], "INADEQUATE_MANIPULATION")
         floor = pilot.disruption_report(self.records(12, lambda i: i < 2, lambda i: False), self.TH, replicates=500)
         self.assertIn("FLOOR", floor["methodological_findings"])
         self.assertIn("TASK_ABILITY_FLOOR", floor["methodological_findings"])
+        self.assertEqual(floor["disruption_class"], "UNINFORMATIVE_COMPETENCE_FLOOR")
         uncertain = pilot.disruption_report(self.records(12, lambda i: i < 8, lambda i: i < 6), self.TH, replicates=500)
         self.assertIn(uncertain["criteria"]["completion_drop"], ("indeterminate", "below"))
-        self.assertNotEqual(uncertain["recommendation"], "proceed to five-arm pilot review")
+        self.assertEqual(uncertain["disruption_class"], "INCONCLUSIVE")
+        for report in (meaningful, ceiling, floor, uncertain):
+            self.assertTrue(report["recommendation"].startswith("author review"))           # never an automatic GO
+
+    def test_extra_actions_alone_never_count_as_meaningful_disruption(self):
+        effort = pilot.disruption_report(self.records(12, lambda i: True, lambda i: True, det_actions=9), self.TH, replicates=500)
+        self.assertEqual(effort["criteria"]["extra_effort"], "meets")
+        self.assertEqual(effort["disruption_class"], "EFFORT_ONLY_INCREASE")
+
+    def test_family_stratified_diagnostic_and_floor_rule(self):
+        fam = lambda rows, family: [{**r, "family": family} for r in rows]
+        recs = (fam(self.records(4, lambda i: True, lambda i: i % 2 == 0), "pick_and_place")
+                + fam([{**r, "task_id": "h" + r["task_id"], "unit_key": "h" + r["unit_key"]}
+                       for r in self.records(4, lambda i: False, lambda i: False)], "heat_and_place"))
+        report = pilot.family_stratified_diagnostic(recs, self.TH)
+        heat, pick = report["families"]["heat_and_place"], report["families"]["pick_and_place"]
+        self.assertIn("COMPETENCE_FLOOR", heat["flags"])
+        self.assertNotIn("PERTURBATION_FLOOR", heat["flags"])                          # competence, not the detour
+        self.assertEqual((pick["competence_undisturbed_completion"], pick["detoured_completion"]), (1.0, 0.5))
+        self.assertEqual(report["prospective_floor_family_sensitivity_set"], ["heat_and_place"])
+        self.assertIn("keeps every roster task", report["rule"])
 
     def test_interface_and_infrastructure_findings(self):
         recs = self.records(4, lambda i: True, lambda i: True)
@@ -253,7 +274,7 @@ class PilotDiagnosticTests(unittest.TestCase):
             pilot.disruption_report([rec("t0", "D0", 11, True)], self.TH)          # five-arm records are refused
 
     def test_budget_rule_uses_detoured_baseline_only(self):
-        held = [{"task_id": f"t{i}", "truncation_environment_assumptions_hold": True} for i in range(12)]
+        held = [{"task_id": f"t{i}", "status": "PASS", "truncation_environment_assumptions_hold": True} for i in range(12)]
         at100 = lambda rows: [{**r, "total_action_cap": 100, "recovery_action_allowance": 96} for r in rows]
         early = at100(self.records(12, lambda i: True, lambda i: i < 8, det_actions=10))
         self.assertEqual(pilot.budget_decision(early, candidate_caps=(50, 100), late_success_threshold=0.2, floor=0.1,

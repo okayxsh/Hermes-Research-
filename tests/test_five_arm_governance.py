@@ -15,8 +15,10 @@ from rq1.five_arm.memory import MEMORY_KEY, Skill, audit_corpus, construct_arm_m
 from rq1.five_arm.protocol import SCIENTIFIC_DECISIONS
 
 REPO = Path(__file__).resolve().parents[1]
-CANDIDATE = REPO / "configs" / "five_arm" / "neutral_filler_candidate_v1.json"
-CANDIDATE_SHA256 = "cd9f3e07f848c0f289310a431bf1adb483b4a710cbf50a521d9c04ba60c2ca31"
+CANDIDATE_V1 = REPO / "configs" / "five_arm" / "neutral_filler_candidate_v1.json"
+CANDIDATE_V1_SHA256 = "cd9f3e07f848c0f289310a431bf1adb483b4a710cbf50a521d9c04ba60c2ca31"
+CANDIDATE = REPO / "configs" / "five_arm" / "neutral_filler_candidate_v2.json"
+CANDIDATE_SHA256 = "561fb4e8562c082b1e89c1e2877ad15fa5f760059b766011b23d896a002356b5"
 TOK = SyntheticTokenizer()
 
 
@@ -118,7 +120,16 @@ class CandidateFillerTests(unittest.TestCase):
         self.assertFalse(corpus.approved)
         audit = audit_corpus(corpus)
         self.assertTrue(audit["lint_passed"], audit["lint_failures"])
-        self.assertEqual(audit["sentences"], 139)
+        self.assertEqual((audit["sentences"], audit["short_sentences_le_4_words"]), (135, 0))
+        self.assertEqual(data["supersedes"].split()[0], "rq1-five-arm-neutral-filler-candidate-v1")
+
+    def test_superseded_v1_is_preserved_and_fails_the_phase_2e_screen(self):
+        v1 = load_filler_corpus(CANDIDATE_V1)
+        self.assertEqual(v1.sha256, CANDIDATE_V1_SHA256)                                  # preserved unchanged
+        audit = audit_corpus(v1)
+        self.assertFalse(audit["lint_passed"])
+        self.assertGreaterEqual(audit["sentences_with_task_associated_cues"], 45)
+        self.assertEqual(audit["short_sentences_le_4_words"], 30)
 
     def test_feasibility_with_synthetic_tokenizer(self):
         """Matching is deterministic, within tolerance, never truncates skills, and Rel/Irr share one slot structure.

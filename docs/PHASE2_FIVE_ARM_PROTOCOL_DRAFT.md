@@ -140,11 +140,16 @@ So every skill that can enter a prompt is in the task's frozen natural top 3, an
 
 ## 7. Neutral filler (SD-06/12/23)
 
-**Candidate corpus:** `configs/five_arm/neutral_filler_candidate_v1.json`.
-- 139 hand-written sentences about weather, landscape, nature, music, astronomy and history.
-- 30 of them are short (≤ 4 words), for fine length control.
-- Canonical SHA-256: `cd9f3e07f848c0f289310a431bf1adb483b4a710cbf50a521d9c04ba60c2ca31`.
+**Candidate corpus (Phase 2E):** `configs/five_arm/neutral_filler_candidate_v2.json`.
+- 135 hand-written encyclopaedic sentences, restricted to language and writing, music, mathematics, literature, philosophy and calendar/cultural history.
+- Every sentence is 5–11 words (median 8). There are no two-to-four-word padding fragments.
+- Canonical SHA-256: `561fb4e8562c082b1e89c1e2877ad15fa5f760059b766011b23d896a002356b5`.
 - **Status: PROPOSED_CANDIDATE_NOT_APPROVED** (empty review record).
+- The real-tokenizer matching audit must be repeated on the workstation.
+
+**Superseded candidate v1** (`neutral_filler_candidate_v1.json`, `cd9f3e07…`) is preserved unchanged for provenance. The pre-pilot review found about 45 of its sentences carrying task-associated imagery: lanterns and moonlight, snow and glaciers, rain and tides, journeys and maps. It also contained 30 short padding fragments. Under the Phase 2E task-association screen, 90 of its 139 sentences are flagged.
+
+**Lint defect corrected (Phase 2E).** The Phase 2B semantic pattern contained literal backspace characters instead of the regex word boundary `\b`, so it could never match ordinary text. It is now fixed and covered by regression tests. The defect did not change v1's earlier result: none of that screen's words occur in v1.
 
 **Lint** (`lint_filler_sentence`) screens for:
 - action verbs;
@@ -155,9 +160,23 @@ So every skill that can enter a prompt is in the task's frozen natural top 3, an
 - task-family concepts (heating, cooling, cleaning, light, opening);
 - household and object words;
 - advice and evaluation language;
-- leakage label terms.
+- leakage label terms;
+- **(Phase 2E) task-associated cues** in six named categories (`TASK_ASSOCIATION_CATEGORIES`):
+  - navigation/spatial;
+  - temperature;
+  - water, liquids and cleaning;
+  - light and visibility;
+  - object manipulation and containment;
+  - completion and procedural reasoning.
 
-All 139 sentences pass. **Passing the lint does not show the prose is behaviourally inert**, and it never approves the corpus.
+The audit also counts short padding fragments of four words or fewer. All 135 v2 sentences pass, with 0 fragments. **Passing the lint does not show the prose is behaviourally inert**, and it never approves the corpus.
+
+**Residual confounds of v2** (documented, not removed):
+- *Register:* encyclopaedic statements of fact differ from imperative procedural text. Any memory text may also be read as "memory present but unhelpful".
+- *Coherence:* sentences are assembled by a hash order, so a neutral slot reads as a list of unrelated facts rather than a paragraph. That is recognisably artificial.
+- *Mild residual associations the screen does not cover:* place names (Greece, India, Europe), "spread", "through", "includes", "board"/"card" games, "the Rosetta Stone" (a physical object), "parts"/"divided", and the sequential flavour of "began/evolved" history sentences.
+- *Topic familiarity:* language and music facts may be closer to the model's general knowledge than skill text is, which could change attention patterns.
+- *Lexical screen limits:* the screen is lexical. An embedding-similarity screen against the 18 skills and the roster goals (university CPU) and an independent human review are still required before approval.
 
 **Matching** (synthetic-tokenizer demonstration in `test_five_arm_governance`):
 - whole sentences are added deterministically, approaching the D18 anchor from below;
@@ -230,26 +249,41 @@ Pilot-diagnostic records use a separate schema (`rq1-five-arm-diagnostic-v1`). T
 
 **Proposed thresholds** (`pilot.PROPOSED_DIAGNOSTIC_THRESHOLDS`, SD-16; not approved; each with a stated reason):
 
-| Criterion | Proposed rule | Why |
-|---|---|---|
-| Meaningful disruption (any one) | completion drop ≥ 0.15 (interval lower bound); median extra actions when both succeed ≥ 2; extra rejected selections ≥ 0.5 per episode (interval lower bound) | 0.15 ≈ 1 task-level SE with 12 tasks; the oracle needs exactly +1 action, so ≥ 2 means re-orientation |
-| Weak disruption | drop ≥ 0.05 but no criterion met | inert below 5 points |
-| Insufficient disruption | drop < 0.05 and no criterion met | — |
-| Indeterminate | any criterion's interval straddles its threshold | 12 tasks cannot settle it; design review, never automatic GO |
-| Ceiling | detoured completion ≥ 0.90 | ≤ 10 points of headroom |
-| Floor | detoured completion ≤ 0.10 | memory effects floor-limited |
-| Task-ability floor | undisturbed completion ≤ 0.20 | disruption not measurable |
-| Interface problem | > 1.0 rejected selections per episode, or > 10% selection exhaustion | action interface, not disruption |
-| Infrastructure unstable | > 5% units missing after retries | complete-case validity |
+**Prespecified classes (Phase 2E; fixed before any diagnostic outcome exists).** They are evaluated in this order. Every class leads to **author review**, never an automatic GO.
 
-**Recommendation logic:**
-- MEANINGFUL with no findings → proceed to five-arm pilot review.
-- WEAK or INSUFFICIENT → narrow the claim to "recovery after a controlled navigation perturbation", or strengthen the manipulation.
-- Anything else → design review.
+| Class | Rule | Why |
+|---|---|---|
+| MEANINGFUL_DISRUPTION | completion-drop interval lower bound ≥ 0.15; **or** extra rejected selections (interval lower bound ≥ 0.5 per episode) together with a completion drop ≥ 0.05 | 0.15 ≈ 1 task-level SE with 12 tasks. Completion evidence is required |
+| UNINFORMATIVE_COMPETENCE_FLOOR | undisturbed completion ≤ 0.20 | the model rarely completes tasks even without the detour, so the manipulation cannot be judged |
+| INADEQUATE_MANIPULATION | completion-drop interval **upper** bound < 0.10 **and** median extra actions ≤ 1 (a mechanical return) **and** extra-invalid upper bound < 0.5 | positive evidence of no disruption, as opposed to wide intervals |
+| EFFORT_ONLY_INCREASE | median extra actions ≥ 2 while the completion drop is "below" and invalid actions do not meet | **extra actions alone never count as meaningful disruption** |
+| INCONCLUSIVE | anything else | intervals too wide to decide either way |
+
+**Findings reported alongside the class:**
+- ceiling (detoured ≥ 0.90);
+- floor (detoured ≤ 0.10);
+- interface problem (> 1.0 rejected selections per episode, or > 10% selection exhaustion);
+- infrastructure unstable (> 5% units missing).
+
+**Family-stratified analysis** (`pilot.family_stratified_diagnostic`; descriptive, 2–3 tasks per family). For each family it reports:
+- **competence:** undisturbed completion;
+- **perturbation difficulty:** completion drop;
+- **ceiling:** both conditions ≥ 0.90;
+- **perturbation floor:** detoured ≤ 0.10 while undisturbed is above the competence floor;
+- **effort beyond a mechanical return:** median extra > 1;
+- **interface problems.**
+
+**Floor-family rule (prospective):**
+- Families with undisturbed completion ≤ 0.20 in the **pilot (valid_seen)** form the *floor-family sensitivity set*.
+- The confirmatory **primary analysis keeps every roster task**. A prespecified sensitivity analysis excludes those families.
+- No confirmatory task is ever excluded on its own D18-vs-D0 outcome.
+
+**Interpreting a small pilot:**
+- INADEQUATE_MANIPULATION requires the upper interval bounds to fall below the thresholds. A pilot whose intervals simply span the thresholds is INCONCLUSIVE, which is not evidence that the manipulation is inadequate.
+- With 12 tasks the completion-drop interval is about ±0.25 wide, so INCONCLUSIVE is the expected class unless effects are large.
+- Seed variability (`pilot.seed_variability`) is measured in the same diagnostic.
 
 A one-action detour is never described as a validated long-horizon failure.
-
-**Sensitivity:** with 12 tasks the completion-drop interval is about ±0.25 wide, so INDETERMINATE is the expected result unless effects are large. Seed variability (`pilot.seed_variability`) is measured in the same diagnostic. The proposal is 2–3 seeds in the diagnostic only.
 
 ## 11. Action budget and cap equivalence (SD-07/17)
 
@@ -272,6 +306,14 @@ A one-action detour is never described as a validated long-horizon failure.
 3. per-call provider behaviour depends only on the prompt and options (stateless calls; same nondeterminism in both).
 
 If (2) fails for any task, `budget_decision` refuses truncation and separate cap-specific diagnostic runs are required.
+
+**Cap-invariance classification (Phase 2E fix).** `cap_invariance_replay` now reports `status` ∈ {PASS, FAIL, UNTESTED}.
+- **PASS** requires that both caps reached the post-detour transition, reproduced the frozen post-detour digest, compared at least one post-detour state before the smaller cap, kept identical states, and terminated only at the cap.
+- **UNTESTED** means a comparison never reached a comparable post-detour transition, for example because prefix + detour do not fit below the smaller cap. Previously such a comparison was vacuously counted as holding; that was the university-reported 12-versus-11 discrepancy.
+- Only PASS supports truncation. The CLI summary counts PASS, FAIL and UNTESTED separately, and `all_hold` requires every task to PASS.
+- This is a deterministic *environment* check only. Model-trajectory equivalence across caps is **UNVERIFIED** and is stated as an assumption (3).
+
+**Infeasible pilot tasks.** A task whose oracle route does not fit the candidate caps (the Box-to-CoffeeTable pilot task: 139 actions) is replaced by the outcome-blind procedure in `PHASE2_PILOT_TASK_REPLACEMENT_PROCEDURE.md`.
 
 **Rule (SD-17).** It uses **only DETOURED no-memory diagnostic records** at cap 100, so it uses baseline feasibility and ceiling/floor behaviour, never a treatment difference.
 - Choose 50 unless:
