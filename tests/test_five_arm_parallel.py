@@ -46,14 +46,20 @@ class Processes:
         return "stopped" if self.key(identity) in self.stopped else "running"
 
     def stop(self, identity, *roles):
-        for role in roles or ("worker", "provider"):
-            self.stopped.add(self.key(identity[role]))
+        for role in roles or ("worker", "provider", "provider_descendants"):
+            for item in identity[role] if role == "provider_descendants" else [identity[role]]:
+                self.stopped.add(self.key(item))
 
 
-def ident(lane, gen=0):
+def runner_id(lane, gen=0):
+    return {"host": "lab", "pid": 7000 + 10 * int(lane[1:]) + gen, "start_time": f"r{gen}"}
+
+
+def ident(lane, gen=0, runners=True):
     i = int(lane[1:])
     return {"worker": {"host": "lab", "pid": 1000 + 10 * i + gen, "start_time": f"w{gen}"},
-            "provider": {"host": "lab", "pid": 5000 + 10 * i + gen, "start_time": f"p{gen}"}}
+            "provider": {"host": "lab", "pid": 5000 + 10 * i + gen, "start_time": f"p{gen}"},
+            "provider_descendants": [runner_id(lane, gen)] if runners else []}
 
 
 class _Base(unittest.TestCase):
@@ -72,6 +78,7 @@ class _Base(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.clock = Clock()
         self.procs = Processes()
+        self.gpu_rows = {}                    # lane GPU UUID -> compute-app rows (missing = idle GPU; None = unobservable)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -93,7 +100,7 @@ class _Base(unittest.TestCase):
                                     kind_validator=validate_record, interruption_record=factory.interruption_record,
                                     max_infrastructure_retries=2, expected_runtime_identity_sha256=RUNTIME,
                                     expected_model_digest=DIGEST, synthetic=True, lease_seconds=lease, clock=self.clock,
-                                    process_probe=self.procs).start()
+                                    process_probe=self.procs, gpu_probe=lambda uuid: self.gpu_rows.get(uuid, [])).start()
 
     def worker(self, client, lane, executor=None, snapshot=None, gen=0):
         gpu = next(l["gpu_uuid"] for l in LANES if l["lane_id"] == lane)
@@ -309,7 +316,7 @@ class FencingTests(_Base):
         self.procs.stop(ident("L0"), "worker")
         with self.assertRaises(parallel.LaneSuspended):
             coord.claim("L0", "L0-new", ident("L0", 1))                        # worker gone, provider still running
-        self.procs.stop(ident("L0"), "provider")
+        self.procs.stop(ident("L0"), "provider", "provider_descendants")
         with self.assertRaises(parallel.ClaimRejected):
             coord.claim("L0", "L0-old", ident("L0"))                           # fenced processes may never claim again
         replacement = coord.claim("L0", "L0-new", ident("L0", 1))
@@ -330,7 +337,7 @@ class FencingTests(_Base):
         with self.assertRaises(parallel.LaneSuspended):
             restarted.claim("L2", "L2-w", ident("L2", 1))
         self.assertIsNotNone(restarted.claim("L0", "L0-w", ident("L0")))       # other lanes are unaffected
-        self.procs.stop(ident("L2"), "provider")
+        self.procs.stop(ident("L2"), "provider", "provider_descendants")
         again = restarted.claim("L2", "L2-w", ident("L2", 1))
         self.assertEqual((again["unit"]["unit_key"], again["attempt"]), (open_claim["unit"]["unit_key"], 2))
         restarted.stop()
@@ -392,6 +399,72 @@ class FencingTests(_Base):
         with self.assertRaises(parallel.LaneHalted):
             coord.claim("L0", "L0-new", ident("L0", 2))
         self.assertIsNone(coord.halted())
+        coord.stop()
+
+
+class RunnerFencingTests(_Base):
+    """Phase 3E: release of a fenced lane requires the provider's runner DESCENDANTS to be stopped and no outstanding
+    provider work on the lane GPU -- termination of the parent server PID alone is not enough."""
+
+    def test_orphaned_runner_descendant_blocks_release(self):
+        coord = self.coordinator(lease=100.0)
+        coord.claim("L0", "L0-old", ident("L0"))
+        self.clock.now += 101
+        self.procs.stop(ident("L0"), "worker", "provider")                      # parent killed; runner orphaned, alive
+        with self.assertRaises(parallel.LaneSuspended):
+            coord.claim("L0", "L0-new", ident("L0", 1))
+        self.procs.stop(ident("L0"), "provider_descendants")
+        self.assertIsNotNone(coord.claim("L0", "L0-new", ident("L0", 1)))
+        coord.stop()
+
+    def test_runner_spawned_after_claim_is_recorded_by_heartbeat_and_survives_restart(self):
+        coord = self.coordinator()
+        claim = coord.claim("L1", "L1-w", ident("L1", runners=False))         # model not loaded yet: no runner
+        coord.heartbeat(claim["token"], [runner_id("L1")])                         # runner appears during the episode
+        coord.heartbeat(claim["token"], [runner_id("L1")])                         # recorded once
+        coord.stop()
+        restarted = self.coordinator()                                          # fenced; runner replayed from journal
+        self.assertEqual(restarted.claims[claim["token"]]["identity"]["provider_descendants"], [runner_id("L1")])
+        self.procs.stop(ident("L1"), "worker", "provider")
+        with self.assertRaises(parallel.LaneSuspended):
+            restarted.claim("L1", "L1-w", ident("L1", 1))
+        self.procs.stopped.add(Processes.key(runner_id("L1")))
+        self.assertIsNotNone(restarted.claim("L1", "L1-w", ident("L1", 1)))
+        restarted.stop()
+
+    def test_outstanding_work_on_the_lane_gpu_blocks_release_and_unobservable_gpu_halts(self):
+        coord = self.coordinator(lease=100.0)
+        coord.claim("L2", "L2-old", ident("L2"))
+        self.clock.now += 101
+        self.procs.stop(ident("L2"))                                            # every recorded process is gone...
+        gpu = LANES[2]["gpu_uuid"]
+        self.gpu_rows[gpu] = [{"pid": 7777, "gpu_uuid": gpu, "used_memory_mib": 9000}]   # ...but unrecorded work remains
+        with self.assertRaises(parallel.LaneSuspended):
+            coord.claim("L2", "L2-new", ident("L2", 1))
+        new = ident("L2", 1)
+        self.gpu_rows[gpu] = [{"pid": new["provider_descendants"][0]["pid"], "gpu_uuid": gpu, "used_memory_mib": 9000}]
+        self.assertIsNotNone(coord.claim("L2", "L2-new", new))                 # only the new claimant's runner is on it
+        coord.claim("L3", "L3-old", ident("L3"))
+        self.clock.now += 101
+        self.procs.stop(ident("L3"))
+        self.gpu_rows[LANES[3]["gpu_uuid"]] = None                              # nvidia-smi unavailable
+        with self.assertRaises(parallel.LaneHalted):
+            coord.claim("L3", "L3-new", ident("L3", 1))
+        self.assertIn("cannot be established", coord.lane_halted("L3")["reason"])
+        coord.stop()
+
+    def test_identity_must_list_descendants_and_worker_reports_lazy_runner(self):
+        coord = self.coordinator()
+        bad = ident("L0")
+        del bad["provider_descendants"]
+        with self.assertRaises(parallel.ClaimRejected):
+            coord.claim("L0", "L0-w", bad)
+        calls = iter([ident("L0", runners=False)])
+        w = self.worker(coord, "L0")
+        w.identity = lambda: next(calls, ident("L0"))                           # runner exists only after the claim
+        self.assertTrue(w.run_once())
+        events = [json.loads(x) for x in (self.root / "run" / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertIn([runner_id("L0")], [e.get("descendants") for e in events if e["event"] == "heartbeat"])
         coord.stop()
 
 

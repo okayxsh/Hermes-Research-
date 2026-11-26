@@ -102,18 +102,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if os.environ.get("CUDA_VISIBLE_DEVICES") != lane["gpu_uuid"]:
             raise readiness.ExecutionBlocked("CUDA_VISIBLE_DEVICES must equal the lane's GPU UUID (one GPU per lane)")
         from rq1.university_gpu.ollama import _request
-        import subprocess
         provider_pid = int(os.environ.get("RQ1_LANE_OLLAMA_PID", "0"))
         if provider_pid <= 0:
             raise readiness.ExecutionBlocked("RQ1_LANE_OLLAMA_PID must name the pid of this lane's Ollama server (fencing "
                                              "and process-bound GPU placement are bound to it)")
         identity = lambda: {"worker": parallel.process_identity(os.getpid()),
-                            "provider": parallel.process_identity(provider_pid)}
-
-        def compute_apps():
-            out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory",
-                                  "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30, check=True)
-            return parallel.parse_compute_apps(out.stdout)
+                            "provider": parallel.process_identity(provider_pid),
+                            "provider_descendants": parallel.provider_descendant_identities(provider_pid)}
+        compute_apps = parallel.nvidia_compute_apps
         built = runner.build_university_executor(config, readiness_state=_load(args.state), observed_runtime=_load(args.observed_runtime),
                                                  approved_runtime=approved, endpoint=lane["endpoint"],
                                                  execution_provenance={"lane_id": args.lane},

@@ -37,6 +37,8 @@
 | Fence | Lease expiry or a restart revocation marks the claim `fenced` and writes the `MISSING_INFRASTRUCTURE` interruption record. **No unit of that lane is claimable** while any of its claims is fenced (`LaneSuspended`) |
 | Verified termination | On each claim attempt for the lane, the coordinator probes both identities. Only when the worker **and** the server are `stopped` is the claim marked `terminated_verified` (journalled with evidence), and the lane released |
 | Why the server too | The only demonstrable way to end an outstanding provider request is that the serving process (and its runner children) has exited. Recovering a lane therefore means stopping the worker and restarting that lane's Ollama server |
+| Runner descendants (Phase 3E) | Ollama runs the model in runner child processes, which can outlive a killed parent. The claim records the server's descendant identities (`provider_descendants`). Heartbeats add any runner spawned later, and the worker sends one heartbeat right after its pre-episode snapshot. Every recorded descendant must also be `stopped` |
+| Outstanding provider work (Phase 3E) | Before release, `nvidia-smi` compute apps on the lane's GPU UUID may contain only processes of the **new** claimant's provider tree. Any other process (for example, an unrecorded orphaned runner) keeps the lane suspended. If the GPU cannot be queried, the state is `unknown` and the lane is halted |
 | Unknown termination | If either state is `unknown` (another host, no `/proc`, unreadable or missing identity), the **lane is halted** (`LANE_HALTED_<lane>.json`). The other lanes continue. Clearing needs `clear_lane_halt(reviewer, note)` after a human has verified, on the host, that both processes are gone. This is recorded, and is not a scientific approval |
 | Late result after verified termination | Contradicts the evidence. The result is quarantined, the lane is halted, and the in-flight replacement's result on that lane is quarantined too (overlap cannot be excluded) |
 | Reuse of fenced processes | A claim from the same worker or server identity as a fenced or verified-stopped claim is rejected |
@@ -120,5 +122,5 @@ Each Ollama server must be started on its own GPU and port (`OLLAMA_HOST`, `CUDA
 The tests use scripted drivers and a synthetic process table only. They exercise:
 - the coordinator, claims, restart, leases and the transport;
 - the halts;
-- fencing (expired worker still alive; outstanding provider request at restart; no reassignment before verified termination; late result after termination and reassignment; unknown termination halts the lane);
+- fencing (expired worker still alive; outstanding provider request at restart; no reassignment before verified termination; late result after termination and reassignment; unknown termination halts the lane; orphaned runner descendant; runner recorded by heartbeat across restart; unrecorded work on the lane GPU; unobservable GPU halts the lane);
 - placement (compute-app parsing, process tree, `/api/ps` field handling, unverified placement halts).

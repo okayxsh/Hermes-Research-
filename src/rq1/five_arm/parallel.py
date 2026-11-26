@@ -17,7 +17,10 @@ Architecture:
   verified, from process-bound evidence recorded at claim time (host, pid, process start time of the worker AND of the
   lane's provider server), that both processes have stopped.  The provider server must stop too, because a dropped
   client does not demonstrably cancel server-side inference.  If termination cannot be established (other host, no
-  /proc, unreadable state) the LANE is halted.  A late result arriving after verified termination contradicts the
+  /proc, unreadable state) the LANE is halted.  (Phase 3E) The provider's DESCENDANTS (Ollama runner processes, which
+  hold the model and can outlive a killed parent) are recorded at claim time and on every heartbeat and must also be
+  verified stopped; and before release the lane GPU must carry no compute process outside the new claimant's provider
+  tree (outstanding provider work).  If the GPU cannot be queried the lane is halted.  A late result arriving after verified termination contradicts the
   evidence and halts the lane.  Each lane has at most one active claim at a time, and a new claim may not come from the
   fenced worker or provider process.
 * Placement (Phase 3D): "on GPU" requires BOTH Ollama ``/api/ps`` full offload (``size_vram >= size``) AND process-bound
@@ -134,6 +137,26 @@ def process_tree(pid: int, children_of: Callable[[int], Sequence[int]] = linux_c
     return seen
 
 
+def nvidia_compute_apps() -> list[dict[str, Any]]:
+    import subprocess
+    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory", "--format=csv,noheader,nounits"],
+                         capture_output=True, text=True, timeout=30, check=True)
+    return parse_compute_apps(out.stdout)
+
+
+def lane_gpu_processes(gpu_uuid: str) -> list[dict[str, Any]] | None:
+    """Compute processes on one GPU; None when the GPU cannot be queried (termination then cannot be established)."""
+    try:
+        return [r for r in nvidia_compute_apps() if r["gpu_uuid"] == gpu_uuid]
+    except Exception:  # noqa: BLE001 - any failure to observe the GPU is 'unknown', never 'idle'
+        return None
+
+
+def provider_descendant_identities(provider_pid: int,
+                                   children_of: Callable[[int], Sequence[int]] = linux_children) -> list[dict[str, Any]]:
+    return [process_identity(pid) for pid in sorted(process_tree(provider_pid, children_of) - {int(provider_pid)})]
+
+
 def gpu_placement(rows: Sequence[Mapping[str, Any]], lane_gpu_uuid: str, provider_pids: set[int]) -> str:
     """Process-bound CUDA placement of the lane's provider server tree."""
     ours = [r for r in rows if r["pid"] in provider_pids]
@@ -209,7 +232,8 @@ class Coordinator:
                  interruption_record: Callable[[Mapping[str, Any], int, str], dict[str, Any]], max_infrastructure_retries: int,
                  expected_runtime_identity_sha256: str, expected_model_digest: str, synthetic: bool,
                  lease_seconds: float = 900.0, clock: Callable[[], float] = time.time,
-                 process_probe: Callable[[Mapping[str, Any]], str] = linux_process_state) -> None:
+                 process_probe: Callable[[Mapping[str, Any]], str] = linux_process_state,
+                 gpu_probe: Callable[[str], Sequence[Mapping[str, Any]] | None] = lane_gpu_processes) -> None:
         problems = validate_assignment(assignment, manifest)
         if problems:
             raise ValueError("; ".join(problems))
@@ -219,7 +243,7 @@ class Coordinator:
         self.validator, self.interruption_record = kind_validator, interruption_record
         self.max_retries, self.lease, self.clock, self.synthetic = int(max_infrastructure_retries), float(lease_seconds), clock, synthetic
         self.expected_runtime, self.expected_digest = expected_runtime_identity_sha256, expected_model_digest
-        self.probe = process_probe
+        self.probe, self.gpu_probe = process_probe, gpu_probe
         self.units = {u["unit_key"]: u for u in manifest["units"]}
         self.lanes = {str(l["lane_id"]): dict(l) for l in assignment["lanes"]}
         self.lane_units: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -269,6 +293,7 @@ class Coordinator:
                                            "last_seen": e["at"]}
             elif e["event"] == "heartbeat" and e["token"] in self.claims:
                 self.claims[e["token"]]["last_seen"] = e["at"]
+                self._merge_descendants(self.claims[e["token"]], e.get("descendants") or [])
             elif e["event"] in ("accepted", "revoked_on_restart", "lease_expired", "quarantined", "violation",
                                 "termination_verified"):
                 if e.get("token") in self.claims:
@@ -382,21 +407,46 @@ class Coordinator:
                 expired += 1
         return expired
 
-    def review_lane(self, lane_id: str) -> dict[str, Any]:
-        """Verify termination of every fenced claim on the lane from process-bound evidence."""
-        states = {}
-        for token, claim in self.claims.items():
-            if claim["lane_id"] != lane_id or claim["status"] != "fenced":
-                continue
-            worker = self.probe(claim["identity"].get("worker") or {})
-            provider = self.probe(claim["identity"].get("provider") or {})
-            states[token] = {"worker": worker, "provider": provider}
-            if worker == "stopped" and provider == "stopped":
+    @staticmethod
+    def _merge_descendants(claim: dict[str, Any], descendants: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        known = claim["identity"].setdefault("provider_descendants", [])
+        keys = {(d.get("host"), d.get("pid"), d.get("start_time")) for d in known}
+        added = [dict(d) for d in descendants if (d.get("host"), d.get("pid"), d.get("start_time")) not in keys]
+        known.extend(added)
+        return added
+
+    def review_lane(self, lane_id: str, claimant: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Verify termination of every fenced claim on the lane: the worker, the provider server AND every recorded
+        provider descendant (runner) must be stopped, and the lane GPU must show no compute process outside the
+        claimant's provider tree (outstanding provider work).  Anything unobservable halts the lane."""
+        fenced = [(t, c) for t, c in self.claims.items() if c["lane_id"] == lane_id and c["status"] == "fenced"]
+        if not fenced:
+            return {}
+        states: dict[str, Any] = {}
+        gpu = next(str(l["gpu_uuid"]) for l in self.assignment["lanes"] if str(l["lane_id"]) == lane_id)
+        rows = self.gpu_probe(gpu)
+        allowed = set()
+        if claimant:
+            allowed = {int(claimant["provider"]["pid"])} | {int(d["pid"]) for d in claimant.get("provider_descendants") or []}
+        if rows is None:
+            gpu_state = "unknown"
+        else:
+            foreign = sorted(int(r["pid"]) for r in rows if int(r["pid"]) not in allowed)
+            gpu_state = "running" if foreign else "stopped"
+        for token, claim in fenced:
+            identity = claim["identity"]
+            worker = self.probe(identity.get("worker") or {})
+            provider = self.probe(identity.get("provider") or {})
+            descendants = [self.probe(d) for d in identity.get("provider_descendants") or []]
+            all_states = [worker, provider, *descendants, gpu_state]
+            states[token] = {"worker": worker, "provider": provider, "provider_descendants": descendants,
+                             "lane_gpu_outstanding_work": gpu_state}
+            if all(x == "stopped" for x in all_states):
                 claim["status"] = "terminated_verified"
-                self._journal("termination_verified", token=token, evidence="process_probe", worker=worker, provider=provider)
-            elif "unknown" in (worker, provider):
-                self._halt_lane(lane_id, f"termination of the fenced worker/provider cannot be established "
-                                         f"(worker={worker}, provider={provider})")
+                self._journal("termination_verified", token=token, evidence="process_probe+lane_gpu", **states[token])
+            elif "unknown" in all_states:
+                self._halt_lane(lane_id, f"termination of the fenced worker/provider/runner work cannot be established "
+                                         f"({states[token]})")
         return states
 
     @staticmethod
@@ -408,6 +458,10 @@ class Coordinator:
             item = identity.get(role)
             if not isinstance(item, Mapping) or any(item.get(k) in (None, "") for k in IDENTITY_KEYS):
                 problems.append(f"claim identity lacks a complete {role} process identity {IDENTITY_KEYS}")
+        descendants = identity.get("provider_descendants")
+        if not isinstance(descendants, list) or any(
+                not isinstance(d, Mapping) or any(d.get(k) in (None, "") for k in IDENTITY_KEYS) for d in descendants):
+            problems.append("claim identity needs provider_descendants: a list (possibly empty) of complete identities")
         return problems
 
     def claim(self, lane_id: str, worker_id: str, identity: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -421,7 +475,7 @@ class Coordinator:
         if self.lane_halted(lane_id):
             raise LaneHalted(self.lane_halted(lane_id)["reason"])
         self.expire_leases()
-        self.review_lane(lane_id)
+        self.review_lane(lane_id, claimant=identity)
         if self.lane_halted(lane_id):
             raise LaneHalted(self.lane_halted(lane_id)["reason"])
         lane_claims = [c for c in self.claims.values() if c["lane_id"] == lane_id]
@@ -443,19 +497,23 @@ class Coordinator:
                 continue
             token = secrets.token_hex(16)
             self.claims[token] = {"unit_key": unit["unit_key"], "attempt": attempt, "lane_id": lane_id, "worker_id": worker_id,
-                                  "identity": dict(identity), "status": "active", "last_seen": self.clock()}
+                                  "identity": json.loads(json.dumps(dict(identity))), "status": "active",
+                                  "last_seen": self.clock()}
             self._journal("claimed", token=token, unit_key=unit["unit_key"], attempt=attempt, lane_id=lane_id, worker_id=worker_id,
                           identity=dict(identity))
             return {"token": token, "unit": {**unit, "run_id": self.manifest["run_id"]}, "attempt": attempt,
                     "lane": self.lanes[lane_id]}
         return None
 
-    def heartbeat(self, token: str) -> None:
+    def heartbeat(self, token: str, descendants: Sequence[Mapping[str, Any]] | None = None) -> None:
+        """Extends the lease and records provider descendants (runners) spawned since the claim."""
         claim = self.claims.get(token)
         if claim is None or claim["status"] != "active":
             raise ClaimRejected("heartbeat for an unknown or closed claim")
         claim["last_seen"] = self.clock()
-        self._journal("heartbeat", token=token)
+        added = self._merge_descendants(claim, [d for d in descendants or [] if isinstance(d, Mapping)
+                                                and all(d.get(k) not in (None, "") for k in IDENTITY_KEYS)])
+        self._journal("heartbeat", token=token, descendants=added)
 
     def report_violation(self, token: str, detail: str) -> None:
         if token in self.claims:
@@ -590,10 +648,13 @@ class LaneWorker:
         self.client, self.lane_id, self.worker_id, self.executor = client, lane_id, worker_id, executor
         self.root, self.snapshot, self.identity, self.heartbeat_seconds = Path(root), snapshot, identity, heartbeat_seconds
 
+    def _descendants(self) -> list[dict[str, Any]]:
+        return [dict(d) for d in self.identity().get("provider_descendants") or []]
+
     def _heartbeats(self, token: str, stop: threading.Event) -> None:
         while not stop.wait(self.heartbeat_seconds):
             try:
-                self.client.heartbeat(token)
+                self.client.heartbeat(token, self._descendants())
             except (ClaimRejected, CoordinatorHalted, TimeoutError):
                 return
 
@@ -604,6 +665,7 @@ class LaneWorker:
         token, unit, attempt, lane = claim["token"], claim["unit"], int(claim["attempt"]), claim["lane"]
         attempt_dir = self.root / "lanes" / self.lane_id / "attempts" / str(unit["unit_key"])[:24] / f"a{attempt}-{token[:8]}"
         before = self.snapshot()
+        self.client.heartbeat(token, self._descendants())      # record the runner serving this attempt before execution
         stop = threading.Event()
         beat = threading.Thread(target=self._heartbeats, args=(token, stop), daemon=True)
         beat.start()
@@ -689,8 +751,8 @@ class FileCoordinatorClient:
     def claim(self, lane_id: str, worker_id: str, identity: Mapping[str, Any]):
         return self._call("claim", lane_id, worker_id, dict(identity))
 
-    def heartbeat(self, token: str):
-        return self._call("heartbeat", token)
+    def heartbeat(self, token: str, descendants: Sequence[Mapping[str, Any]] | None = None):
+        return self._call("heartbeat", token, [dict(d) for d in descendants or []])
 
     def submit(self, token: str, record: Mapping[str, Any]):
         return self._call("submit", token, record)

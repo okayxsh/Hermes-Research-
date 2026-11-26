@@ -61,7 +61,7 @@ Only the choice of the primary *test* is open.
 - It is valid under the dependence that the primary interval already assumes (template-cluster CI). This makes the test and the interval coherent and removes the need for the A/B disagreement rule.
 - It keeps the task-weighted estimand and estimate.
 - The power loss is small relative to the type-I protection.
-- Exact McNemar is still computed and reported as a secondary, task-level analysis, and the template-mean sign flip stays as a sensitivity analysis.
+- Exact McNemar (task level) is still computed and becomes a **sensitivity analysis**, alongside the template-mean sign flip. The exchangeability assumptions and cross-template (scene and family) dependence limitations above must be stated with the primary result. This recommendation is not an approval: it takes effect only when the author records decision item 9.
 
 **Implementation.**
 - The test is selected by `design["primary_test"]` in `analysis.analyze`: `"task_sign_flip"` (default, status quo) or `"template_sign_flip_task_weighted"`.
