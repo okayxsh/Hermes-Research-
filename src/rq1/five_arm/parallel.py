@@ -12,6 +12,18 @@ Architecture:
   open by a previous coordinator process, recording an ``infrastructure_interruption`` attempt; results later submitted
   with revoked or expired tokens are rejected as LATE.  A second result for a completed claim is rejected as DUPLICATE.
 * Leases: a claim without a heartbeat for ``lease_seconds`` expires (worker loss) and is closed the same way.
+* FENCING (Phase 3D): cancelling a claim does not stop the worker process or its in-flight provider request.  An expired
+  or revoked claim therefore FENCES its whole lane: no unit of that lane is reassigned until the coordinator has
+  verified, from process-bound evidence recorded at claim time (host, pid, process start time of the worker AND of the
+  lane's provider server), that both processes have stopped.  The provider server must stop too, because a dropped
+  client does not demonstrably cancel server-side inference.  If termination cannot be established (other host, no
+  /proc, unreadable state) the LANE is halted.  A late result arriving after verified termination contradicts the
+  evidence and halts the lane.  Each lane has at most one active claim at a time, and a new claim may not come from the
+  fenced worker or provider process.
+* Placement (Phase 3D): "on GPU" requires BOTH Ollama ``/api/ps`` full offload (``size_vram >= size``) AND process-bound
+  CUDA evidence: ``nvidia-smi --query-compute-apps`` must list a process of the lane's provider server tree on the
+  lane's GPU UUID, none of that tree on another GPU, and no foreign process on the lane's GPU.  ``CUDA_VISIBLE_DEVICES``
+  alone is never accepted as proof.
 * Retry policy unchanged: only MISSING_INFRASTRUCTURE attempts are retried, up to ``max_infrastructure_retries``.
 * Mandatory halts (persistent HALTED.json; no further claims until a human clears it with a recorded reason): CPU
   fallback or partial GPU offload, runtime drift (model digest / runtime identity), provider token discrepancy,
@@ -41,8 +53,8 @@ from rq1.five_arm.executor import ProtocolViolation
 
 ASSIGNMENT_SCHEMA = "rq1-seven-condition-lane-assignment-v1"
 PROVENANCE_REQUIRED = ("mode", "lane_id", "worker_id", "endpoint", "gpu_uuid", "cuda_visible_devices", "provider_version",
-                       "model_digest", "processor_before", "processor_after", "host", "pid", "hermes_workspace",
-                       "claim_token_sha256")
+                       "model_digest", "processor_before", "processor_after", "placement_before", "placement_after",
+                       "host", "pid", "hermes_workspace", "claim_token_sha256")
 TOKEN_HALT_PREFIXES = ("provider_token_discrepancy", "provider_context_limit_reached", "provider_prompt_eval_count_missing")
 
 
@@ -52,6 +64,86 @@ class CoordinatorHalted(RuntimeError):
 
 class ClaimRejected(RuntimeError):
     pass
+
+
+class LaneSuspended(ClaimRejected):
+    """The lane is fenced: a previous worker or its provider server has not yet been shown to have stopped."""
+
+
+class LaneHalted(ClaimRejected):
+    """The lane is halted (termination could not be established, or overlap evidence appeared)."""
+
+
+IDENTITY_KEYS = ("host", "pid", "start_time")
+
+
+def _proc_start_time(pid: int) -> str | None:
+    """Field 22 of /proc/<pid>/stat (start time in clock ticks); None if the process does not exist."""
+    stat = Path(f"/proc/{int(pid)}/stat")
+    try:
+        text = stat.read_text(encoding="utf-8", errors="replace")
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    return text.rsplit(")", 1)[1].split()[19]
+
+
+def process_identity(pid: int) -> dict[str, Any]:
+    """Process-bound identity used for fencing: host, pid and kernel start time (pid reuse cannot collide)."""
+    return {"host": socket.gethostname(), "pid": int(pid), "start_time": _proc_start_time(pid) if Path("/proc").is_dir() else None}
+
+
+def linux_process_state(identity: Mapping[str, Any]) -> str:
+    """'running' | 'stopped' | 'unknown'.  Unknown whenever termination cannot be established on this host."""
+    if not Path("/proc").is_dir() or identity.get("host") != socket.gethostname() or identity.get("start_time") in (None, ""):
+        return "unknown"
+    try:
+        start = _proc_start_time(int(identity["pid"]))
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+    if start is None:
+        return "stopped"
+    return "running" if str(start) == str(identity["start_time"]) else "stopped"
+
+
+def parse_compute_apps(text: str) -> list[dict[str, Any]]:
+    """Rows of ``nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits``."""
+    rows = []
+    for line in text.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2 and parts[0].isdigit():
+            rows.append({"pid": int(parts[0]), "gpu_uuid": parts[1],
+                         "used_memory_mib": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None})
+    return rows
+
+
+def linux_children(pid: int) -> list[int]:
+    out: list[int] = []
+    for path in Path(f"/proc/{int(pid)}/task").glob("*/children"):
+        out += [int(x) for x in path.read_text(encoding="utf-8").split()]
+    return out
+
+
+def process_tree(pid: int, children_of: Callable[[int], Sequence[int]] = linux_children) -> set[int]:
+    seen, stack = set(), [int(pid)]
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(children_of(current))
+    return seen
+
+
+def gpu_placement(rows: Sequence[Mapping[str, Any]], lane_gpu_uuid: str, provider_pids: set[int]) -> str:
+    """Process-bound CUDA placement of the lane's provider server tree."""
+    ours = [r for r in rows if r["pid"] in provider_pids]
+    if any(r["gpu_uuid"] != lane_gpu_uuid for r in ours):
+        return "provider_on_other_gpu"
+    if not ours:
+        return "no_provider_cuda_context_on_lane_gpu"
+    if any(r["gpu_uuid"] == lane_gpu_uuid and r["pid"] not in provider_pids for r in rows):
+        return "lane_gpu_shared_with_foreign_process"
+    return "lane_gpu_exclusive"
 
 
 def _sha(value: Any) -> str:
@@ -116,7 +208,8 @@ class Coordinator:
     def __init__(self, root: Path, *, manifest: Mapping[str, Any], assignment: Mapping[str, Any], kind_validator: Callable,
                  interruption_record: Callable[[Mapping[str, Any], int, str], dict[str, Any]], max_infrastructure_retries: int,
                  expected_runtime_identity_sha256: str, expected_model_digest: str, synthetic: bool,
-                 lease_seconds: float = 900.0, clock: Callable[[], float] = time.time) -> None:
+                 lease_seconds: float = 900.0, clock: Callable[[], float] = time.time,
+                 process_probe: Callable[[Mapping[str, Any]], str] = linux_process_state) -> None:
         problems = validate_assignment(assignment, manifest)
         if problems:
             raise ValueError("; ".join(problems))
@@ -126,6 +219,7 @@ class Coordinator:
         self.validator, self.interruption_record = kind_validator, interruption_record
         self.max_retries, self.lease, self.clock, self.synthetic = int(max_infrastructure_retries), float(lease_seconds), clock, synthetic
         self.expected_runtime, self.expected_digest = expected_runtime_identity_sha256, expected_model_digest
+        self.probe = process_probe
         self.units = {u["unit_key"]: u for u in manifest["units"]}
         self.lanes = {str(l["lane_id"]): dict(l) for l in assignment["lanes"]}
         self.lane_units: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
@@ -145,8 +239,9 @@ class Coordinator:
             self._verify_evidence()
             for token, claim in list(self.claims.items()):
                 if claim["status"] == "active":
-                    self._close(token, "revoked_on_restart",
-                                "claim left open by a previous coordinator process; revoked on restart")
+                    self._fence(token, "revoked_on_restart",
+                                "claim left open by a previous coordinator process; revoked on restart; lane fenced until "
+                                "the worker and the provider server are verified stopped")
         except BaseException:
             self._lock.__exit__(None, None, None)
             raise
@@ -170,12 +265,16 @@ class Coordinator:
         for e in _read_jsonl(self.root / "journal.jsonl"):
             if e["event"] == "claimed":
                 self.claims[e["token"]] = {"unit_key": e["unit_key"], "attempt": e["attempt"], "lane_id": e["lane_id"],
-                                           "worker_id": e["worker_id"], "status": "active", "last_seen": e["at"]}
+                                           "worker_id": e["worker_id"], "identity": e.get("identity") or {}, "status": "active",
+                                           "last_seen": e["at"]}
             elif e["event"] == "heartbeat" and e["token"] in self.claims:
                 self.claims[e["token"]]["last_seen"] = e["at"]
-            elif e["event"] in ("accepted", "revoked_on_restart", "lease_expired", "quarantined", "violation"):
+            elif e["event"] in ("accepted", "revoked_on_restart", "lease_expired", "quarantined", "violation",
+                                "termination_verified"):
                 if e.get("token") in self.claims:
-                    self.claims[e["token"]]["status"] = {"accepted": "completed"}.get(e["event"], e["event"])
+                    self.claims[e["token"]]["status"] = {"accepted": "completed", "revoked_on_restart": "fenced",
+                                                         "lease_expired": "fenced",
+                                                         "termination_verified": "terminated_verified"}.get(e["event"], e["event"])
                 if e["event"] in ("accepted", "revoked_on_restart", "lease_expired"):
                     self.chain = e["chain"]
 
@@ -220,6 +319,29 @@ class Coordinator:
             self._journal("halt_cleared", reason=state["reason"], reviewed_by=reviewed_by, note=note)
             (self.root / "HALTED.json").replace(self.root / f"HALTED-cleared-{uuid.uuid4().hex[:8]}.json")
 
+    def lane_halted(self, lane_id: str) -> dict[str, Any] | None:
+        path = self.root / f"LANE_HALTED_{lane_id}.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def _halt_lane(self, lane_id: str, reason: str) -> None:
+        if not self.lane_halted(lane_id):
+            atomic_write_json(self.root / f"LANE_HALTED_{lane_id}.json", {"lane_id": lane_id, "reason": reason, "at": self.clock()})
+            self._journal("lane_halted", lane_id=lane_id, reason=reason)
+
+    def clear_lane_halt(self, lane_id: str, *, reviewed_by: str, note: str) -> None:
+        """Operational acknowledgement after a human has verified, outside the coordinator, that the fenced worker and
+        provider processes are gone (recorded; not a scientific approval)."""
+        if not reviewed_by.strip() or not note.strip():
+            raise ValueError("clearing a lane halt needs a reviewer and a note")
+        state = self.lane_halted(lane_id)
+        if state:
+            for token, claim in self.claims.items():
+                if claim["lane_id"] == lane_id and claim["status"] == "fenced":
+                    claim["status"] = "terminated_verified"
+                    self._journal("termination_verified", token=token, evidence="manual", reviewed_by=reviewed_by, note=note)
+            self._journal("lane_halt_cleared", lane_id=lane_id, reason=state["reason"], reviewed_by=reviewed_by, note=note)
+            (self.root / f"LANE_HALTED_{lane_id}.json").replace(self.root / f"LANE_HALTED_{lane_id}-cleared-{uuid.uuid4().hex[:8]}.json")
+
     def _quarantine(self, token: str, record: Mapping[str, Any], reason: str) -> None:
         atomic_write_json(self.root / "quarantine" / f"{hashlib.sha256(token.encode()).hexdigest()[:16]}.json",
                           {"reason": reason, "record": dict(record)})
@@ -242,39 +364,88 @@ class Coordinator:
             return None
         return int(done[-1]["attempt"]) + 1
 
-    def _close(self, token: str, event: str, detail: str) -> None:
+    def _fence(self, token: str, event: str, detail: str) -> None:
+        """Close the attempt as an infrastructure interruption AND fence its lane until termination is verified."""
         claim = self.claims[token]
         record = self.interruption_record(self.units[claim["unit_key"]], int(claim["attempt"]), detail)
         digest, chain = self._append_record(record)
-        claim["status"] = event
-        self._journal(event, token=token, unit_key=claim["unit_key"], attempt=claim["attempt"], record_sha256=digest, chain=chain)
+        claim["status"] = "fenced"
+        self._journal(event, token=token, unit_key=claim["unit_key"], attempt=claim["attempt"], lane_id=claim["lane_id"],
+                      record_sha256=digest, chain=chain)
 
     def expire_leases(self) -> int:
         now, expired = self.clock(), 0
         for token, claim in list(self.claims.items()):
             if claim["status"] == "active" and now - claim["last_seen"] > self.lease:
-                self._close(token, "lease_expired", f"no heartbeat for more than {self.lease:.0f}s (worker loss); lease expired")
+                self._fence(token, "lease_expired", f"no heartbeat for more than {self.lease:.0f}s (worker loss); lease "
+                                                    f"expired; lane fenced until termination is verified")
                 expired += 1
         return expired
 
-    def claim(self, lane_id: str, worker_id: str) -> dict[str, Any] | None:
+    def review_lane(self, lane_id: str) -> dict[str, Any]:
+        """Verify termination of every fenced claim on the lane from process-bound evidence."""
+        states = {}
+        for token, claim in self.claims.items():
+            if claim["lane_id"] != lane_id or claim["status"] != "fenced":
+                continue
+            worker = self.probe(claim["identity"].get("worker") or {})
+            provider = self.probe(claim["identity"].get("provider") or {})
+            states[token] = {"worker": worker, "provider": provider}
+            if worker == "stopped" and provider == "stopped":
+                claim["status"] = "terminated_verified"
+                self._journal("termination_verified", token=token, evidence="process_probe", worker=worker, provider=provider)
+            elif "unknown" in (worker, provider):
+                self._halt_lane(lane_id, f"termination of the fenced worker/provider cannot be established "
+                                         f"(worker={worker}, provider={provider})")
+        return states
+
+    @staticmethod
+    def _identity_problems(identity: Any) -> list[str]:
+        if not isinstance(identity, Mapping):
+            return ["claim identity must be a mapping with worker and provider process identities"]
+        problems = []
+        for role in ("worker", "provider"):
+            item = identity.get(role)
+            if not isinstance(item, Mapping) or any(item.get(k) in (None, "") for k in IDENTITY_KEYS):
+                problems.append(f"claim identity lacks a complete {role} process identity {IDENTITY_KEYS}")
+        return problems
+
+    def claim(self, lane_id: str, worker_id: str, identity: Mapping[str, Any]) -> dict[str, Any] | None:
         if self.halted():
             raise CoordinatorHalted(self.halted()["reason"])
         if lane_id not in self.lanes:
             raise ClaimRejected(f"unknown lane {lane_id!r}")
+        problems = self._identity_problems(identity)
+        if problems:
+            raise ClaimRejected("; ".join(problems))
+        if self.lane_halted(lane_id):
+            raise LaneHalted(self.lane_halted(lane_id)["reason"])
         self.expire_leases()
-        active = {c["unit_key"] for c in self.claims.values() if c["status"] == "active"}
+        self.review_lane(lane_id)
+        if self.lane_halted(lane_id):
+            raise LaneHalted(self.lane_halted(lane_id)["reason"])
+        lane_claims = [c for c in self.claims.values() if c["lane_id"] == lane_id]
+        if any(c["status"] == "fenced" for c in lane_claims):
+            raise LaneSuspended(f"lane {lane_id} is fenced: a previous worker or its provider server has not been verified "
+                                f"stopped; no unit of this lane is reassigned until it is")
+        if any(c["status"] == "active" for c in lane_claims):
+            raise ClaimRejected(f"lane {lane_id} already has an active claim (one in-flight unit per lane)")
+        old = [c["identity"] for c in lane_claims if c["status"] in ("terminated_verified", "fenced", "quarantined")
+               and all(isinstance(c["identity"].get(r), Mapping) for r in ("worker", "provider"))]
+        for role in ("worker", "provider"):
+            key = lambda i: (i[role]["host"], int(i[role]["pid"]), str(i[role]["start_time"]))
+            if any(key(identity) == key(o) for o in old):
+                raise ClaimRejected(f"the {role} process of a fenced claim may not claim again")
         attempts = self._attempts()
         for unit in self.lane_units[lane_id]:
-            if unit["unit_key"] in active:
-                continue
             attempt = self._next_attempt(unit["unit_key"], attempts)
             if attempt is None:
                 continue
             token = secrets.token_hex(16)
             self.claims[token] = {"unit_key": unit["unit_key"], "attempt": attempt, "lane_id": lane_id, "worker_id": worker_id,
-                                  "status": "active", "last_seen": self.clock()}
-            self._journal("claimed", token=token, unit_key=unit["unit_key"], attempt=attempt, lane_id=lane_id, worker_id=worker_id)
+                                  "identity": dict(identity), "status": "active", "last_seen": self.clock()}
+            self._journal("claimed", token=token, unit_key=unit["unit_key"], attempt=attempt, lane_id=lane_id, worker_id=worker_id,
+                          identity=dict(identity))
             return {"token": token, "unit": {**unit, "run_id": self.manifest["run_id"]}, "attempt": attempt,
                     "lane": self.lanes[lane_id]}
         return None
@@ -300,9 +471,16 @@ class Coordinator:
         if claim["status"] == "completed":
             self._journal("rejected", token=token, reason="duplicate result")
             raise ClaimRejected("duplicate result for an already accepted claim")
+        if claim["status"] == "terminated_verified":
+            self._quarantine(token, record, "late result after the worker and provider were verified stopped")
+            self._halt_lane(claim["lane_id"], "overlap evidence: a result arrived after verified termination of its worker")
+            raise LaneHalted("late result after verified termination; lane halted")
         if claim["status"] != "active":
             self._journal("rejected", token=token, reason=f"late result ({claim['status']})")
             raise ClaimRejected(f"late result: the claim was {claim['status']}")
+        if self.lane_halted(claim["lane_id"]):
+            self._quarantine(token, record, "result from a halted lane (overlapping execution cannot be excluded)")
+            raise LaneHalted(f"lane {claim['lane_id']} is halted; result quarantined")
         unit = self.units[claim["unit_key"]]
         if (record.get("unit_key"), int(record.get("attempt", -1)), record.get("condition"), int(record.get("seed", -1))) != \
                 (unit["unit_key"], int(claim["attempt"]), unit["condition"], int(unit["seed"])):
@@ -340,7 +518,9 @@ class Coordinator:
         if prov["claim_token_sha256"] != hashlib.sha256(token.encode()).hexdigest():
             problems.append("provenance claim token differs")
         if prov["processor_before"] != "gpu_full" or prov["processor_after"] != "gpu_full":
-            problems.append("CPU fallback or partial GPU offload detected")
+            problems.append("CPU fallback or partial GPU offload detected (Ollama /api/ps size_vram < size)")
+        if prov["placement_before"] != "lane_gpu_exclusive" or prov["placement_after"] != "lane_gpu_exclusive":
+            problems.append(f"process-bound CUDA placement not verified ({prov['placement_before']} / {prov['placement_after']})")
         if prov["model_digest"] != self.expected_digest or record.get("runtime_identity_sha256") != self.expected_runtime:
             problems.append("runtime drift: model digest or runtime identity differs from the approved runtime")
         return problems
@@ -353,7 +533,12 @@ class Coordinator:
         attempts = self._attempts()
         pending = [k for k in self.units if self._next_attempt(k, attempts) is not None]
         final = Counter(sorted(v, key=lambda r: int(r["attempt"]))[-1]["outcome_status"] for v in attempts.values())
+        halted_lanes = sorted(l for l in self.lanes if self.lane_halted(l))
+        fenced_lanes = sorted({c["lane_id"] for c in self.claims.values() if c["status"] == "fenced"})
+        unit_lane = {u["unit_key"]: l for l, units in self.lane_units.items() for u in units}
         return {"units": len(self.units), "pending_units": len(pending), "halted": self.halted(),
+                "pending_on_live_lanes": sum(unit_lane[k] not in halted_lanes for k in pending),
+                "halted_lanes": halted_lanes, "fenced_lanes": fenced_lanes,
                 "final_status_counts": dict(sorted(final.items())),
                 "active_claims": sum(c["status"] == "active" for c in self.claims.values())}
 
@@ -376,26 +561,34 @@ class Coordinator:
 
 
 # --- worker side --------------------------------------------------------------------------------------------------------
-def ollama_lane_provenance(request: Callable[[str, str], Mapping[str, Any]], endpoint: str, model_tag: str) -> dict[str, Any]:
-    """Metadata-only snapshot of one provider endpoint (/api/version, /api/ps).  ``processor`` is ``gpu_full`` only when
-    the loaded model is entirely in VRAM; anything else is CPU fallback or partial offload."""
+def ollama_lane_provenance(request: Callable[[str, str], Mapping[str, Any]], endpoint: str, model_tag: str, *,
+                           compute_apps: Sequence[Mapping[str, Any]], provider_pids: set[int], lane_gpu_uuid: str) -> dict[str, Any]:
+    """Snapshot of one lane.  Ollama ``/api/ps`` model entries carry ``name``, ``model``, ``size``, ``size_vram``,
+    ``digest``, ``details`` and ``expires_at``: ``processor`` is ``gpu_full`` only if ``size_vram >= size > 0`` (a missing
+    ``size_vram`` is ``unknown``, never full).  ``placement`` comes from process-bound CUDA evidence
+    (``gpu_placement``)."""
     version = request(endpoint, "/api/version")
     loaded = next((m for m in request(endpoint, "/api/ps").get("models", []) if m.get("name") == model_tag), None)
     if loaded is None:
         processor = "not_loaded"
+    elif "size_vram" not in loaded or "size" not in loaded:
+        processor = "unknown"
     else:
         size, vram = int(loaded.get("size") or 0), int(loaded.get("size_vram") or 0)
         processor = "gpu_full" if size > 0 and vram >= size else ("cpu" if vram == 0 else "gpu_partial")
-    return {"provider_version": version.get("version"), "model_digest": (loaded or {}).get("digest"), "processor": processor}
+    placement = gpu_placement(compute_apps, lane_gpu_uuid, provider_pids)
+    return {"provider_version": version.get("version"), "model_digest": (loaded or {}).get("digest"), "processor": processor,
+            "placement": placement, "provider_cuda_pids": sorted(r["pid"] for r in compute_apps if r["pid"] in provider_pids)}
 
 
 class LaneWorker:
     """One lane: claim -> execute (own driver / endpoint / attempt directories) -> attach provenance -> submit."""
 
     def __init__(self, client: Any, *, lane_id: str, worker_id: str, executor: Callable[..., dict[str, Any]], root: Path,
-                 snapshot: Callable[[], Mapping[str, Any]], heartbeat_seconds: float = 60.0) -> None:
+                 snapshot: Callable[[], Mapping[str, Any]], identity: Callable[[], Mapping[str, Any]],
+                 heartbeat_seconds: float = 60.0) -> None:
         self.client, self.lane_id, self.worker_id, self.executor = client, lane_id, worker_id, executor
-        self.root, self.snapshot, self.heartbeat_seconds = Path(root), snapshot, heartbeat_seconds
+        self.root, self.snapshot, self.identity, self.heartbeat_seconds = Path(root), snapshot, identity, heartbeat_seconds
 
     def _heartbeats(self, token: str, stop: threading.Event) -> None:
         while not stop.wait(self.heartbeat_seconds):
@@ -405,7 +598,7 @@ class LaneWorker:
                 return
 
     def run_once(self) -> bool:
-        claim = self.client.claim(self.lane_id, self.worker_id)
+        claim = self.client.claim(self.lane_id, self.worker_id, dict(self.identity()))
         if claim is None:
             return False
         token, unit, attempt, lane = claim["token"], claim["unit"], int(claim["attempt"]), claim["lane"]
@@ -430,6 +623,7 @@ class LaneWorker:
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", before.get("cuda_visible_devices")),
             "provider_version": before.get("provider_version"), "model_digest": before.get("model_digest"),
             "processor_before": before.get("processor"), "processor_after": after.get("processor"),
+            "placement_before": before.get("placement"), "placement_after": after.get("placement"),
             "model_digest_after": after.get("model_digest"), "host": socket.gethostname(), "pid": os.getpid(),
             "hermes_workspace": str(attempt_dir / "episode"), "claim_token_sha256": hashlib.sha256(token.encode()).hexdigest()}
         if after.get("model_digest") != before.get("model_digest"):
@@ -454,7 +648,7 @@ def serve_once(coordinator: Coordinator, root: Path) -> int:
                 raise ClaimRejected(f"unknown operation {request['op']!r}")
             result = getattr(coordinator, request["op"])(*request.get("args", []))
             response = {"ok": True, "result": result}
-        except (ClaimRejected, CoordinatorHalted) as exc:
+        except (ClaimRejected, CoordinatorHalted) as exc:  # includes LaneSuspended / LaneHalted
             response = {"ok": False, "error": type(exc).__name__, "detail": str(exc)}
         atomic_write_json(outbox / path.name, response)
         path.unlink()
@@ -488,11 +682,12 @@ class FileCoordinatorClient:
         response = json.loads(out.read_text(encoding="utf-8"))
         out.unlink()
         if not response["ok"]:
-            raise {"ClaimRejected": ClaimRejected, "CoordinatorHalted": CoordinatorHalted}[response["error"]](response["detail"])
+            raise {"ClaimRejected": ClaimRejected, "CoordinatorHalted": CoordinatorHalted, "LaneSuspended": LaneSuspended,
+                   "LaneHalted": LaneHalted}[response["error"]](response["detail"])
         return response["result"]
 
-    def claim(self, lane_id: str, worker_id: str):
-        return self._call("claim", lane_id, worker_id)
+    def claim(self, lane_id: str, worker_id: str, identity: Mapping[str, Any]):
+        return self._call("claim", lane_id, worker_id, dict(identity))
 
     def heartbeat(self, token: str):
         return self._call("heartbeat", token)

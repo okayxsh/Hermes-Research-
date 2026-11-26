@@ -88,7 +88,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "coordinator":
             coordinator = _coordinator(config, approved, assignment, run_root).start()
             try:
-                while not coordinator.halted() and coordinator.summary()["pending_units"]:
+                # a halted lane stops only that lane; the loop ends when nothing runnable remains
+                while not coordinator.halted() and coordinator.summary()["pending_on_live_lanes"]:
                     parallel.serve_once(coordinator, run_root)
                     coordinator.expire_leases()
                     time.sleep(0.5)
@@ -96,23 +97,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _emit({"summary": coordinator.summary(), "validation": coordinator.validate()})
             finally:
                 coordinator.stop()
-            return 0 if not coordinator.halted() else 4
+            return 0 if not coordinator.halted() and not coordinator.summary()["halted_lanes"] else 4
         lane = next(l for l in assignment["lanes"] if str(l["lane_id"]) == args.lane)
         if os.environ.get("CUDA_VISIBLE_DEVICES") != lane["gpu_uuid"]:
             raise readiness.ExecutionBlocked("CUDA_VISIBLE_DEVICES must equal the lane's GPU UUID (one GPU per lane)")
         from rq1.university_gpu.ollama import _request
+        import subprocess
+        provider_pid = int(os.environ.get("RQ1_LANE_OLLAMA_PID", "0"))
+        if provider_pid <= 0:
+            raise readiness.ExecutionBlocked("RQ1_LANE_OLLAMA_PID must name the pid of this lane's Ollama server (fencing "
+                                             "and process-bound GPU placement are bound to it)")
+        identity = lambda: {"worker": parallel.process_identity(os.getpid()),
+                            "provider": parallel.process_identity(provider_pid)}
+
+        def compute_apps():
+            out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,gpu_uuid,used_memory",
+                                  "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=30, check=True)
+            return parallel.parse_compute_apps(out.stdout)
         built = runner.build_university_executor(config, readiness_state=_load(args.state), observed_runtime=_load(args.observed_runtime),
                                                  approved_runtime=approved, endpoint=lane["endpoint"],
                                                  execution_provenance={"lane_id": args.lane},
                                                  bridge_log_root=run_root / "lanes" / args.lane / "bridge")
-        snapshot = lambda: {**parallel.ollama_lane_provenance(lambda e, p: _request(e, p), lane["endpoint"], approved["model_tag"]),
+        snapshot = lambda: {**parallel.ollama_lane_provenance(lambda e, p: _request(e, p), lane["endpoint"], approved["model_tag"],
+                                                              compute_apps=compute_apps(), lane_gpu_uuid=lane["gpu_uuid"],
+                                                              provider_pids=parallel.process_tree(provider_pid)),
                             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
         worker = parallel.LaneWorker(parallel.FileCoordinatorClient(run_root), lane_id=args.lane,
                                      worker_id=f"{args.lane}-{os.getpid()}", executor=built["dispatch"], root=run_root,
-                                     snapshot=snapshot, heartbeat_seconds=float(config.get("heartbeat_seconds", 60)))
+                                     snapshot=snapshot, identity=identity,
+                                     heartbeat_seconds=float(config.get("heartbeat_seconds", 60)))
         try:
             while worker.run_once():
                 pass
+        except (parallel.LaneSuspended, parallel.LaneHalted) as exc:
+            _emit({"lane": args.lane, "status": type(exc).__name__, "reason": str(exc),
+                   "action": "stop this lane's worker AND restart its Ollama server; relaunch only after the coordinator "
+                             "verifies termination (or after a recorded lane-halt review)"})
+            return 3
         finally:
             built["driver"].__exit__(None, None, None)
         _emit({"lane": args.lane, "status": "no further work for this lane"})
