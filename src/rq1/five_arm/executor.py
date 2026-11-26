@@ -469,3 +469,21 @@ class FiveArmEpisodeExecutor:
                           outcome_status=failure["status"], failure_detail=failure["detail"])
         maker = make_record if self.mode == "arm" else make_diagnostic_record
         return maker(**fields)
+
+
+class InterruptionRecordFactory(FiveArmEpisodeExecutor):
+    """Coordinator-side builder of MISSING_INFRASTRUCTURE records for attempts that never reported (revoked on restart
+    or lease expired).  It has no driver and can never execute an episode."""
+
+    def __init__(self, *, tasks: Mapping[str, EvaluationTask], task_meta: Mapping[str, Mapping[str, Any]], synthetic: bool,
+                 runtime_identity_sha256: str, exposure_policy: str, model_name: str,
+                 execution_provenance: Mapping[str, Any] | None = None) -> None:
+        from types import SimpleNamespace
+        self.mode, self.tasks, self.task_meta, self.synthetic = "arm", dict(tasks), dict(task_meta), synthetic
+        self.runtime_identity_sha256, self.exposure_policy, self.analysis_labels = runtime_identity_sha256, exposure_policy, {}
+        self.driver = SimpleNamespace(model_name=model_name)
+        self.execution_provenance = {"mode": "parallel-coordinator", "host": socket.gethostname(), "pid": os.getpid(),
+                                     **dict(execution_provenance or {})}
+
+    def __call__(self, unit: Mapping[str, Any], *, attempt: int, attempt_dir: Path) -> dict[str, Any]:
+        raise ProtocolViolation("the interruption-record factory cannot execute episodes")

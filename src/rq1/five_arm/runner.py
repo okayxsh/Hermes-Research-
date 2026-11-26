@@ -143,7 +143,28 @@ def assert_execution_permitted(*, manifest: Mapping[str, Any], readiness_state: 
 
 def build_university_queue(config: Mapping[str, Any], *, readiness_state: Mapping[str, Any],
                            observed_runtime: Mapping[str, Any] | None, approved_runtime: Mapping[str, Any]):
-    """Gate, then construct the real executor and queue.  Returns (queue, driver); call ``driver.__exit__`` when done."""
+    """Sequential path: gate, then the real executor and the resumable queue.  Returns (queue, driver)."""
+    from rq1.five_arm.queue import RunQueue
+    built = build_university_executor(config, readiness_state=readiness_state, observed_runtime=observed_runtime,
+                                      approved_runtime=approved_runtime)
+    try:
+        queue = RunQueue(output_root=Path(str(config["output_root"])), manifest=config["manifest"], executor=built["dispatch"],
+                         kind=built["kind"], max_infrastructure_retries=int(config["max_infrastructure_retries"]),
+                         synthetic=False, interruption_record=built["interruption_record"])
+    except BaseException:
+        built["driver"].__exit__(None, None, None)
+        raise
+    return queue, built["driver"]
+
+
+def build_university_executor(config: Mapping[str, Any], *, readiness_state: Mapping[str, Any],
+                              observed_runtime: Mapping[str, Any] | None, approved_runtime: Mapping[str, Any],
+                              endpoint: str | None = None, execution_provenance: Mapping[str, Any] | None = None,
+                              bridge_log_root: Path | None = None) -> dict[str, Any]:
+    """Gate, then construct the real executor(s) for ONE provider endpoint (a parallel lane passes its own endpoint).
+    Returns {dispatch, interruption_record, kind, driver}; call ``driver.__exit__`` when done."""
+    if endpoint is not None:
+        config = {**config, "ollama_endpoint": endpoint}
     manifest = config["manifest"]
     artifacts = artifact_hashes(config, approved_runtime)
     assert_execution_permitted(manifest=manifest, readiness_state=readiness_state, artifacts=artifacts,
@@ -154,7 +175,6 @@ def build_university_queue(config: Mapping[str, Any], *, readiness_state: Mappin
     from rq1.five_arm.executor import FiveArmEpisodeExecutor
     from rq1.five_arm.memory import load_filler_corpus
     from rq1.five_arm.prompting import LeakageProbe
-    from rq1.five_arm.queue import RunQueue
     from rq1.hermes.episode_driver import RealEpisodeDriver
     from rq1.university_gpu.interventions import LocalGemmaTokenizer, TokenizerIdentity
     from rq1.university_gpu.ollama import probe_endpoint
@@ -195,14 +215,15 @@ def build_university_queue(config: Mapping[str, Any], *, readiness_state: Mappin
         arm_parts["analysis_labels"] = dict(config.get("analysis_labels") or {})
     driver = RealEpisodeDriver(Path(str(config["repository_root"])).resolve(), data_dir=Path(str(config["alfworld_data_dir"])),
                                model_name=approved_runtime["model_tag"], ollama_url=str(config["ollama_endpoint"]),
-                               bridge_log_root=Path(str(config["output_root"])) / "bridge")
+                               bridge_log_root=bridge_log_root or Path(str(config["output_root"])) / "bridge")
     driver.__enter__()
     try:
         common = dict(tasks=tasks, task_meta=task_meta, split=manifest["split"], synthetic=False, tokenizer=tokenizer,
                       runtime_identity_sha256=runtime.config_sha256(approved_runtime), exposure_policy=str(config["exposure_policy"]),
                       d0_representation=str(config["d0_representation"]), num_ctx=int(approved_runtime["num_ctx"]),
                       max_output_tokens=int(approved_runtime["num_predict"]), chat_template_tokens=counter,
-                      provider_token_tolerance=int(config["provider_token_tolerance"]))
+                      provider_token_tolerance=int(config["provider_token_tolerance"]),
+                      execution_provenance=execution_provenance)
         if diagnostic:
             modes = {"UNDISTURBED": "diagnostic_undisturbed", "DETOURED": "diagnostic_detoured"}
             executors = {c: FiveArmEpisodeExecutor(driver, mode=m, **common) for c, m in modes.items()}
@@ -212,10 +233,7 @@ def build_university_queue(config: Mapping[str, Any], *, readiness_state: Mappin
         else:
             executor = FiveArmEpisodeExecutor(driver, mode="arm", **arm_parts, **common)
             dispatch, interrupted, kind = executor, executor.interruption_record, "five_arm"
-        queue = RunQueue(output_root=Path(str(config["output_root"])), manifest=manifest, executor=dispatch, kind=kind,
-                         max_infrastructure_retries=int(config["max_infrastructure_retries"]), synthetic=False,
-                         interruption_record=interrupted)
     except BaseException:
         driver.__exit__(None, None, None)
         raise
-    return queue, driver
+    return {"dispatch": dispatch, "interruption_record": interrupted, "kind": kind, "driver": driver}
