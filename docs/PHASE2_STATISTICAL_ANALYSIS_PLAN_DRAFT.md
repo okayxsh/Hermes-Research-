@@ -7,25 +7,67 @@
 
 ## 0. Phase 3C additions (DRAFT; for author approval)
 
-### 0.1 Primary test: reconciling McNemar with template dependence
+### 0.1 Primary test: task-level McNemar versus a template-level paired test (revised in Phase 3D)
 
-**What is computed.** With one primary inference seed, every task contributes one binary pair (D18, D0). The task-level sign-flip test then **is** the exact McNemar test on discordant tasks: same p-value, and the analysis reports both.
-- **Null hypothesis tested:** the *sharp* null. Within every task the two conditions' outcome distributions are identical (arm labels exchangeable within the task), and tasks are conditionally independent given task-level factors.
-- **Template effects** that act equally on both arms cancel within each pair and do not invalidate this test.
+**Unchanged.**
+- The single primary comparison stays D18 − D0 over all 79 tasks, at α = 0.05, two-sided.
+- The **estimand and point estimate stay task-weighted**: the mean of the 79 within-task differences.
+- The primary interval stays the template-cluster bootstrap 95% CI.
 
-**What it does not test.** It is not an exact test of the weak null "the average effect is zero" when effects vary and that variation is correlated within goal templates. In that case discordant tasks from the same template are not independent, and the McNemar p-value can be too small.
+Only the choice of the primary *test* is open.
 
-**How the existing plan handles this.** The procedures stay as already specified:
+**Option A, status quo: task-level sign flip (= exact McNemar).**
+- With one inference seed, each task gives one binary pair, and the task-level sign-flip p-value equals the exact McNemar p-value.
+- *Exchangeability needed:* within every task the D18 and D0 labels are exchangeable (sharp null: no effect in any task), and the 79 pairs are independent given task-level factors.
+- Template or scene effects acting equally on both arms cancel inside each pair.
+- It is **not** valid for the weak null ("average effect = 0") when effects vary and that variation is shared within goal templates. Discordances from the same template then move together, and the test treats them as independent.
 
-| Role | Procedure | Dependence handled |
-|---|---|---|
-| Primary test | exact McNemar (task-level sign-flip), two-sided, α = 0.05 | sharp null only |
-| Primary interval | template-cluster bootstrap 95% | within-template dependence |
-| Prespecified sensitivity | template-level sign-flip (27 template means) | weak null with template-correlated effects |
+**Option B: template-level paired test with a task-weighted statistic (implemented in Phase 3D).**
+- The D18/D0 labels of **all tasks of a goal template are flipped jointly**.
+- The statistic is |Σ over templates of the template *sum* of task differences|. This equals |Σ task differences|, i.e. 79 × the task-weighted estimate, so test and estimate address the same quantity. The test is not the template-mean version.
+- *Exchangeability needed:*
+  1. **Template-level exchangeability (null):** within every template, the joint distribution of its tasks' paired outcomes is unchanged when the D18 and D0 labels are swapped for all of its tasks together. No independence among tasks within a template is needed, so template-correlated effects and shared within-template state are allowed.
+  2. **Independence across templates:** the 27 template sums are independent given their absolute values.
+- *Not covered, and to be stated in the paper:*
+  - Dependence across templates through shared scenes (3) and families (5). There are too few to resample, so these stay descriptive.
+  - Asymmetric distributions of template-level effects under a weak null. Like option A, option B is exact only for its sharp null. It is approximately valid, not exact, for the weak null.
+- *Mechanics:*
+  - 27 templates (25 × 3 tasks + 2 × 2 tasks).
+  - More than 20 non-zero template sums use a seeded Monte Carlo with 100,000 draws (Monte Carlo SE ≈ 0.0007 at p = 0.05); otherwise the test is exact.
+  - The smallest attainable p is 2 / 2^k for k non-zero templates, so k ≥ 6 is needed to reach p < 0.05.
+- *Weighting:* the two 2-task templates get weight 2 rather than 3. Under this near-balanced allocation the task-sum and template-mean statistics almost coincide.
 
-**Recommendation for approval:** keep this unchanged.
-- **Disagreement rule:** if the McNemar test and the template-level sensitivity disagree, the paper reports the McNemar decision as the prespecified test and states that the conclusion is sensitive to template dependence. Neither overrides the other.
-- **Alternative (author choice):** make the template-level sign-flip the primary test. The roster's real allocation is balanced (25 templates × 3 tasks + 2 × 2), so the power loss is small in simulation (about 0.79 versus 0.83 at Δ = 20 points). It tests the weak null more robustly, but changes a frozen choice and needs explicit approval.
+**Planning simulation** (`docs/evidence/phase3d_template_test_power.py`; synthetic, 2,000 replicates per row, exact sign-flip p-values on the real 27-template allocation)
+- *Model:* p(D0) = 0.25; task random effect SD 2 and template random effect SD 1 on the logit scale, both acting on both arms. The "het" rows add a template-shared effect.
+- *Monte Carlo SE:* ≈ 0.005 for the rejection rates near 0.05 and ≈ 0.009 for the power values near 0.8.
+
+| Scenario | Task-weighted effect | McNemar (A) | Template mean | **Template sum (B)** |
+|---|---|---|---|---|
+| Sharp null | 0.00 | 0.028 | 0.029 | 0.027 |
+| Weak null, template effects ± (h = 0.5) | 0.00 | 0.042 | 0.036 | 0.032 |
+| Weak null, template effects ± (h = 1.0) | 0.00 | **0.070** | 0.038 | 0.035 |
+| Weak null, template effects ± (h = 1.5) | 0.00 | **0.104** | 0.041 | 0.035 |
+| Effect ≈ 11 points, homogeneous | 0.11 | 0.388 | 0.379 | 0.364 |
+| Effect ≈ 11 points, het SD 1 | 0.11 | 0.387 | 0.344 | 0.330 |
+| Effect ≈ 20 points, homogeneous | 0.20 | 0.851 | 0.845 | 0.833 |
+| Effect ≈ 20 points, het SD 1 | 0.19 | 0.811 | 0.778 | 0.762 |
+
+**Reading:**
+- When template-correlated effects average to zero, McNemar's type-I error rises to 0.07–0.10. The template-level tests stay at or below 0.041.
+- Option B costs about 1.5 to 5 points of power.
+- Part of McNemar's extra power in the heterogeneous rows comes from the same anti-conservatism.
+
+**Recommendation for author decision (decision sheet item 9): adopt option B as the primary test.**
+- It is valid under the dependence that the primary interval already assumes (template-cluster CI). This makes the test and the interval coherent and removes the need for the A/B disagreement rule.
+- It keeps the task-weighted estimand and estimate.
+- The power loss is small relative to the type-I protection.
+- Exact McNemar is still computed and reported as a secondary, task-level analysis, and the template-mean sign flip stays as a sensitivity analysis.
+
+**Implementation.**
+- The test is selected by `design["primary_test"]` in `analysis.analyze`: `"task_sign_flip"` (default, status quo) or `"template_sign_flip_task_weighted"`.
+- Both p-values are always reported: `test` / `mcnemar_exact` (A) and `template_level_task_weighted` (B).
+- The code default is unchanged until the author records the decision. The chosen value must be fixed in the approved analysis design **before** any confirmatory outcome is seen.
+- If option A is kept, the existing disagreement rule applies: report McNemar as the prespecified test and state that the conclusion is sensitive to template dependence.
 
 ### 0.2 Factorial estimates (secondary, estimation only)
 

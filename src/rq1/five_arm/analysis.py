@@ -7,6 +7,10 @@
   under within-task arm exchangeability, irrespective of shared template/scene effects.  Interval (SD-21): template-
   cluster bootstrap percentile 95% CI (tasks sharing a goal template are dependent); the task bootstrap is reported as a
   sensitivity interval.  Template-level sign-flip (unit = template mean) is the dependence-robust sensitivity test.
+  PRIMARY-TEST OPTION (Phase 3D, SAP 0.1; selected by ``design["primary_test"]``, default unchanged):
+  ``template_sign_flip_task_weighted`` flips the arm labels of all tasks of a goal template JOINTLY; statistic
+  |sum over templates of the template SUM of task differences| = |sum of task differences|, i.e. the same task-weighted
+  estimand.  Requires exchangeability at the template level and independence across templates only.
 * Secondary, EXPLORATORY family (separate Holm adjustment; never pooled with the primary, never confirmatory):
   D18-Fill, Irr-Fill, Rel-Irr, Rel-Fill over their frozen, outcome-blind subsets; recovery effort; invalid actions;
   latency; retrieval relevance; acquisition-template-overlap sensitivity.
@@ -106,7 +110,11 @@ def _outcome(cells, task, arm, seed):
     return None if cell is None or cell["outcome_status"] != "VALID" else int(bool(cell["success"]))
 
 
-def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, replicates, draws, role) -> dict[str, Any]:
+PRIMARY_TESTS = ("task_sign_flip", "template_sign_flip_task_weighted")
+
+
+def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, replicates, draws, role,
+              primary_test: str = "task_sign_flip") -> dict[str, Any]:
     seeds = [int(s) for s in design["seeds"]]
     task_diffs: dict[str, float] = {}
     pairs_per_task: dict[str, int] = {}
@@ -158,6 +166,19 @@ def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, repl
         "templates": len(template_values), "template_weighted_estimate": fmean(template_values),
         "sign_flip_template_level": sign_flip_test(template_values, draws=draws, seed=seed + 1) if draws else None,
         "note": "unit = goal-template mean difference; robust to within-template dependence of heterogeneous effects"}
+    template_sums = [sum(v) for _, v in sorted(by_template.items())]
+    template_test = sign_flip_test(template_sums, draws=draws, seed=seed + 2) if draws else None
+    result["template_level_task_weighted"] = {
+        "templates": len(template_sums), "test": template_test,
+        "statistic": "|sum over templates of the template sum of task differences| (= n x task-weighted estimate)",
+        "null_hypothesis": ("within every goal template, the joint distribution of its tasks' paired outcomes is invariant "
+                            "to swapping the two arm labels for ALL tasks of the template together; templates independent"),
+        "note": "same task-weighted estimand as the primary estimate; robust to within-template dependence"}
+    if primary_test not in PRIMARY_TESTS:
+        raise AnalysisError(f"primary_test must be one of {PRIMARY_TESTS}")
+    result["primary_test"] = primary_test
+    if primary_test == "template_sign_flip_task_weighted":
+        result["p_value"] = template_test["p_value"] if template_test else None
     families: dict[str, Counter] = defaultdict(Counter)
     for task in task_diffs:
         families[str(design["tasks"][task].get("family"))][str(design["tasks"][task]["scene"])] += 1
@@ -228,6 +249,8 @@ def _factorial(cells, design, *, seed, replicates) -> dict[str, Any]:
         for key in ("p_value", "test", "mcnemar_exact"):
             result.pop(key, None)
         result.get("template_sensitivity", {}).pop("sign_flip_template_level", None)
+        result.pop("template_level_task_weighted", None)
+        result.pop("primary_test", None)
         estimates[contrast_name(a, b)] = result
     return {"estimates": estimates, "interaction": interaction,
             "meaning": {"D18U-D0U": "continuation benefit of memory without perturbation",
@@ -265,6 +288,10 @@ def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
     cells = resolve_units(records, max_infrastructure_retries=int(design["max_infrastructure_retries"]))
     miss = missingness(cells, design)
     kw = dict(replicates=bootstrap_replicates, draws=permutation_draws)
+    primary_test = str(design.get("primary_test", "task_sign_flip"))
+    if primary_test not in PRIMARY_TESTS:
+        raise AnalysisError(f"design primary_test must be one of {PRIMARY_TESTS}")
+    kw["primary_test"] = primary_test
     t, r = PRIMARY_CONTRAST
     primary = _contrast(cells, design, t, r, universe(design, t, r), seed=seed, role="primary_confirmatory", **kw)
     primary["alpha"] = 0.05
@@ -321,8 +348,11 @@ def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
             "secondary_multiplicity": "Holm within the secondary family only; exploratory, not confirmatory discoveries",
             "secondary_effort": effort, "latency_descriptive": latency,
             "factorial_estimation": factorial, "interface_by_condition": interface,
-            "primary_test_note": ("with one inference seed every task contributes one binary pair, so the task-level "
-                                  "sign-flip p-value IS the exact McNemar p-value (reported in mcnemar_exact)"),
+            "primary_test_note": ("task_sign_flip: with one inference seed every task contributes one binary pair, so the "
+                                  "task-level sign-flip p-value IS the exact McNemar p-value (reported in mcnemar_exact). "
+                                  "template_sign_flip_task_weighted: arm labels flipped jointly per goal template; same "
+                                  "task-weighted estimate. Both p-values are always reported."),
+            "primary_test": primary_test,
             "cumulative_success_by_recovery_actions": curves, "acquisition_overlap_sensitivity": overlap_sensitivity,
             "relevance": relevance, "population_statement": POPULATION_STATEMENT,
             "status": "analysis output only; not a scientific claim until the SAP, roster and data are approved",

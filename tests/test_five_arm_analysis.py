@@ -129,6 +129,27 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(out["secondary_exploratory"]["D18-Fill"]["estimate"], 0.0)
         self.assertTrue(out["synthetic_input"])
 
+    def test_template_level_task_weighted_primary_option(self):
+        tasks = [f"t{i}" for i in range(10)]
+        templates = {t: f"tpl{int(t[1:]) // 2}" for t in tasks}                # five templates of two tasks
+        records = [rec(t, a, 11, a != "D0" or int(t[1:]) >= 6, template=templates[t]) for t in tasks for a in ARMS]
+        status_quo = analysis.analyze(records, design(tasks, templates=templates), **FAST)["primary"]["D18-D0"]
+        d = design(tasks, templates=templates)
+        d["primary_test"] = "template_sign_flip_task_weighted"
+        out = analysis.analyze(records, d, **FAST)
+        p = out["primary"]["D18-D0"]
+        self.assertEqual((status_quo["primary_test"], out["primary_test"]), ("task_sign_flip", "template_sign_flip_task_weighted"))
+        self.assertAlmostEqual(status_quo["p_value"], 2 / 64)                    # task level = exact McNemar
+        self.assertAlmostEqual(p["p_value"], 2 / 8)                              # template sums [2, 2, 2, 0, 0]
+        self.assertAlmostEqual(p["estimate"], 0.6)                               # task-weighted estimate retained
+        self.assertAlmostEqual(p["test"]["p_value"], 2 / 64)                     # both tests always reported
+        self.assertAlmostEqual(p["mcnemar_exact"]["p_value"], 2 / 64)
+        self.assertEqual(p["template_level_task_weighted"]["templates"], 5)
+        self.assertNotIn("template_level_task_weighted", out["factorial_estimation"]["estimates"]["D18U-D0U"])
+        d["primary_test"] = "cluster_wald"
+        with self.assertRaises(analysis.AnalysisError):
+            analysis.analyze(records, d, **FAST)
+
     def test_correlated_seeds_templates_and_family_scene_table(self):
         tasks = [f"t{i}" for i in range(6)]
         templates = {t: f"tpl{int(t[1:]) // 2}" for t in tasks}
