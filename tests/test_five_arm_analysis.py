@@ -9,7 +9,9 @@ from rq1.five_arm.measurements import (MeasurementError, injected_relevance, mak
 from rq1.five_arm.protocol import ProtocolError
 
 TOP3 = ["s1", "s2", "s3"]
-INJECTED = {"D0": [], "D18": TOP3, "Rel": ["s1"], "Irr": ["s3"], "Fill": []}
+INJECTED = {"D0": [], "D18": TOP3, "Rel": ["s1"], "Irr": ["s3"], "Fill": [], "D0U": [], "D18U": TOP3}
+ARMS = ("D0", "D18", "Rel", "Irr", "Fill", "D0U", "D18U")
+from rq1.five_arm.executor import MEMORY_SOURCE
 ALLOWANCE = 46
 
 
@@ -26,13 +28,13 @@ def trace(actions, success, *, rejections=0, exhausted=False):
     return steps
 
 
-def common(task, arm, seed, *, attempt, template, scene):
+def common(task, arm, seed, *, attempt, template, scene, cap=50):
     return dict(synthetic=True, unit_key=f"{task}|{arm}|{seed}", attempt=attempt, task_id=task, goal_template=template or f"tpl-{task}",
                 scene=scene, family="clean_and_place", exposure_policy="synthetic", oracle_id="o", oracle_sha256="c" * 64,
                 checkpoint_digest="d" * 64, post_detour_digest="e" * 64, condition=arm, seed=seed, runtime_identity_sha256="f" * 64,
                 first_recovery_prompt_sha256=None, prompt_sequence_sha256=None, provider_calls=[], requested_provider_options={},
                 tokens={"raw_text_tokens": 1, "memory_block_tokens": 0, "chat_template_tokens": None, "provider_prompt_tokens": None},
-                total_action_cap=50, prefix_actions=3, recovery_action_allowance=ALLOWANCE, wall_clock_seconds=10.0,
+                total_action_cap=cap, prefix_actions=3, recovery_action_allowance=ALLOWANCE, wall_clock_seconds=10.0,
                 inference_latency_seconds=2.0)
 
 
@@ -41,15 +43,17 @@ def rec(task, arm, seed, success, *, status="VALID", attempt=1, actions=5, inval
     reason = reason or (("success" if success else "budget_exhausted") if valid else "provider_error")
     n = (actions if success else ALLOWANCE) if valid else 0
     return make_record(
-        **common(task, arm, seed, attempt=attempt, template=template, scene=scene), executor_mode="arm",
+        **common(task, arm, seed, attempt=attempt, template=template, scene=scene, cap=49 if arm in ("D0U", "D18U") else 50),
+        executor_mode="arm", execution_provenance={"mode": "synthetic-test"}, memory_source=MEMORY_SOURCE[arm],
         natural_top3_skill_ids=TOP3, natural_top3_scores=[0.9, 0.8, 0.7], injected_skill_ids=INJECTED[arm],
         injected_skill_count=len(INJECTED[arm]), analysis_only_injected_labels=[],
         filler_corpus_sha256="a" * 64 if arm in ("Rel", "Irr", "Fill") else None, filler_sentence_indices=[],
-        memory_block_sha256=None if arm == "D0" else "b" * 64, detour_actions=1, recovery_actions=n,
+        memory_block_sha256=None if arm in ("D0", "D0U") else "b" * 64, detour_actions=0 if arm in ("D0U", "D18U") else 1,
+        recovery_actions=n,
         recovery_trace=trace(n, bool(success) and valid, rejections=invalid) if valid else [],
         success=(bool(success) if valid else None), termination_reason=reason, invalid_actions=invalid if valid else 0,
         outcome_status=status, failure_detail=None if valid else "synthetic provider fault",
-        not_applicable=["memory"] if arm == "D0" else [])
+        not_applicable=["memory"] if arm in ("D0", "D0U") else [])
 
 
 def diag(task, condition, seed, success, *, actions=4, invalid=0, status="VALID"):
@@ -76,7 +80,7 @@ def design(tasks, seeds=(11,), rel=None, irr=None, fill=None, scenes=None, templ
 
 
 def full_records(tasks, seeds, outcome):
-    return [rec(t, a, s, outcome(t, a, s)) for t in tasks for a in ("D0", "D18", "Rel", "Irr", "Fill") for s in seeds]
+    return [rec(t, a, s, outcome(t, a, s)) for t in tasks for a in ARMS for s in seeds]
 
 
 FAST = dict(bootstrap_replicates=1000, permutation_draws=2000)
@@ -215,6 +219,44 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(truncate_to_cap(r, 4)["feasible"])
         with self.assertRaises(MeasurementError):
             truncate_to_cap(r, 60)
+
+
+class SevenConditionAnalysisTests(unittest.TestCase):
+    def test_factorial_estimates_and_interaction_are_estimation_only(self):
+        tasks = [f"t{i}" for i in range(8)]
+        # memory helps only after the detour on t0..t3: D0 fails there, D0U/D18U/D18 succeed -> interaction +1 on 4 tasks
+        outcome = lambda t, a, s: not (a == "D0" and int(t[1:]) < 4)
+        out = analysis.analyze(full_records(tasks, [11], outcome), design(tasks), **FAST)
+        fac = out["factorial_estimation"]
+        self.assertAlmostEqual(fac["interaction"]["estimate"], 0.5)
+        self.assertAlmostEqual(fac["estimates"]["D18U-D0U"]["estimate"], 0.0)
+        self.assertAlmostEqual(fac["estimates"]["D0-D0U"]["estimate"], -0.5)
+        for est in fac["estimates"].values():
+            self.assertNotIn("p_value", est)
+            self.assertEqual(est["role"], "secondary_estimation_only")
+        self.assertIsNotNone(fac["interaction"]["ci_95_template_cluster_bootstrap"])
+        self.assertEqual(list(out["primary"]), ["D18-D0"])                                # primary unchanged
+        self.assertIn("exact McNemar", out["primary_test_note"])
+
+    def test_interface_report_denominators_and_categories(self):
+        recs = full_records(["t0", "t1"], [11], lambda *_: True)
+        recs = [rec(r["task_id"], r["condition"], 11, True, invalid=2) if r["condition"] == "D18" else r for r in recs]
+        out = analysis.analyze(recs, design(["t0", "t1"]), **FAST)["interface_by_condition"]["by_condition"]
+        d18 = out["D18"]
+        self.assertEqual((d18["episodes"], d18["decisions"], d18["rejected_selections"]), (2, 10, 4))
+        self.assertAlmostEqual(d18["rejected_per_decision"], 0.4)
+        self.assertAlmostEqual(d18["rejected_per_attempt"], 4 / 14)
+        self.assertEqual(d18["rejection_categories"], {"no_action_index": 4})
+        self.assertEqual(out["D0"]["rejected_selections"], 0)
+        self.assertEqual(out["D0U"]["selection_limit_terminations"], 0)
+
+    def test_reproducibility_cells_are_planned_but_excluded_from_primary(self):
+        tasks = ["t0", "t1"]
+        recs = full_records(tasks, [11], lambda t, a, s: a != "D0") + [rec("t0", a, s, False) for a in ("D0", "D18") for s in (29, 47)]
+        d = {**design(tasks), "reproducibility": {"tasks": ["t0"], "seeds": [29, 47], "conditions": ["D0", "D18"]}}
+        out = analysis.analyze(recs, d, **FAST)
+        self.assertEqual(out["primary"]["D18-D0"]["estimate"], 1.0)                       # seed 11 only
+        self.assertEqual(out["missingness_by_arm"]["D0"]["planned"], 4)
 
 
 class PilotDiagnosticTests(unittest.TestCase):

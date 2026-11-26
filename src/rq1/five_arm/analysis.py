@@ -22,11 +22,11 @@ from statistics import fmean, median
 from typing import Any, Mapping, Sequence
 
 from rq1.five_arm.measurements import injected_relevance, retrieved_precision_at_3, validate_record
-from rq1.five_arm.protocol import (CONDITIONS, FILLER_ARMS, NATURAL_ARMS, PRIMARY_CONTRAST, SECONDARY_CONTRASTS,
-                                   assert_five_arm_records, contrast_name)
+from rq1.five_arm.protocol import (CONDITIONS, FACTORIAL_ESTIMATES, FILLER_ARMS, NATURAL_ARMS, PRIMARY_CONTRAST,
+                                   SECONDARY_CONTRASTS, assert_five_arm_records, contrast_name)
 from rq1.five_arm.stats import bootstrap_mean_ci, cluster_bootstrap_ci, holm, mcnemar_exact, sign_flip_test
 
-ANALYSIS_SCHEMA = "rq1-five-arm-analysis-v2"
+ANALYSIS_SCHEMA = "rq1-seven-condition-analysis-v3"
 POPULATION_STATEMENT = (
     "Estimates describe the finite screened task population (and the seeds run).  Inference to a broader population of "
     "ALFWorld tasks assumes the screened tasks are exchangeable with that population, which the screening does not "
@@ -75,7 +75,11 @@ def _arm_tasks(design: Mapping[str, Any], arm: str) -> list[str]:
 
 
 def _planned_cells(design: Mapping[str, Any]) -> set[tuple[str, str, int]]:
-    return {(task, arm, int(seed)) for arm in CONDITIONS for task in _arm_tasks(design, arm) for seed in design["seeds"]}
+    planned = {(task, arm, int(seed)) for arm in CONDITIONS for task in _arm_tasks(design, arm) for seed in design["seeds"]}
+    repro = design.get("reproducibility") or {}
+    planned |= {(task, arm, int(seed)) for task in repro.get("tasks", []) for arm in repro.get("conditions", [])
+                for seed in repro.get("seeds", [])}
+    return planned
 
 
 def universe(design: Mapping[str, Any], treatment: str, reference: str) -> list[str]:
@@ -129,14 +133,14 @@ def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, repl
         result.update(estimate=None, p_value=None, test=None, ci_95_template_cluster_bootstrap=None, ci_95_task_bootstrap=None)
         return result
     values = [task_diffs[t] for t in sorted(task_diffs)]
-    test = sign_flip_test(values, draws=draws, seed=seed)
+    test = sign_flip_test(values, draws=draws, seed=seed) if draws else None      # draws=0: estimation only
     by_template: dict[str, list[float]] = defaultdict(list)
     by_scene: dict[str, list[float]] = defaultdict(list)
     for task, diff in sorted(task_diffs.items()):
         by_template[str(design["tasks"][task]["goal_template"])].append(diff)
         by_scene[str(design["tasks"][task]["scene"])].append(diff)
     result.update(
-        estimate=fmean(values), estimate_percentage_points=100 * fmean(values), p_value=test["p_value"], test=test,
+        estimate=fmean(values), estimate_percentage_points=100 * fmean(values), p_value=test["p_value"] if test else None, test=test,
         null_hypothesis="sharp null: within every task the two arms' outcome distributions are identical (arm labels "
                         "exchangeable); task-level sign flips",
         ci_95_template_cluster_bootstrap=cluster_bootstrap_ci(by_template, seed=seed, replicates=replicates),
@@ -152,7 +156,7 @@ def _contrast(cells, design, treatment, reference, tasks_universe, *, seed, repl
     template_values = [fmean(v) for _, v in sorted(by_template.items())]
     result["template_sensitivity"] = {
         "templates": len(template_values), "template_weighted_estimate": fmean(template_values),
-        "sign_flip_template_level": sign_flip_test(template_values, draws=draws, seed=seed + 1),
+        "sign_flip_template_level": sign_flip_test(template_values, draws=draws, seed=seed + 1) if draws else None,
         "note": "unit = goal-template mean difference; robust to within-template dependence of heterogeneous effects"}
     families: dict[str, Counter] = defaultdict(Counter)
     for task in task_diffs:
@@ -190,6 +194,69 @@ def _effort(cells, design, treatment, reference, tasks_universe, field, seed, re
             "note": "failures counted at the full recovery allowance (restricted mean), never success-only" if field == "capped_recovery_actions" else ""}
 
 
+def _factorial(cells, design, *, seed, replicates) -> dict[str, Any]:
+    """Memory x perturbation estimates on the primary seed(s), ESTIMATION ONLY (intervals, no tests).  D18U shows the frozen
+    post-detour D18 block, so the interaction holds memory text fixed across perturbation levels."""
+    seeds = [int(s) for s in design["seeds"]]
+    tasks = sorted(design["tasks"])
+    per_task: dict[str, float] = {}
+    excluded: dict[str, str] = {}
+    for task in tasks:
+        diffs = []
+        for s in seeds:
+            y = {arm: _outcome(cells, task, arm, s) for arm in ("D0", "D18", "D0U", "D18U")}
+            if all(v is not None for v in y.values()):
+                diffs.append((y["D18"] - y["D0"]) - (y["D18U"] - y["D0U"]))
+        if diffs:
+            per_task[task] = fmean(diffs)
+        else:
+            excluded[task] = "not all four factorial cells VALID"
+    by_template: dict[str, list[float]] = defaultdict(list)
+    for task, value in per_task.items():
+        by_template[str(design["tasks"][task]["goal_template"])].append(value)
+    values = [per_task[t] for t in sorted(per_task)]
+    interaction = {"definition": "(D18 - D0) - (D18U - D0U), task-weighted", "tasks_analysed": len(values),
+                   "excluded_tasks": excluded, "estimate": fmean(values) if values else None,
+                   "ci_95_template_cluster_bootstrap": cluster_bootstrap_ci(by_template, seed=seed, replicates=replicates) if values else None,
+                   "ci_95_task_bootstrap": bootstrap_mean_ci(values, seed=seed, replicates=replicates) if values else None,
+                   "role": "secondary_estimation_only",
+                   "interpretation_rule": "no disruption-specific claim unless the template-cluster interval excludes 0"}
+    estimates = {}
+    for i, (a, b) in enumerate(FACTORIAL_ESTIMATES):
+        result = _contrast(cells, design, a, b, universe(design, a, b), seed=seed + 1 + i, replicates=replicates, draws=0,
+                           role="secondary_estimation_only")
+        for key in ("p_value", "test", "mcnemar_exact"):
+            result.pop(key, None)
+        result.get("template_sensitivity", {}).pop("sign_flip_template_level", None)
+        estimates[contrast_name(a, b)] = result
+    return {"estimates": estimates, "interaction": interaction,
+            "meaning": {"D18U-D0U": "continuation benefit of memory without perturbation",
+                        "D0-D0U": "perturbation effect without memory (manipulation check on the confirmatory roster)",
+                        "D18-D18U": "perturbation effect with the same memory block"}}
+
+
+def interface_report(records: Sequence[Mapping[str, Any]], cells: Mapping[tuple[str, str, int], Mapping[str, Any]]) -> dict[str, Any]:
+    """Rejected selections by condition with explicit denominators: episodes, model decisions (one per recovery-trace
+    entry) and selection attempts (decisions + rejections); rejection categories; selection-limit terminations.
+    Descriptive; the parser is unchanged."""
+    out: dict[str, Any] = {}
+    for arm in CONDITIONS:
+        rows = [c for c in cells.values() if c["condition"] == arm and c["outcome_status"] == "VALID"]
+        decisions = sum(len(c["recovery_trace"]) for c in rows)
+        rejected = sum(len(step["rejections"]) for c in rows for step in c["recovery_trace"])
+        categories = Counter(reason for c in rows for step in c["recovery_trace"] for reason in step["rejections"])
+        limit = sum(c["termination_reason"] == "invalid_action_limit" for c in rows)
+        out[arm] = {"episodes": len(rows), "decisions": decisions, "selection_attempts": decisions + rejected,
+                    "rejected_selections": rejected,
+                    "rejected_per_episode": rejected / len(rows) if rows else None,
+                    "rejected_per_decision": rejected / decisions if decisions else None,
+                    "rejected_per_attempt": rejected / (decisions + rejected) if decisions + rejected else None,
+                    "rejection_categories": dict(sorted(categories.items())),
+                    "selection_limit_terminations": limit,
+                    "selection_limit_termination_rate": limit / len(rows) if rows else None}
+    return {"by_condition": out, "note": "descriptive; rejections are part of each outcome and the parser is unchanged"}
+
+
 def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
             labels: Mapping[tuple[str, str], str] | None = None, seed: int = 20261124,
             bootstrap_replicates: int = 10_000, permutation_draws: int = 100_000) -> dict[str, Any]:
@@ -215,7 +282,9 @@ def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
                                                         bootstrap_replicates, permutation_draws)
               for i, (a, b) in enumerate((PRIMARY_CONTRAST, *SECONDARY_CONTRASTS))
               for field in ("capped_recovery_actions", "invalid_actions")}
-    valid = [c for c in cells.values() if c["outcome_status"] == "VALID"]
+    factorial = _factorial(cells, design, seed=seed + 40, replicates=bootstrap_replicates)
+    interface = interface_report(records, {k: v for k, v in cells.items() if int(k[2]) in {int(x) for x in design["seeds"]}})
+    valid = [c for c in cells.values() if c["outcome_status"] == "VALID" and int(c["seed"]) in {int(x) for x in design["seeds"]}]
     latency = {arm: {"episodes_including_failures": len(rows),
                      "wall_clock_seconds_median": median(x["wall_clock_seconds"] for x in rows) if rows else None,
                      "inference_latency_seconds_median": median(x["inference_latency_seconds"] for x in rows) if rows else None,
@@ -251,6 +320,9 @@ def analyze(records: Sequence[Mapping[str, Any]], design: Mapping[str, Any], *,
             "secondary_exploratory": secondary,
             "secondary_multiplicity": "Holm within the secondary family only; exploratory, not confirmatory discoveries",
             "secondary_effort": effort, "latency_descriptive": latency,
+            "factorial_estimation": factorial, "interface_by_condition": interface,
+            "primary_test_note": ("with one inference seed every task contributes one binary pair, so the task-level "
+                                  "sign-flip p-value IS the exact McNemar p-value (reported in mcnemar_exact)"),
             "cumulative_success_by_recovery_actions": curves, "acquisition_overlap_sensitivity": overlap_sensitivity,
             "relevance": relevance, "population_statement": POPULATION_STATEMENT,
             "status": "analysis output only; not a scientific claim until the SAP, roster and data are approved",

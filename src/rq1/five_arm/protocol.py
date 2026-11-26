@@ -1,10 +1,20 @@
-"""Versioned five-arm protocol definition (PROPOSED / DRAFT), hypothesis hierarchy and the scientific decision register.
+"""Versioned seven-condition protocol definition (PROPOSED / DRAFT), hypothesis hierarchy and the decision register.
 
 Code never marks a decision approved.  Approvals are external human records validated by ``readiness``.
 
-Hypothesis hierarchy (Phase 2B, proposed):
+Phase 3C design (author-authorised implementation; the protocol itself remains DRAFT until approved):
 
-* ONE primary comparison: D18 versus D0.  Primary outcome: environment-reported task success within the approved total
+* Seven conditions.  Detoured (after the controlled one-step navigation perturbation, total cap 50): D0, D18, Rel, Irr,
+  Fill.  Undisturbed (no perturbation, total cap 49, identical model-action allowance): D0U, D18U.
+* Research question (narrowed): task continuation -- completion of a partly executed task after a controlled navigation
+  perturbation -- with one retrieval from a frozen 18-skill library; no recovery-mechanism claim.
+* D18U shows the SAME frozen memory block that natural retrieval produced at the post-detour state of the task.  No
+  retrieval happens in the undisturbed conditions; D18U is NOT independent natural retrieval at the undisturbed state.
+  It holds memory content fixed so the memory x perturbation interaction is not confounded by different retrieved text.
+
+Hypothesis hierarchy:
+
+* ONE primary comparison: D18 versus D0 (both detoured).  Primary outcome: environment-reported task success within the approved total
   action horizon after the controlled disruption.  Primary estimand: the task-weighted mean (over the screened task
   population) of the within-task difference in recovery success between natural retrieval from the frozen Accum-18
   library and the no-memory baseline, averaging inference seeds within each task.  It is the TOTAL effect of the
@@ -13,6 +23,9 @@ Hypothesis hierarchy (Phase 2B, proposed):
 * Secondary, exploratory comparisons (separate multiplicity family, never confirmatory discoveries): D18-Fill,
   Irr-Fill, Rel-Irr, Rel-Fill; retrieval-relevance associations; action efficiency; invalid actions; latency;
   acquisition-template-overlap sensitivity.
+* Secondary factorial ESTIMATES (intervals only, no tests): D18U-D0U (continuation benefit without perturbation),
+  D0-D0U and D18-D18U (perturbation effect without / with memory) and the memory x perturbation interaction
+  (D18-D0) - (D18U-D0U).
 * Claims boundary: a fixed library cannot establish effects of progressive library growth, optimal library size,
   efficacy on unrelated benchmarks or other model families, or autonomous improvement over time.
 """
@@ -20,11 +33,14 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-PROTOCOL_VERSION = "rq1-five-arm-v1"
+PROTOCOL_VERSION = "rq1-seven-condition-v2"
 PROTOCOL_STATUS = "DRAFT"
-CONDITIONS = ("D0", "D18", "Rel", "Irr", "Fill")
-MEMORY_BEARING = ("D18", "Rel", "Irr", "Fill")
-NATURAL_ARMS = ("D0", "D18")                        # never depend on filler or labels: every eligible task
+DETOURED_CONDITIONS = ("D0", "D18", "Rel", "Irr", "Fill")
+UNDISTURBED_CONDITIONS = ("D0U", "D18U")
+CONDITIONS = DETOURED_CONDITIONS + UNDISTURBED_CONDITIONS
+BASE_CONDITION = {"D0U": "D0", "D18U": "D18"}       # undisturbed condition -> condition whose frozen memory it shows
+MEMORY_BEARING = ("D18", "Rel", "Irr", "Fill", "D18U")
+NATURAL_ARMS = ("D0", "D18", "D0U", "D18U")         # never depend on filler or labels: every eligible task
 FILLER_ARMS = ("Rel", "Irr", "Fill")                # depend on the approved filler corpus (cells may be blocked)
 ALWAYS_SCHEDULED = ("D0", "D18", "Fill")            # Fill is scheduled for every task unless its cell is blocked
 MECHANISM_ARMS = ("Rel", "Irr")                     # scheduled only where the frozen selection rule yields a skill
@@ -32,15 +48,18 @@ DEFERRED_ARMS = {"Gate": "deferred: the historical Gate arm could become an exac
 PRIMARY_CONTRAST = ("D18", "D0")
 PRIMARY_CONTRASTS = (PRIMARY_CONTRAST,)
 SECONDARY_CONTRASTS = (("D18", "Fill"), ("Irr", "Fill"), ("Rel", "Irr"), ("Rel", "Fill"))
+FACTORIAL_ESTIMATES = (("D18U", "D0U"), ("D0", "D0U"), ("D18", "D18U"))   # plus the interaction; estimation only
 HISTORICAL_SIX_ARM_PROTOCOL = "rq1-selective-memory-six-arm-v1"
 HISTORICAL_SIX_ARM_CONDITIONS = ("D0", "D18", "Rel", "Irr", "Fill", "Gate")
-ACTIVE_SKILL_COUNT = {"D0": 0, "D18": 3, "Rel": 1, "Irr": 1, "Fill": 0}
+ACTIVE_SKILL_COUNT = {"D0": 0, "D18": 3, "Rel": 1, "Irr": 1, "Fill": 0, "D0U": 0, "D18U": 3}
 
 CLAIMS_BOUNDARY = (
-    "The five-arm experiment uses one fixed, frozen library (Accum-18).  It cannot establish: the effect of progressive "
+    "The seven-condition experiment uses one fixed, frozen library (Accum-18).  It cannot establish: the effect of progressive "
     "library growth; an optimal library size; efficacy on unrelated benchmarks; efficacy across model families; or "
     "autonomous learning improvements over time.  The primary comparison estimates the total effect of natural "
-    "retrieval from this library versus no memory for one model, one environment and the screened task population."
+    "retrieval from this library versus no memory for one model, one environment and the screened task population.  "
+    "The perturbation is a controlled one-step navigation detour whose disruptiveness the pilot diagnostic left "
+    "INCONCLUSIVE; no recovery-from-failure mechanism is claimed."
 )
 
 # Execution stages used by readiness and by the decision register's ``blocks`` field.
@@ -63,7 +82,7 @@ def assert_five_arm_records(records: Iterable[Mapping[str, Any]]) -> None:
             raise ProtocolError(f"record {index} has protocol {record.get('protocol_version')!r}; six-arm or other "
                                 f"records cannot be analysed as {PROTOCOL_VERSION}")
         if record.get("condition") not in CONDITIONS:
-            raise ProtocolError(f"record {index} has condition {record.get('condition')!r} outside the five-arm design")
+            raise ProtocolError(f"record {index} has condition {record.get('condition')!r} outside the seven-condition design")
 
 
 # --- scientific decision register --------------------------------------------------------------------------------------

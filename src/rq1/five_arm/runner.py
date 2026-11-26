@@ -24,7 +24,7 @@ from rq1.five_arm import readiness, runtime
 from rq1.five_arm.executor import InterventionIntegrityError, ProtocolViolation  # noqa: F401  (re-exported)
 from rq1.five_arm.manifest import DIAGNOSTIC_SCHEMA, SCHEMA as FIVE_ARM_SCHEMA, STAGE_LEVEL, validate_manifest
 from rq1.five_arm.memory import FillerCorpus, Skill, Tokenizer, construct_arm_memory
-from rq1.five_arm.protocol import CONDITIONS
+from rq1.five_arm.protocol import BASE_CONDITION, CONDITIONS, UNDISTURBED_CONDITIONS
 
 
 class ChatTemplateCounter:
@@ -48,7 +48,9 @@ class ChatTemplateCounter:
 
 class FiveArmMemoryPolicy:
     """Memory transform for the executor: (unit, task, retrieval_outcome, failure_context) -> (memory, audit).
-    Verifies the live natural top-3 against the frozen ranking, the filler approval/tolerance and the frozen memory hash."""
+    Detoured conditions: verifies the live natural top-3 against the frozen ranking, the filler approval/tolerance and the
+    frozen memory hash.  Undisturbed conditions (D0U, D18U): no retrieval may happen; the memory is the frozen block of the
+    base condition (D18U shows exactly the D18 block retrieved at the post-detour state -- not an independent retrieval)."""
 
     def __init__(self, *, manifest: Mapping[str, Any], skill_texts: Mapping[str, str], corpus: FillerCorpus | None,
                  tokenizer: Tokenizer, tolerance: Mapping[str, Any], d0_representation: str) -> None:
@@ -63,10 +65,16 @@ class FiveArmMemoryPolicy:
             raise InterventionIntegrityError(f"unsupported arm {arm!r}")
         selection = self.manifest["selections"][task_id]
         frozen_top3 = [item["skill_id"] for item in selection["natural_top3"]]
-        live = [(c.skill_id, float(c.score)) for c in retrieval_outcome.result.top]
-        if [skill_id for skill_id, _ in live] != frozen_top3:
-            raise InterventionIntegrityError(f"{task_id}: live natural top-3 {live} differs from the frozen ranking {frozen_top3}")
+        if arm in UNDISTURBED_CONDITIONS:
+            if retrieval_outcome.result.retrieved:
+                raise InterventionIntegrityError(f"{task_id}/{arm}: an undisturbed condition performed a retrieval")
+            live = [(item["skill_id"], item.get("score")) for item in selection["natural_top3"]]
+        else:
+            live = [(c.skill_id, float(c.score)) for c in retrieval_outcome.result.top]
+            if [skill_id for skill_id, _ in live] != frozen_top3:
+                raise InterventionIntegrityError(f"{task_id}: live natural top-3 {live} differs from the frozen ranking {frozen_top3}")
         natural = [Skill(skill_id, self.skill_texts[skill_id], score, rank) for rank, (skill_id, score) in enumerate(live, 1)]
+        base = BASE_CONDITION.get(arm, arm)
         active = None
         if arm in ("Rel", "Irr"):
             chosen = selection[arm.lower()]
@@ -75,7 +83,7 @@ class FiveArmMemoryPolicy:
             active = Skill(chosen["skill_id"], self.skill_texts[chosen["skill_id"]], chosen.get("score"), chosen.get("rank"))
         if arm in ("Rel", "Irr", "Fill") and self.corpus is None:
             raise InterventionIntegrityError(f"{task_id}/{arm}: no filler corpus loaded")
-        memory, audit = construct_arm_memory(arm, natural_top3=natural, active_skill=active,
+        memory, audit = construct_arm_memory(base, natural_top3=natural, active_skill=active,
                                              corpus=self.corpus if arm in ("Rel", "Irr", "Fill") else None,
                                              tokenizer=self.tokenizer, tolerance=self.tolerance,
                                              d0_representation=self.d0_representation, salt=task_id)
@@ -85,6 +93,9 @@ class FiveArmMemoryPolicy:
             raise InterventionIntegrityError(f"{task_id}/{arm}: memory block differs from the frozen manifest")
         audit["natural_top3_skill_ids"] = frozen_top3
         audit["natural_top3_scores"] = [score for _, score in live]
+        if arm in UNDISTURBED_CONDITIONS:
+            audit["arm"] = arm
+            audit["not_applicable"] = list(audit.get("not_applicable", [])) + ["retrieval_at_undisturbed_state"]
         return memory, audit
 
 

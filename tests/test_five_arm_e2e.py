@@ -54,10 +54,10 @@ class FiveArmEndToEndTests(_Base):
         driver = E.ScriptedDriver(E.memory_sensitive)
         q = self.queue(spec, self.arm_executor(spec, driver))
         summary = q.run()
-        self.assertEqual((summary["pending_units"], summary["final_status_counts"]), (0, {"VALID": 10}))
+        self.assertEqual((summary["pending_units"], summary["final_status_counts"]), (0, {"VALID": 14}))
         self.assertTrue(q.validate()["ok"])
         records = q.records()
-        self.assertEqual(sorted({r["condition"] for r in records}), ["D0", "D18", "Fill", "Irr", "Rel"])
+        self.assertEqual(sorted({r["condition"] for r in records}), ["D0", "D0U", "D18", "D18U", "Fill", "Irr", "Rel"])
         for r in records:
             self.assertEqual(validate_record(r), [])
             self.assertTrue(r["synthetic"])
@@ -67,6 +67,15 @@ class FiveArmEndToEndTests(_Base):
         by = {(r["task_id"], r["condition"]): r for r in records}
         task = sorted(spec["tasks"])[0]
         self.assertFalse(by[(task, "D0")]["success"])                                  # no memory -> scripted model wanders
+        self.assertFalse(by[(task, "D0U")]["success"])
+        self.assertTrue(by[(task, "D18U")]["success"])
+        u, d = by[(task, "D18U")], by[(task, "D18")]
+        self.assertEqual((u["detour_actions"], u["total_action_cap"], u["recovery_action_allowance"]), (0, 11, d["recovery_action_allowance"]))
+        self.assertEqual((u["memory_block_sha256"], u["memory_source"]), (d["memory_block_sha256"], "frozen_block_from_detoured_natural_retrieval"))
+        self.assertEqual(u["natural_top3_skill_ids"], d["natural_top3_skill_ids"])
+        self.assertIn("retrieval_at_undisturbed_state", u["not_applicable"])
+        self.assertTrue(all(c["request_sha256"] and c["response_sha256"] for c in d["provider_calls"]))
+        self.assertEqual(d["execution_provenance"]["mode"], "sequential")
         self.assertEqual(by[(task, "D0")]["termination_reason"], "budget_exhausted")
         self.assertEqual(by[(task, "D18")]["injected_skill_ids"], by[(task, "D18")]["natural_top3_skill_ids"])
         self.assertEqual(by[(task, "Rel")]["injected_skill_ids"], [spec["selections"][task]["rel"]["skill_id"]])
@@ -83,6 +92,17 @@ class FiveArmEndToEndTests(_Base):
             self.assertEqual(len(retrievals), 1)                                       # retrieval exactly once, every arm
             self.assertNotIn(task, prompts[0])
         self.assertTrue(compare_arm_prompts(first, d0_representation="absent_memory_section")["ok"])
+        prompts_u = {}
+        for arm in ("D0U", "D18U"):
+            unit = next(u for u in spec["manifest"]["units"] if u["task_id"] == task and u["condition"] == arm)
+            ev = events(q.root / "attempts" / unit["unit_key"][:24] / "a1" / "episode" / "episode-events.jsonl")
+            prompts_u[arm] = [e["payload"]["prompt"] for e in ev if e["event"] == "model_selection"][0]
+            retrieval = (q.root / "attempts" / unit["unit_key"][:24] / "a1" / "result" / "retrieval.jsonl").read_text()
+            self.assertIn('"no_retrieval": true', retrieval)                                # no retrieval when undisturbed
+        self.assertEqual(split_sections(prompts_u["D18U"])["RECOVERY MEMORY"], split_sections(first["D18"])["RECOVERY MEMORY"])
+        self.assertNotIn("RECOVERY MEMORY", prompts_u["D0U"])
+        self.assertNotIn("go to drawer 1", split_sections(prompts_u["D18U"])["EPISODE HISTORY"])     # no detour step
+        self.assertIn("go to drawer 1", split_sections(first["D18"])["EPISODE HISTORY"])
         self.assertNotIn("RECOVERY MEMORY", first["D0"])
         self.assertIn(SKILL_TEXTS[spec["selections"][task]["rel"]["skill_id"]], first["Rel"])
         # analysis runs from saved records with the frozen arm subsets
@@ -98,7 +118,7 @@ class FiveArmEndToEndTests(_Base):
         man = spec["manifest"]
         t2 = "valid_seen:beta/trial_T2"
         arms = sorted(u["condition"] for u in man["units"] if u["task_id"] == t2)
-        self.assertEqual(arms, ["D0", "D18", "Fill", "Irr"])
+        self.assertEqual(arms, ["D0", "D0U", "D18", "D18U", "Fill", "Irr"])
         self.assertNotIn(t2, man["arm_subsets"]["Rel"])
         q = self.queue(spec, self.arm_executor(spec, E.ScriptedDriver(E.solver)))
         q.run()
@@ -108,7 +128,7 @@ class FiveArmEndToEndTests(_Base):
         unapproved = FillerCorpus("synthetic-neutral-v0", NEUTRAL_SENTENCES, {})
         spec = E.build_pilot(self.root, corp=unapproved)
         man = spec["manifest"]
-        self.assertEqual(sorted({u["condition"] for u in man["units"]}), ["D0", "D18"])
+        self.assertEqual(sorted({u["condition"] for u in man["units"]}), ["D0", "D0U", "D18", "D18U"])
         self.assertEqual({c["condition"] for c in man["blocked_cells"]}, {"Rel", "Irr", "Fill"})
         self.assertEqual(man["arm_subsets"], {"Rel": [], "Irr": [], "Fill": []})
 
@@ -185,14 +205,14 @@ class FiveArmEndToEndTests(_Base):
         counting.interruption_record = executor.interruption_record
         q = self.queue(spec, counting)
         q.run()
-        self.assertEqual(resumed_calls["n"], 3)                                            # 2 done units never re-run
+        self.assertEqual(resumed_calls["n"], 5)                                            # 2 done units never re-run
         report = q.validate()
         self.assertTrue(report["ok"] and report["complete"])
         rows = [r for r in q.records() if r["termination_reason"] == "infrastructure_interruption"]
         self.assertEqual(len(rows), 1)
-        self.assertEqual(sum(r["outcome_status"] == "VALID" for r in q.records()), 5)
+        self.assertEqual(sum(r["outcome_status"] == "VALID" for r in q.records()), 7)
         q.run()                                                                            # idempotent
-        self.assertEqual(resumed_calls["n"], 3)
+        self.assertEqual(resumed_calls["n"], 5)
 
     def test_leakage_and_ranking_drift_halt_before_the_provider(self):
         sentences = tuple(x.replace(".", " skill_03.") for x in NEUTRAL_SENTENCES)

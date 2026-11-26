@@ -9,7 +9,7 @@ from five_arm_fixtures import LIBRARY_SCORES, NEUTRAL_SENTENCES, SKILL_TEXTS, TO
 from rq1.five_arm import manifest as M
 from rq1.five_arm.memory import (MEMORY_KEY, FillerCorpus, FiveArmMemoryError, Skill, construct_arm_memory, lint_filler_sentence,
                                  serialize_block)
-from rq1.five_arm.protocol import CONDITIONS, ProtocolError, assert_five_arm_records
+from rq1.five_arm.protocol import DETOURED_CONDITIONS as CONDITIONS, ProtocolError, assert_five_arm_records
 from rq1.five_arm.selection import (SelectionError, mechanism_subsets, natural_ranking, required_annotation_candidates,
                                     select_interventions)
 
@@ -216,6 +216,7 @@ class ManifestTests(unittest.TestCase):
         man = self.make()
         counts = man["condition_counts"]
         self.assertEqual((counts["D0"], counts["D18"], counts["Fill"], counts["Rel"], counts["Irr"]), (4, 4, 4, 2, 4))
+        self.assertEqual((counts["D0U"], counts["D18U"]), (4, 4))
         self.assertEqual(M.validate_manifest(man), [])
         self.assertEqual(man["protocol_status"], "DRAFT")
 
@@ -232,7 +233,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(man["blocked_cells"][0]["condition"], "Fill")
         self.assertNotIn(first, man["arm_subsets"]["Fill"])
         arms = sorted({u["condition"] for u in man["units"] if u["task_id"] == first})
-        self.assertEqual(arms, ["D0", "D18", "Irr", "Rel"])            # the primary pair survives a blocked filler cell
+        self.assertEqual(arms, ["D0", "D0U", "D18", "D18U", "Irr", "Rel"])   # primary pair + factorial cells survive
         self.assertEqual(M.validate_manifest(man), [])
         good = self.make()
         with self.assertRaises(M.FiveArmManifestError):                   # fixture approval never freezes for real execution
@@ -246,7 +247,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_units_carry_exact_cap_and_allowance_and_diagnostic_manifest(self):
         man = self.make()
-        self.assertTrue(all(u["total_action_cap"] == 50 and u["recovery_action_allowance"] == 46 for u in man["units"]))
+        self.assertTrue(all(u["total_action_cap"] == (49 if u["condition"] in ("D0U", "D18U") else 50)
+                            and u["recovery_action_allowance"] == 46 for u in man["units"]))
         diag = M.build_diagnostic_manifest(run_id="diag-1", tasks=self.tasks, seeds=[11], total_action_cap=50, source_commit="0" * 40,
                                            input_hashes={k: "f" * 64 for k in M.DIAGNOSTIC_INPUT_HASHES})
         self.assertEqual(sorted({u["condition"] for u in diag["units"]}), ["DETOURED", "UNDISTURBED"])
@@ -257,6 +259,41 @@ class ManifestTests(unittest.TestCase):
             M.build_diagnostic_manifest(run_id="diag-2", tasks=[{**self.tasks[0], "detour_actions": 2}], seeds=[11],
                                         total_action_cap=50, source_commit="0" * 40,
                                         input_hashes={k: "f" * 64 for k in M.DIAGNOSTIC_INPUT_HASHES})
+
+
+class SevenConditionManifestTests(ManifestTests):
+    def test_undisturbed_units_and_reproducibility_subset(self):
+        man = self.make(seeds=[11], reproducibility={"seeds": [29, 47], "task_count": 1, "salt": "repro-salt-0123456789"})
+        units = man["units"]
+        by = {(u["task_id"], u["condition"], u["reproducibility"]): u for u in units if u["seed"] == 11}
+        for task in {u["task_id"] for u in units}:
+            self.assertEqual(by[(task, "D18U", False)]["memory_block_sha256"], by[(task, "D18", False)]["memory_block_sha256"])
+            self.assertEqual((by[(task, "D0U", False)]["total_action_cap"], by[(task, "D0", False)]["total_action_cap"]), (49, 50))
+            self.assertEqual(by[(task, "D0U", False)]["recovery_action_allowance"], by[(task, "D0", False)]["recovery_action_allowance"])
+            self.assertEqual(by[(task, "D18U", False)]["identity"]["perturbation"], "none")
+        repro = [u for u in units if u["reproducibility"]]
+        self.assertEqual((len(repro), sorted({u["condition"] for u in repro}), sorted({u["seed"] for u in repro})),
+                         (4, ["D0", "D18"], [29, 47]))
+        self.assertEqual(man["reproducibility_units"], 4)
+        self.assertNotIn(29, man["seeds"])
+        self.assertEqual(M.validate_manifest(man), [])
+        with self.assertRaises(M.FiveArmManifestError):
+            self.make(seeds=[11], reproducibility={"seeds": [11], "task_count": 1, "salt": "repro-salt-0123456789"})
+
+    def test_validation_catches_tampered_undisturbed_units(self):
+        man = self.make()
+        bad = json.loads(json.dumps(man))
+        u = next(x for x in bad["units"] if x["condition"] == "D18U")
+        u["memory_block_sha256"] = "0" * 64
+        self.assertTrue(any("D18U memory block" in p for p in M.validate_manifest(bad)))
+        bad = json.loads(json.dumps(man))
+        next(x for x in bad["units"] if x["condition"] == "D0U")["total_action_cap"] = 50
+        self.assertTrue(any("total cap" in p for p in M.validate_manifest(bad)))
+
+    def test_undisturbed_conditions_are_never_constructed_directly(self):
+        with self.assertRaises(FiveArmMemoryError):
+            construct_arm_memory("D18U", natural_top3=natural_top3(), active_skill=None, corpus=None, tokenizer=TOK,
+                                 tolerance=TOLERANCE, d0_representation="absent_memory_section", salt="x")
 
 
 class HistoricalCompatibilityTests(unittest.TestCase):

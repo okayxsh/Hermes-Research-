@@ -1,15 +1,20 @@
-"""PROPOSED five-arm and pilot-diagnostic unit manifests, built from frozen inputs only.
+"""PROPOSED seven-condition and pilot-diagnostic unit manifests, built from frozen inputs only.
 
-Eligibility is defined per arm and frozen before any outcome exists (SD-23):
+Eligibility is defined per condition and frozen before any outcome exists (SD-23):
 
-* D0 and D18 are scheduled for EVERY roster task -- they use no filler and no labels, so a filler problem can never
-  remove a task's primary (D18 vs D0) pair;
+* D0, D18, D0U and D18U are scheduled for EVERY roster task -- they use no filler and no labels, so a filler problem can
+  never remove a task's primary (D18 vs D0) pair or its factorial cells;
+* undisturbed units (D0U, D18U) have total cap = study cap - 1 (no detour action) and the SAME model-action allowance as
+  the detoured units; D18U carries the frozen D18 memory block (same hash);
 * Fill is scheduled unless its neutral content misses the approved token tolerance (cell BLOCKED, recorded);
 * Rel / Irr are scheduled only where the frozen selection rule yields a skill and the cell is not blocked.
 
 The resulting ``arm_subsets`` are part of the hashed manifest.  Every task must carry an oracle replay at EXACTLY the
 manifest's total action cap.  Freezing requires a human approval bound to the manifest hash and the matching readiness
 level.  The pilot-diagnostic manifest (UNDISTURBED / DETOURED) is a separate schema and run.
+
+The optional reproducibility subset (D0 and D18 on a salted-hash-selected task subset at extra inference seeds) is
+scheduled after the primary units, flagged ``reproducibility: true`` and excluded from the primary analysis.
 """
 from __future__ import annotations
 
@@ -21,9 +26,11 @@ from typing import Any, Mapping, Sequence
 
 from rq1.five_arm import readiness
 from rq1.five_arm.measurements import DIAGNOSTIC_CONDITIONS, DIAGNOSTIC_PROTOCOL_VERSION
-from rq1.five_arm.protocol import CONDITIONS, FILLER_ARMS, NATURAL_ARMS, PROTOCOL_STATUS, PROTOCOL_VERSION
+from rq1.five_arm.protocol import (BASE_CONDITION, CONDITIONS, FILLER_ARMS, NATURAL_ARMS, PROTOCOL_STATUS, PROTOCOL_VERSION,
+                                   UNDISTURBED_CONDITIONS)
 
-SCHEMA = "rq1-five-arm-manifest-v2"
+SCHEMA = "rq1-seven-condition-manifest-v3"
+REPRODUCIBILITY_CONDITIONS = ("D0", "D18")
 DIAGNOSTIC_SCHEMA = "rq1-five-arm-diagnostic-manifest-v1"
 REQUIRED_INPUT_HASHES = ("roster_sha256", "labels_sha256", "ranking_sha256", "mechanism_subsets_sha256",
                          "filler_corpus_sha256", "runtime_config_sha256", "oracle_evidence_sha256", "exposure_statement_sha256")
@@ -80,16 +87,26 @@ def _common_checks(stage: str, run_id: str, source_commit: str, input_hashes: Ma
 
 
 def _unit(identity: Mapping[str, Any], order: int, cell: int, position: int, task: Mapping[str, Any], cap: int,
-          extra: Mapping[str, Any]) -> dict[str, Any]:
+          extra: Mapping[str, Any], *, unit_cap: int | None = None) -> dict[str, Any]:
+    """``cap`` is the study cap; ``unit_cap`` the bridge limit for this unit (study cap - 1 for undisturbed arm units).
+    The model-action allowance is always study cap - prefix - 1."""
     return {"unit_key": _hash(dict(identity)), "identity": dict(identity), "global_order": order, "cell_index": cell,
             "position_in_cell": position, "task_id": identity["task_id"], "seed": identity["seed"],
-            "condition": identity["condition"], "total_action_cap": cap,
+            "condition": identity["condition"], "total_action_cap": cap if unit_cap is None else unit_cap,
             "recovery_action_allowance": cap - int(task["prefix_actions"]) - 1, **extra}
+
+
+def reproducibility_tasks(task_ids: Sequence[str], *, count: int, salt: str) -> list[str]:
+    """Outcome-blind subset: the ``count`` tasks with the smallest sha256(salt|task_id)."""
+    if not salt or len(salt) < 16:
+        raise FiveArmManifestError("the reproducibility subset needs a recorded salt of at least 16 characters")
+    return sorted(sorted(task_ids, key=lambda t: hashlib.sha256(f"{salt}|{t}".encode()).hexdigest())[:count])
 
 
 def build_manifest(*, stage: str, run_id: str, tasks: Sequence[Mapping[str, Any]], selections: Mapping[str, Mapping[str, Any]],
                    memory_audits: Mapping[str, Mapping[str, Mapping[str, Any]]], seeds: Sequence[int], total_action_cap: int,
-                   source_commit: str, input_hashes: Mapping[str, str], synthetic: bool = False) -> dict[str, Any]:
+                   source_commit: str, input_hashes: Mapping[str, str], synthetic: bool = False,
+                   reproducibility: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if stage not in ("pilot", "confirmatory"):
         raise FiveArmManifestError("stage must be pilot or confirmatory")
     split = "valid_seen" if stage == "pilot" else "valid_unseen"
@@ -107,7 +124,7 @@ def build_manifest(*, stage: str, run_id: str, tasks: Sequence[Mapping[str, Any]
         for arm in CONDITIONS:
             if arm in ("Rel", "Irr") and sel.get(arm.lower()) is None:
                 continue
-            audit = memory_audits.get(task_id, {}).get(arm)
+            audit = memory_audits.get(task_id, {}).get(BASE_CONDITION.get(arm, arm))
             if audit is None:
                 raise FiveArmManifestError(f"{task_id}/{arm} has no pre-computed memory audit")
             if arm in NATURAL_ARMS:
@@ -123,24 +140,57 @@ def build_manifest(*, stage: str, run_id: str, tasks: Sequence[Mapping[str, Any]
         for seed in seeds:
             offset = cell_index % len(runnable)
             for position, arm in enumerate(runnable[offset:] + runnable[:offset]):
-                identity = {"protocol": PROTOCOL_VERSION, "stage": stage, "task_id": task_id, "seed": seed, "condition": arm,
-                            "checkpoint_digest": task["checkpoint_digest"], "post_detour_digest": task["post_detour_digest"],
-                            "total_action_cap": total_action_cap}
-                units.append(_unit(identity, len(units) + 1, cell_index, position, task, total_action_cap,
-                                   {"selected_skill_id": (sel.get(arm.lower()) or {}).get("skill_id") if arm in ("Rel", "Irr") else None,
-                                    "memory_block_sha256": memory_audits[task_id][arm]["memory_block_sha256"]}))
+                units.append(_arm_unit(stage, task, sel, memory_audits, arm, seed, total_action_cap, len(units) + 1,
+                                       cell_index, position, False))
             cell_index += 1
+    repro_block = None
+    if reproducibility:
+        repro_seeds = [int(x) for x in reproducibility["seeds"]]
+        if set(repro_seeds) & set(seeds):
+            raise FiveArmManifestError("reproducibility seeds must differ from the primary seeds")
+        chosen = reproducibility_tasks([str(t["task_id"]) for t in tasks], count=int(reproducibility["task_count"]),
+                                       salt=str(reproducibility["salt"]))
+        by_id = {str(t["task_id"]): t for t in tasks}
+        for task_id in chosen:
+            for seed in repro_seeds:
+                for position, arm in enumerate(REPRODUCIBILITY_CONDITIONS):
+                    units.append(_arm_unit(stage, by_id[task_id], selections[task_id], memory_audits, arm, seed,
+                                           total_action_cap, len(units) + 1, cell_index, position, True))
+                cell_index += 1
+        repro_block = {"tasks": chosen, "seeds": repro_seeds, "conditions": list(REPRODUCIBILITY_CONDITIONS),
+                       "salt_sha256": hashlib.sha256(str(reproducibility["salt"]).encode()).hexdigest(),
+                       "role": "descriptive seed-determinism check under memory; excluded from the primary analysis"}
     payload = {"schema": SCHEMA, "protocol_version": PROTOCOL_VERSION, "protocol_status": PROTOCOL_STATUS, "status": "proposed",
                "synthetic": bool(synthetic), "run_id": run_id, "stage": stage, "split": split, "source_commit": source_commit,
                "input_hashes": dict(sorted(input_hashes.items())), "seeds": seeds, "total_action_cap": total_action_cap,
-               "condition_order": "within-cell left rotation over the task's runnable arms",
+               "undisturbed_action_cap": total_action_cap - 1,
+               "allowance_rule": "model-action allowance = study cap - prefix - 1 for every condition; undisturbed bridge "
+                                 "limit = study cap - 1 (no detour action)",
+               "d18u_memory": "frozen D18 block retrieved at the post-detour state; no retrieval in undisturbed conditions",
+               "reproducibility": repro_block,
+               "condition_order": "within-cell left rotation over the task's runnable conditions",
                "tasks": [dict(t) for t in sorted(tasks, key=lambda t: str(t["task_id"]))],
                "selections": {k: dict(v) for k, v in sorted(selections.items())},
                "arm_subsets": {arm: sorted(v) for arm, v in subsets.items()},
                "units": units, "blocked_cells": blocked,
-               "condition_counts": dict(sorted(Counter(u["condition"] for u in units).items()))}
+               "condition_counts": dict(sorted(Counter(u["condition"] for u in units if not u["reproducibility"]).items())),
+               "reproducibility_units": sum(u["reproducibility"] for u in units)}
     payload["manifest_sha256"] = manifest_hash(payload)
     return payload
+
+
+def _arm_unit(stage, task, sel, memory_audits, arm, seed, cap, order, cell, position, reproducibility) -> dict[str, Any]:
+    task_id = str(task["task_id"])
+    undisturbed = arm in UNDISTURBED_CONDITIONS
+    unit_cap = cap - 1 if undisturbed else cap
+    identity = {"protocol": PROTOCOL_VERSION, "stage": stage, "task_id": task_id, "seed": seed, "condition": arm,
+                "perturbation": "none" if undisturbed else "one_step_navigation_detour",
+                "checkpoint_digest": task["checkpoint_digest"], "post_detour_digest": task["post_detour_digest"],
+                "total_action_cap": unit_cap, "reproducibility": reproducibility}
+    return _unit(identity, order, cell, position, task, cap,
+                 {"selected_skill_id": (sel.get(arm.lower()) or {}).get("skill_id") if arm in ("Rel", "Irr") else None,
+                  "memory_block_sha256": memory_audits[task_id][BASE_CONDITION.get(arm, arm)]["memory_block_sha256"],
+                  "reproducibility": reproducibility}, unit_cap=unit_cap)
 
 
 def build_diagnostic_manifest(*, run_id: str, tasks: Sequence[Mapping[str, Any]], seeds: Sequence[int], total_action_cap: int,
@@ -183,6 +233,21 @@ def validate_manifest(manifest: Mapping[str, Any]) -> list[str]:
     for cell in manifest.get("blocked_cells", []):
         if cell.get("condition") not in FILLER_ARMS:
             problems.append(f"blocked cell for {cell.get('condition')}: only filler-bearing arms may be blocked")
+    if manifest.get("schema") == SCHEMA and manifest.get("total_action_cap") is None:
+        problems.append("seven-condition manifest lacks total_action_cap")
+    elif manifest.get("schema") == SCHEMA:
+        cap = int(manifest["total_action_cap"])
+        hashes = {(u["task_id"], u["condition"]): u["memory_block_sha256"] for u in manifest["units"]}
+        for u in manifest["units"]:
+            expected_cap = cap - 1 if u["condition"] in UNDISTURBED_CONDITIONS else cap
+            if int(u["total_action_cap"]) != expected_cap:
+                problems.append(f"{u['task_id']}/{u['condition']}: total cap {u['total_action_cap']} != {expected_cap}")
+            if u["condition"] == "D18U" and hashes.get((u["task_id"], "D18")) != u["memory_block_sha256"]:
+                problems.append(f"{u['task_id']}: D18U memory block differs from the frozen D18 block")
+        allowances = {}
+        for u in manifest["units"]:
+            allowances.setdefault(u["task_id"], set()).add(int(u["recovery_action_allowance"]))
+        problems += [f"{t}: unequal model-action allowances {sorted(a)}" for t, a in allowances.items() if len(a) != 1]
     return problems
 
 

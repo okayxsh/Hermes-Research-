@@ -9,7 +9,7 @@ from five_arm_fixtures import (CONTEXT, FUTURE_OBSERVATION, ORACLE_CONTINUATION,
 from rq1.five_arm.memory import Skill, construct_arm_memory
 from rq1.five_arm.prompting import (ContextOverflowError, LeakageProbe, PromptIntegrityError, RuntimeLimits, account_prompt,
                                     build_prompt, compare_arm_prompts, scan_leakage, split_sections)
-from rq1.five_arm.protocol import CONDITIONS
+from rq1.five_arm.protocol import DETOURED_CONDITIONS as CONDITIONS
 
 TOK = SyntheticTokenizer()
 ACTIVE = Skill("skill_05", SKILL_TEXTS["skill_05"], 0.75, 6)

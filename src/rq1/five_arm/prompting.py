@@ -120,7 +120,7 @@ def compare_arm_prompts(prompts: Mapping[str, str], *, d0_representation: str) -
             problems.append(f"treatment-independent section {header!r} differs across arms: {sorted(values)}")
     for arm, sections in parsed.items():
         has_memory = "RECOVERY MEMORY" in sections
-        if arm == "D0":
+        if arm in ("D0", "D0U"):
             if d0_representation == "absent_memory_section" and has_memory:
                 problems.append("D0 must not contain a RECOVERY MEMORY section under absent_memory_section")
             if d0_representation == "historical_nolib_marker" and not has_memory:

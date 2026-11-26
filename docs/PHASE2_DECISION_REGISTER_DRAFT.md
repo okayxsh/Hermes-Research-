@@ -7,7 +7,7 @@
 
 **Hypothesis hierarchy (proposed):** primary D18-D0; secondary exploratory D18-Fill, Irr-Fill, Rel-Irr, Rel-Fill.
 
-**Claims boundary:** The five-arm experiment uses one fixed, frozen library (Accum-18).  It cannot establish: the effect of progressive library growth; an optimal library size; efficacy on unrelated benchmarks; efficacy across model families; or autonomous learning improvements over time.  The primary comparison estimates the total effect of natural retrieval from this library versus no memory for one model, one environment and the screened task population.
+**Claims boundary:** The seven-condition experiment uses one fixed, frozen library (Accum-18).  It cannot establish: the effect of progressive library growth; an optimal library size; efficacy on unrelated benchmarks; efficacy across model families; or autonomous learning improvements over time.  The primary comparison estimates the total effect of natural retrieval from this library versus no memory for one model, one environment and the screened task population.  The perturbation is a controlled one-step navigation detour whose disruptiveness the pilot diagnostic left INCONCLUSIVE; no recovery-from-failure mechanism is claimed.
 
 **Stages blocked** use these short names: CPU = `university_cpu_integration`; probe = `provider_compatibility_probe`; diagnostic pilot = `d0_failure_manipulation_pilot`; five-arm pilot = `five_arm_scientific_pilot`; confirmation = `confirmatory`.
 

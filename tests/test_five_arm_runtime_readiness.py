@@ -150,7 +150,7 @@ class RunnerGateTests(unittest.TestCase):
     def test_permission_requires_frozen_bound_manifest_and_commit(self):
         cfg = complete_config()
         state = state_for("five_arm_scientific_pilot")
-        manifest = {"schema": "rq1-five-arm-manifest-v2", "stage": "pilot", "status": "proposed", "input_hashes": {}, "units": [],
+        manifest = {"schema": "rq1-seven-condition-manifest-v3", "stage": "pilot", "status": "proposed", "input_hashes": {}, "units": [],
                     "synthetic": False}
         artifacts = {**ARTIFACTS, "runtime_config": runtime.config_sha256(cfg)}
         state["runtime_verification"] = person(runtime.config_sha256(cfg))

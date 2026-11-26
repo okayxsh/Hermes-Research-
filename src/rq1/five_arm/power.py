@@ -200,9 +200,11 @@ def minimal_detectable(rows: Sequence[dict[str, Any]], *, target: float = 0.8) -
 
 
 def episode_counts(*, n_tasks: int, rel_tasks: int, irr_tasks: int, fill_tasks: int, seeds: int,
-                   reproducibility_tasks: int = 0, reproducibility_extra_seeds: int = 0) -> dict[str, Any]:
-    """Episodes for one confirmatory run: D0 and D18 on every task, Fill/Rel/Irr on their frozen subsets."""
-    per_seed = 2 * n_tasks + fill_tasks + rel_tasks + irr_tasks
+                   reproducibility_tasks: int = 0, reproducibility_extra_seeds: int = 0,
+                   undisturbed: bool = False) -> dict[str, Any]:
+    """Episodes for one confirmatory run: D0 and D18 on every task (plus D0U and D18U when ``undisturbed``),
+    Fill/Rel/Irr on their frozen subsets, plus the D0/D18 reproducibility subset."""
+    per_seed = (4 if undisturbed else 2) * n_tasks + fill_tasks + rel_tasks + irr_tasks
     main = per_seed * seeds
     reproducibility = reproducibility_tasks * reproducibility_extra_seeds * 2  # D0 and D18 only
     return {"per_seed": per_seed, "main": main, "reproducibility_subset": reproducibility, "total": main + reproducibility}

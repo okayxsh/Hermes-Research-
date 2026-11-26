@@ -15,11 +15,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from rq1.five_arm.protocol import ACTIVE_SKILL_COUNT, CONDITIONS, PROTOCOL_VERSION
+from rq1.five_arm.protocol import ACTIVE_SKILL_COUNT, CONDITIONS, PROTOCOL_VERSION, UNDISTURBED_CONDITIONS
 
-MEASUREMENT_SCHEMA = "rq1-five-arm-measurement-v2"
+MEASUREMENT_SCHEMA = "rq1-seven-condition-measurement-v3"
 DIAGNOSTIC_SCHEMA = "rq1-five-arm-diagnostic-v1"
-DIAGNOSTIC_PROTOCOL_VERSION = PROTOCOL_VERSION + "-pilot-diagnostic"
+# Pinned literal: the completed D0 diagnostic (Phase 3A) produced records with this tag; it must stay valid.
+DIAGNOSTIC_PROTOCOL_VERSION = "rq1-five-arm-v1-pilot-diagnostic"
 DIAGNOSTIC_CONDITIONS = ("UNDISTURBED", "DETOURED")
 OUTCOME_STATUSES = ("VALID", "MISSING_INFRASTRUCTURE", "MISSING_CELL", "UNAPPROVED_INTERVENTION", "INVALID_MEASUREMENT")
 TERMINATION_REASONS = ("success", "budget_exhausted", "invalid_action_limit", "environment_terminal_failure",
@@ -38,6 +39,11 @@ REQUIRED_FIELDS = (
     "recovery_actions", "recovery_trace", "success", "termination_reason", "invalid_actions", "wall_clock_seconds",
     "inference_latency_seconds", "outcome_status", "failure_detail", "not_applicable",
 )
+# Seven-condition records also carry execution provenance (endpoint, GPU lane, worker, host, request/response identity);
+# the diagnostic schema is unchanged so the completed diagnostic records remain valid.
+ARM_REQUIRED_FIELDS = REQUIRED_FIELDS + ("execution_provenance", "memory_source")
+MEMORY_SOURCES = ("none", "natural_retrieval_at_post_detour_state", "frozen_block_from_detoured_natural_retrieval",
+                  "controlled_injection_from_frozen_selection")
 TOKEN_FIELDS = ("raw_text_tokens", "memory_block_tokens", "chat_template_tokens", "provider_prompt_tokens")
 TRACE_KEYS = ("decision", "action", "rejections", "env_action_valid", "done", "success", "selection_exhausted")
 
@@ -111,34 +117,43 @@ def _validate_common(record: Mapping[str, Any]) -> list[str]:
 
 
 def validate_record(record: Mapping[str, Any]) -> list[str]:
-    problems = [f"missing field {name}" for name in REQUIRED_FIELDS if name not in record]
+    problems = [f"missing field {name}" for name in ARM_REQUIRED_FIELDS if name not in record]
     if problems:
         return problems
     if record["schema"] != MEASUREMENT_SCHEMA or record["protocol_version"] != PROTOCOL_VERSION:
-        return ["schema/protocol mismatch (not a five-arm measurement)"]
+        return ["schema/protocol mismatch (not a seven-condition measurement)"]
     if record["executor_mode"] != "arm":
-        return ["five-arm measurements must come from the arm executor mode"]
+        return ["seven-condition measurements must come from the arm executor mode"]
     if record["condition"] not in CONDITIONS:
-        return [f"condition {record['condition']!r} is not one of the five arms"]
+        return [f"condition {record['condition']!r} is not one of the seven conditions"]
     problems = _validate_common(record)
     arm = record["condition"]
+    if not isinstance(record["execution_provenance"], Mapping) or not record["execution_provenance"].get("mode"):
+        problems.append("execution_provenance must be a mapping with an execution mode")
+    if record["memory_source"] not in MEMORY_SOURCES:
+        problems.append(f"memory_source must be one of {MEMORY_SOURCES}")
+    expected_detour = 0 if arm in UNDISTURBED_CONDITIONS else 1
+    if record["detour_actions"] != expected_detour:
+        problems.append(f"{arm} episodes contain exactly {expected_detour} controlled detour action(s)")
     if record["outcome_status"] != "VALID" and "memory_not_constructed_before_failure" in record["not_applicable"]:
         if record["injected_skill_ids"] or record["filler_corpus_sha256"] or record["memory_block_sha256"]:
             problems.append("a record whose memory was never constructed cannot report injected memory")
         return problems
     if record["injected_skill_count"] != ACTIVE_SKILL_COUNT[arm]:
         problems.append(f"{arm} must inject exactly {ACTIVE_SKILL_COUNT[arm]} procedural skill(s)")
-    if arm == "D18" and list(record["injected_skill_ids"]) != list(record["natural_top3_skill_ids"]):
-        problems.append("D18 must inject exactly the natural top-3 in rank order")
-    if arm == "D0":
+    if arm in ("D18", "D18U") and list(record["injected_skill_ids"]) != list(record["natural_top3_skill_ids"]):
+        problems.append(f"{arm} must inject exactly the (frozen) natural top-3 in rank order")
+    expected_source = {"D0": "none", "D0U": "none", "D18": "natural_retrieval_at_post_detour_state",
+                       "D18U": "frozen_block_from_detoured_natural_retrieval"}.get(arm, "controlled_injection_from_frozen_selection")
+    if record["memory_source"] != expected_source:
+        problems.append(f"{arm} memory_source must be {expected_source!r}")
+    if arm in ("D0", "D0U"):
         if record["filler_corpus_sha256"] is not None or record["filler_sentence_indices"]:
             problems.append("D0 must not carry neutral filler")
         if "memory" not in record["not_applicable"]:
-            problems.append("D0 must declare memory fields not applicable")
+            problems.append(f"{arm} must declare memory fields not applicable")
     if arm in ("Rel", "Irr", "Fill") and not record["filler_corpus_sha256"]:
         problems.append(f"{arm} must identify its neutral filler corpus")
-    if record["detour_actions"] != 1:
-        problems.append("five-arm episodes always contain exactly one controlled detour action")
     return problems
 
 

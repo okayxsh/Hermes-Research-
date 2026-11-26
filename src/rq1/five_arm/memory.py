@@ -252,6 +252,8 @@ def construct_arm_memory(arm: str, *, natural_top3: Sequence[Skill], active_skil
     """
     if arm not in CONDITIONS:
         raise FiveArmMemoryError(f"unsupported arm {arm!r}")
+    if arm in ("D0U", "D18U"):
+        raise FiveArmMemoryError(f"{arm} shows the frozen block of its base condition; construct D0/D18 instead")
     if d0_representation not in D0_REPRESENTATIONS:
         raise FiveArmMemoryError(f"d0_representation must be one of {D0_REPRESENTATIONS}")
     if len(natural_top3) != SLOT_COUNT:

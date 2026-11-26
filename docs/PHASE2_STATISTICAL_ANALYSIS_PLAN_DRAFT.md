@@ -5,6 +5,65 @@
 - It is tested only on synthetic data.
 - The governing decisions are SD-08, SD-10, SD-11, SD-20 and SD-21 in `PHASE2_DECISION_REGISTER_DRAFT.md`. All await approval.
 
+## 0. Phase 3C additions (DRAFT; for author approval)
+
+### 0.1 Primary test: reconciling McNemar with template dependence
+
+**What is computed.** With one primary inference seed, every task contributes one binary pair (D18, D0). The task-level sign-flip test then **is** the exact McNemar test on discordant tasks: same p-value, and the analysis reports both.
+- **Null hypothesis tested:** the *sharp* null. Within every task the two conditions' outcome distributions are identical (arm labels exchangeable within the task), and tasks are conditionally independent given task-level factors.
+- **Template effects** that act equally on both arms cancel within each pair and do not invalidate this test.
+
+**What it does not test.** It is not an exact test of the weak null "the average effect is zero" when effects vary and that variation is correlated within goal templates. In that case discordant tasks from the same template are not independent, and the McNemar p-value can be too small.
+
+**How the existing plan handles this.** The procedures stay as already specified:
+
+| Role | Procedure | Dependence handled |
+|---|---|---|
+| Primary test | exact McNemar (task-level sign-flip), two-sided, α = 0.05 | sharp null only |
+| Primary interval | template-cluster bootstrap 95% | within-template dependence |
+| Prespecified sensitivity | template-level sign-flip (27 template means) | weak null with template-correlated effects |
+
+**Recommendation for approval:** keep this unchanged.
+- **Disagreement rule:** if the McNemar test and the template-level sensitivity disagree, the paper reports the McNemar decision as the prespecified test and states that the conclusion is sensitive to template dependence. Neither overrides the other.
+- **Alternative (author choice):** make the template-level sign-flip the primary test. The roster's real allocation is balanced (25 templates × 3 tasks + 2 × 2), so the power loss is small in simulation (about 0.79 versus 0.83 at Δ = 20 points). It tests the weak null more robustly, but changes a frozen choice and needs explicit approval.
+
+### 0.2 Factorial estimates (secondary, estimation only)
+
+- D18U − D0U: continuation benefit without perturbation.
+- D0 − D0U: perturbation effect without memory. This is the manipulation check on the 79 confirmatory tasks.
+- D18 − D18U: perturbation effect with the same memory block.
+- Interaction (D18 − D0) − (D18U − D0U).
+
+Each is a task-weighted estimate with template-cluster and task bootstrap 95% intervals; **no p-values**. The interaction's half-width is expected to be about ±15–20 points. **Interpretation rule:** no disruption-specific claim unless the interaction's template-cluster interval excludes 0. D18U shows the frozen post-detour D18 block (protocol §0).
+
+### 0.3 Interface reporting (descriptive; parser unchanged)
+
+Per condition:
+- episodes;
+- model decisions (one per recovery-trace entry);
+- selection attempts (decisions + rejections);
+- rejected selections, as counts and as rates per episode, per decision and per attempt;
+- rejection categories;
+- selection-limit terminations and their rate.
+
+Selection-limit terminations remain outcomes (failures), never missing data.
+
+### 0.4 Cap and hardware transition
+
+The cap is **50**. It was chosen by the frozen budget rule from cap-100 diagnostic trajectories truncated to cap 50, which uses baseline feasibility only.
+- **What changed:** the confirmatory and pilot runs execute on **GPU** provider lanes, whereas the diagnostic ran sequentially on CPU inference.
+- **What it must not be read as:** a difference between cap-50 GPU trajectories and truncated cap-100 CPU trajectories is **not** evidence of a cap effect. Hardware, numeric kernels and provider builds differ, and temperature-0 decoding is not guaranteed bit-identical across them.
+- **Prospective comparability checks** (no extra scientific episodes; see the parallel-execution design):
+  1. The seven-condition pilot's D0 cell for each pilot task is compared descriptively with the diagnostic's DETOURED seed-11 trajectory truncated to cap 50. Agreement is reported as a CPU-to-GPU comparability statistic, not as a cap test.
+  2. Lane provenance (GPU UUID, full offload, provider version, model digest) must be identical within a run. Any CPU fallback halts execution.
+  3. The 48-episode reproducibility subset documents within-hardware seed determinism under memory.
+
+### 0.5 Revised episode counts
+
+- **Confirmatory:** ≤ 601 episodes (316 for D0/D18/D0U/D18U, ≤ 237 for Fill/Rel/Irr, 48 reproducibility).
+- **Pilot:** ≤ 84.
+- **Time:** at the diagnostic's measured 8.2 minutes per episode on CPU, sequential execution would take ≤ 82 h. With four GPU lanes the wall-clock time is expected to fall roughly fourfold. This must be measured in the pilot.
+
 ## 1. Hierarchy, estimand and primary test
 
 **Primary comparison (single, confirmatory): D18 − D0, over every roster task.**

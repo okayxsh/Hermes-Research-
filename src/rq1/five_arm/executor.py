@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import platform
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +40,7 @@ from rq1.evaluation.recovery_executor import RecoveryEpisodeSpec, run_recovery_e
 from rq1.five_arm.measurements import (DIAGNOSTIC_CONDITIONS, make_diagnostic_record, make_record)
 from rq1.five_arm.memory import HISTORICAL_NOLIB_BLOCK, D0_REPRESENTATIONS
 from rq1.five_arm.prompting import LeakageProbe, scan_leakage, split_sections
-from rq1.five_arm.protocol import CONDITIONS
+from rq1.five_arm.protocol import CONDITIONS, UNDISTURBED_CONDITIONS
 from rq1.hermes.episode_driver import (EpisodeDriverError, MODEL_CONTEXT_LENGTH, OUTPUT_TOKEN_CAP, RealEpisodeDriver,
                                        ollama_chat_payload)
 from rq1.pilot.real_runtime.harnesses import RealRecoveryHarness, bridge_state_digest
@@ -47,6 +50,9 @@ from rq1.retrieval.query import CANONICAL_FAILURE_MESSAGE
 
 MODES = ("arm", "diagnostic_undisturbed", "diagnostic_detoured")
 DIAGNOSTIC_CONDITION = {"diagnostic_undisturbed": "UNDISTURBED", "diagnostic_detoured": "DETOURED"}
+MEMORY_SOURCE = {"D0": "none", "D0U": "none", "D18": "natural_retrieval_at_post_detour_state",
+                 "D18U": "frozen_block_from_detoured_natural_retrieval", "Rel": "controlled_injection_from_frozen_selection",
+                 "Irr": "controlled_injection_from_frozen_selection", "Fill": "controlled_injection_from_frozen_selection"}
 
 
 class ProtocolViolation(RuntimeError):
@@ -79,7 +85,8 @@ class ProviderCallCapture:
         self.chat_template_tokens = chat_template_tokens
         self.reset(None)
 
-    def reset(self, probe: LeakageProbe | None) -> None:
+    def reset(self, probe: LeakageProbe | None, request_builder: Callable[[str], Mapping[str, Any]] | None = None) -> None:
+        self.request_builder = request_builder
         self.calls: list[dict[str, Any]] = []
         self.prompt_hashes: list[str] = []
         self.probe = probe
@@ -109,8 +116,11 @@ class ProviderCallCapture:
         def wrapped(prompt: str):
             local = self._check(prompt)
             digest = sha256_text(prompt)
+            request = self.request_builder(prompt) if self.request_builder is not None else {"prompt": prompt}
             record = {"call": len(self.calls) + 1, "prompt_sha256": digest, "prompt_chars": len(prompt), **local,
-                      "prompt_eval_count": None, "eval_count": None, "done_reason": None, "seconds": None, "error": None}
+                      "request_sha256": hashlib.sha256(json.dumps(request, sort_keys=True).encode("utf-8")).hexdigest(),
+                      "response_sha256": None, "prompt_eval_count": None, "eval_count": None, "done_reason": None,
+                      "seconds": None, "error": None}
             started = time.monotonic()
             try:
                 response = original(prompt)
@@ -120,6 +130,7 @@ class ProviderCallCapture:
                 self.prompt_hashes.append(digest)
                 raise
             record.update(seconds=round(time.monotonic() - started, 6),
+                          response_sha256=sha256_text(str(response)),
                           prompt_eval_count=getattr(response, "prompt_eval_count", None),
                           eval_count=getattr(response, "eval_count", None),
                           done_reason=getattr(response, "done_reason", None))
@@ -229,7 +240,8 @@ class FiveArmEpisodeExecutor:
                  leakage_probes: Mapping[str, LeakageProbe] | None = None, analysis_labels: Mapping[str, str] | None = None,
                  num_ctx: int = MODEL_CONTEXT_LENGTH, max_output_tokens: int = OUTPUT_TOKEN_CAP,
                  chat_template_tokens: Callable[[str], int] | None = None,
-                 provider_token_tolerance: int | None = None) -> None:
+                 provider_token_tolerance: int | None = None,
+                 execution_provenance: Mapping[str, Any] | None = None) -> None:
         if mode not in MODES:
             raise ProtocolViolation(f"unknown executor mode {mode!r}")
         real = isinstance(driver, RealEpisodeDriver)
@@ -252,6 +264,10 @@ class FiveArmEpisodeExecutor:
         self.leakage_probes = dict(leakage_probes or {})
         self.analysis_labels = dict(analysis_labels or {})
         self.provider_token_tolerance = provider_token_tolerance
+        self.execution_provenance = {"mode": "sequential", "endpoint": getattr(driver, "ollama_url", None),
+                                     "model": getattr(driver, "model_name", None), "host": socket.gethostname(),
+                                     "pid": os.getpid(), "python": platform.python_version(),
+                                     **dict(execution_provenance or {})}
         self.num_ctx = int(num_ctx)
         self.capture = ProviderCallCapture(tokenizer=tokenizer, num_ctx=num_ctx, max_output_tokens=max_output_tokens,
                                            chat_template_tokens=chat_template_tokens)
@@ -278,6 +294,24 @@ class FiveArmEpisodeExecutor:
                 "natural_top3_skill_ids": [], "natural_top3_scores": [],
                 "not_applicable": ["memory", "retrieval", "token_anchor_match", "neutral_content", "slot_layout"]}
 
+    def _arithmetic(self, unit: Mapping[str, Any], condition: str, prefix: int) -> tuple[bool, int, int]:
+        """(undisturbed, detour actions, model-action allowance).  Arm mode: the unit's total cap is 50 for detoured and 49
+        for undisturbed conditions, so the allowance (cap - prefix - detour) is identical.  Diagnostic modes keep their
+        frozen Phase 3A arithmetic (one study cap; undisturbed bridge limit = cap - 1)."""
+        cap = int(unit["total_action_cap"])
+        if self.mode == "arm":
+            undisturbed = condition in UNDISTURBED_CONDITIONS
+            detour = 0 if undisturbed else 1
+            allowance = cap - prefix - detour
+        else:
+            undisturbed = self.mode == "diagnostic_undisturbed"
+            detour = 0 if undisturbed else 1
+            allowance = cap - prefix - 1
+        if allowance < 1 or allowance != int(unit["recovery_action_allowance"]):
+            raise ProtocolViolation(f"{unit['task_id']}: recovery allowance {unit.get('recovery_action_allowance')} "
+                                    f"differs from cap arithmetic {allowance}")
+        return undisturbed, detour, allowance
+
     # -- one attempt --------------------------------------------------------------------------------------------------
     def __call__(self, unit: Mapping[str, Any], *, attempt: int, attempt_dir: Path) -> dict[str, Any]:
         condition = self._condition(unit)
@@ -285,19 +319,18 @@ class FiveArmEpisodeExecutor:
         task, meta = self.tasks[task_id], self.task_meta[task_id]
         seed, cap = int(unit["seed"]), int(unit["total_action_cap"])
         prefix = len(task.prefix_actions)
-        detour = 0 if self.mode == "diagnostic_undisturbed" else 1
-        allowance = cap - prefix - 1                    # identical model-action allowance in every mode (SD-15)
-        if allowance < 1 or allowance != int(unit["recovery_action_allowance"]):
-            raise ProtocolViolation(f"{task_id}: recovery allowance {unit.get('recovery_action_allowance')} differs from cap arithmetic {allowance}")
+        undisturbed, detour, allowance = self._arithmetic(unit, condition, prefix)
         total_limit = prefix + detour + allowance
         self.driver.inference_seed = seed               # the real driver (not the proxy): decision 012 inference seed
-        self.capture.reset(self.leakage_probes.get(task_id) if self.mode == "arm" else None)
-        harness_cls = UndisturbedContinuationHarness if self.mode == "diagnostic_undisturbed" else RealRecoveryHarness
+        model = getattr(self.driver, "model_name", "")
+        self.capture.reset(self.leakage_probes.get(task_id) if self.mode == "arm" else None,
+                           request_builder=lambda prompt: ollama_chat_payload(model, prompt, seed))
+        harness_cls = UndisturbedContinuationHarness if undisturbed else RealRecoveryHarness
         harness = harness_cls(self.proxy, output_dir=attempt_dir / "episode", run_id=str(unit.get("run_id", "five-arm")),
                               attempt_id=f"{str(unit['unit_key'])[:16]}-a{attempt}", reference_actions=task.reference_actions,
                               total_action_limit=total_limit, allowed_split=self.split, profile_prefix="rq1-five-arm",
                               frozen_perturbation=task.frozen_perturbation())
-        if self.mode == "arm":
+        if self.mode == "arm" and not undisturbed:
             boundary = build_retrieval_boundary(self.library.retrieval_documents(), self.embedder, embedding_model=SBERT_MODEL,
                                                 top_k=3, embedding_model_revision=SBERT_REVISION)
             library_name, library_size, library_hash = "Accum-18", self.library.size, self.library.content_sha256
@@ -366,7 +399,7 @@ class FiveArmEpisodeExecutor:
                 failure, outcome = {"status": "INVALID_MEASUREMENT", "reason": "invalid_measurement", "detail": problem}, None
         trace = recovery_trace(attempt_dir / "episode" / "episode-events.jsonl")
         return self._record(unit, condition, meta, prefix, detour, allowance, cap, seed, attempt, audit_box, calls, trace,
-                            outcome, failure, wall)
+                            outcome, failure, wall, attempt_dir)
 
     def interruption_record(self, unit: Mapping[str, Any], attempt: int, detail: str) -> dict[str, Any]:
         """MISSING_INFRASTRUCTURE record for an attempt whose process died before it could record itself."""
@@ -374,10 +407,10 @@ class FiveArmEpisodeExecutor:
         task_id = str(unit["task_id"])
         task, meta = self.tasks[task_id], self.task_meta[task_id]
         cap, prefix = int(unit["total_action_cap"]), len(task.prefix_actions)
-        detour = 0 if self.mode == "diagnostic_undisturbed" else 1
+        _undisturbed, detour, allowance = self._arithmetic(unit, condition, prefix)
         failure = {"status": "MISSING_INFRASTRUCTURE", "reason": "infrastructure_interruption", "detail": detail}
-        return self._record(unit, condition, meta, prefix, detour, cap - prefix - 1, cap, int(unit["seed"]), attempt, {}, [], [],
-                            None, failure, 0.0)
+        return self._record(unit, condition, meta, prefix, detour, allowance, cap, int(unit["seed"]), attempt, {}, [], [],
+                            None, failure, 0.0, None)
 
     def _provider_token_problem(self, calls: Sequence[Mapping[str, Any]]) -> str | None:
         for call in calls:
@@ -393,7 +426,7 @@ class FiveArmEpisodeExecutor:
         return None
 
     def _record(self, unit, condition, meta, prefix, detour, allowance, cap, seed, attempt, audit, calls, trace, outcome,
-                failure, wall) -> dict[str, Any]:
+                failure, wall, attempt_dir) -> dict[str, Any]:
         audit = dict(audit) if audit else {"injected_skill_ids": [], "filler_corpus_sha256": None, "filler_sentence_indices": [],
                                            "memory_block_sha256": None, "memory_block_tokens": None,
                                            "not_applicable": ["memory_not_constructed_before_failure"]}
@@ -420,8 +453,12 @@ class FiveArmEpisodeExecutor:
             requested_provider_options=ollama_chat_payload(getattr(self.driver, "model_name", ""), "", seed)["options"],
             total_action_cap=cap, prefix_actions=prefix, detour_actions=detour, recovery_action_allowance=allowance,
             inference_latency_seconds=round(sum(c["seconds"] or 0.0 for c in calls), 6), wall_clock_seconds=wall,
-            not_applicable=(["memory"] if condition in ("D0", *DIAGNOSTIC_CONDITIONS) else []) + list(audit.get("not_applicable", [])),
+            not_applicable=(["memory"] if condition in ("D0", "D0U", *DIAGNOSTIC_CONDITIONS) else []) + list(audit.get("not_applicable", [])),
         )
+        if self.mode == "arm":
+            base["memory_source"] = MEMORY_SOURCE[condition]
+            base["execution_provenance"] = {**self.execution_provenance, "attempt_dir": str(attempt_dir) if attempt_dir else None,
+                                            "bridge_action_limit": prefix + detour + allowance}
         if outcome is not None:
             fields = dict(base, recovery_actions=outcome["recovery_actions"], recovery_trace=trace, success=bool(outcome["success"]),
                           termination_reason=outcome["termination_reason"], invalid_actions=outcome["invalid_actions"],

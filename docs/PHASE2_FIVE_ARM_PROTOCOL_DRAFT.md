@@ -15,6 +15,50 @@
 
 The historical six-arm implementation (`rq1.university_gpu`) is unchanged. Its records and manifests are refused by the five-arm code and are never reinterpreted.
 
+## 0. Phase 3C: seven-condition design (supersedes the five-arm scope where they conflict; still DRAFT)
+
+**Authorised for implementation:** the author authorised implementing this design. It is not yet an approved protocol, and the decisions are recorded in the review folder's decision sheet v4.
+- **Diagnostic:** the Phase 3A D0 diagnostic stays **INCONCLUSIVE**, with no threshold revision.
+- **Research question (narrowed):** *task continuation*. Does one retrieval of three procedures from a frozen 18-skill library change completion of a partly executed ALFWorld task after a controlled one-step navigation perturbation? No recovery-from-failure mechanism is claimed.
+
+| Condition | Perturbation | Total cap | Memory shown | Retrieval in the episode |
+|---|---|---|---|---|
+| D0 | detour | 50 | none | natural retrieval computed (verification only) |
+| D18 | detour | 50 | natural top 3 (post-detour state) | yes, must equal the frozen ranking |
+| Rel / Irr / Fill | detour | 50 | controlled injection (unchanged) | yes (verification) |
+| **D0U** | none | **49** | none | **none** |
+| **D18U** | none | **49** | **the frozen D18 block** of the same task | **none** |
+
+- **Equal allowance:** every condition gets the same model-action allowance (50 − prefix − 1). The undisturbed bridge limit is 49 because no detour action is executed.
+- **Analysis roles:**
+  - the primary comparison is unchanged: D18 vs D0 (both detoured);
+  - D18U − D0U, D0 − D0U, D18 − D18U and the memory × perturbation interaction are **secondary estimates** (intervals only).
+
+**What D18U is, and is not.** D18U shows exactly the memory block that natural retrieval produced for that task *at the post-detour state*. No retrieval happens in the undisturbed episode, and the undisturbed state was never used as a query. D18U is therefore **not independent natural retrieval in the undisturbed condition**.
+- **Why:** holding the memory text fixed across perturbation levels means the interaction measures how the *same* memory acts with and without the perturbation, unconfounded by different retrieved skills, and it needs no extra relevance labels.
+- **Cost:** the retrieval query contained the post-detour observation and the canonical failure message, which the D18U agent never experiences. So D18U is a "memory transplanted from the perturbed context" condition. D18U − D0U estimates the effect of *that* memory without perturbation, not the effect of natural retrieval at an undisturbed checkpoint.
+- **Enforcement:** the manifest requires the D18U memory hash to equal the D18 hash; the executor refuses any retrieval in D0U/D18U; records carry `memory_source = frozen_block_from_detoured_natural_retrieval`.
+
+**Reproducibility subset:**
+- D0 and D18 on 12 roster tasks, chosen by a salted hash recorded before any outcome, at seeds 29 and 47 (48 episodes);
+- it is flagged in the manifest and excluded from the primary analysis;
+- it documents seed determinism under memory (the diagnostic covered D0 only).
+
+**Floor families:** cleaning, plus any family flagged in the diagnostic family table, form the prespecified sensitivity set. The primary population keeps all 79 tasks.
+
+**Parser:** unchanged. Interface reporting is added (SAP §0.3). No parser change is made to improve outcomes.
+
+**Episode counts (confirmatory, primary seed 11):**
+
+| Conditions | Episodes |
+|---|---|
+| D0, D18, D0U, D18U (all 79 tasks) | 316 |
+| Fill (≤ 79), Rel and Irr (frozen subsets ≤ 79 each) | ≤ 237 |
+| Reproducibility subset | 48 |
+| **Total** | **≤ 601** |
+
+The seven-condition pilot (12 tasks, one seed) has ≤ 84 episodes.
+
 ## 1. Audits
 
 ### 1.1 Six-arm runner (code at `f71b4da`), from Phase 2
