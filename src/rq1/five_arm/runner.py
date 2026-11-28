@@ -118,9 +118,40 @@ def artifact_hashes(config: Mapping[str, Any], approved_runtime: Mapping[str, An
     return hashes
 
 
+def load_exposure_eligibility(config: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Exposure eligibility evidence named in the run configuration (``exposure_eligibility``), read as exact bytes.
+
+    developmental: ``{"kind": "developmental", <each of exposure_acceptance.DEVELOPMENTAL_EVIDENCE_FILES>: path,
+    "approvals_record": path}`` -- the approvals record is the author record carrying
+    ``developmental_pilot_exposure_acceptance`` and ``sequential_cpu_amendment``.
+    independent: ``{"kind": "independent", "statement": path, "acceptance": path, "protocol_sha256": hex,
+    "known_exposed_statements": [path, ...]}``."""
+    from rq1.five_arm.exposure_acceptance import DEVELOPMENTAL_EVIDENCE_FILES
+    spec = config.get("exposure_eligibility")
+    if not spec:
+        return None
+    try:
+        if spec["kind"] == "developmental":
+            out: dict[str, Any] = {"kind": "developmental"}
+            out.update({name: Path(str(spec[name])).read_bytes() for name in DEVELOPMENTAL_EVIDENCE_FILES})
+            approvals = json.loads(Path(str(spec["approvals_record"])).read_text(encoding="utf-8"))
+            out["exposure_acceptance"] = approvals.get("developmental_pilot_exposure_acceptance")
+            out["cpu_amendment_approval"] = approvals.get("sequential_cpu_amendment")
+            return out
+        return {"kind": str(spec["kind"]), "statement": json.loads(Path(str(spec["statement"])).read_text(encoding="utf-8")),
+                "acceptance": json.loads(Path(str(spec["acceptance"])).read_text(encoding="utf-8")),
+                "protocol_sha256": str(spec["protocol_sha256"]),
+                "known_exposed_statements": [Path(str(p)).read_bytes() for p in spec.get("known_exposed_statements") or []]}
+    except (KeyError, OSError, ValueError) as exc:
+        raise readiness.ExecutionBlocked(f"exposure eligibility evidence could not be loaded: {type(exc).__name__}: {exc}") from exc
+
+
 def assert_execution_permitted(*, manifest: Mapping[str, Any], readiness_state: Mapping[str, Any], artifacts: Mapping[str, str],
-                               observed_runtime: Mapping[str, Any] | None, approved_runtime: Mapping[str, Any]) -> str:
-    """Raise unless REAL execution of this manifest is authorised.  Returns the readiness level that was checked."""
+                               observed_runtime: Mapping[str, Any] | None, approved_runtime: Mapping[str, Any],
+                               exposure_eligibility: Mapping[str, Any] | None = None) -> str:
+    """Raise unless REAL execution of this manifest is authorised.  Returns the readiness level that was checked.
+    Seven-condition manifests additionally need stage-appropriate exposure eligibility (checked last, still before any
+    provider contact)."""
     if manifest.get("schema") not in (FIVE_ARM_SCHEMA, DIAGNOSTIC_SCHEMA):
         raise readiness.ExecutionBlocked("not a five-arm or pilot-diagnostic manifest (six-arm manifests cannot run here)")
     if manifest.get("synthetic"):
@@ -138,6 +169,11 @@ def assert_execution_permitted(*, manifest: Mapping[str, Any], readiness_state: 
         raise readiness.ExecutionBlocked("the manifest is bound to a different runtime configuration")
     if manifest["source_commit"] != readiness_state.get("code_commit"):
         raise readiness.ExecutionBlocked("the manifest was built from a different code commit than the reviewed one")
+    from rq1.five_arm.exposure_acceptance import exposure_eligibility_problems
+    exposure = exposure_eligibility_problems(manifest, exposure_eligibility, readiness_state=readiness_state,
+                                             artifacts=artifacts, real=True)
+    if exposure:
+        raise readiness.ExecutionBlocked("exposure eligibility refused: " + "; ".join(exposure))
     return level
 
 
@@ -168,7 +204,8 @@ def build_university_executor(config: Mapping[str, Any], *, readiness_state: Map
     manifest = config["manifest"]
     artifacts = artifact_hashes(config, approved_runtime)
     assert_execution_permitted(manifest=manifest, readiness_state=readiness_state, artifacts=artifacts,
-                               observed_runtime=observed_runtime, approved_runtime=approved_runtime)
+                               observed_runtime=observed_runtime, approved_runtime=approved_runtime,
+                               exposure_eligibility=load_exposure_eligibility(config))
     # --- only reachable after every scientific and runtime gate has passed -----------------------------------------
     from rq1.evaluation.amended_libraries import AmendedLibrary
     from rq1.evaluation.amended_matrix import EvaluationTask

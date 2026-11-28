@@ -33,7 +33,8 @@ def _gate(args) -> tuple[dict[str, Any], dict[str, Any]]:
     config, approved = _load(args.run_config), _load(args.approved_runtime)
     artifacts = runner.artifact_hashes(config, approved)
     runner.assert_execution_permitted(manifest=config["manifest"], readiness_state=_load(args.state), artifacts=artifacts,
-                                      observed_runtime=_load(args.observed_runtime), approved_runtime=approved)
+                                      observed_runtime=_load(args.observed_runtime), approved_runtime=approved,
+                                      exposure_eligibility=runner.load_exposure_eligibility(config))
     return config, approved
 
 

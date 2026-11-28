@@ -252,7 +252,10 @@ def validate_manifest(manifest: Mapping[str, Any]) -> list[str]:
 
 
 def freeze_manifest(manifest: Mapping[str, Any], approval: Mapping[str, Any], readiness_state: Mapping[str, Any],
-                    artifacts: Mapping[str, str], *, real: bool = True) -> dict[str, Any]:
+                    artifacts: Mapping[str, str], *, real: bool = True,
+                    exposure_eligibility: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """``exposure_eligibility`` (seven-condition manifests, real freezes): developmental-pilot or independent exposure
+    evidence, checked by ``exposure_acceptance.exposure_eligibility_problems`` after readiness."""
     problems = validate_manifest(manifest)
     if real and manifest.get("synthetic"):
         problems.append("a synthetic manifest can never be frozen for real execution")
@@ -261,6 +264,12 @@ def freeze_manifest(manifest: Mapping[str, Any], approval: Mapping[str, Any], re
     if problems:
         raise FiveArmManifestError("; ".join(problems))
     readiness.require(STAGE_LEVEL[manifest["stage"]], readiness_state, artifacts, real=real)
+    if real:
+        from rq1.five_arm.exposure_acceptance import exposure_eligibility_problems
+        exposure = exposure_eligibility_problems(manifest, exposure_eligibility, readiness_state=readiness_state,
+                                                 artifacts=artifacts, real=real)
+        if exposure:
+            raise FiveArmManifestError("exposure eligibility refused: " + "; ".join(exposure))
     frozen = dict(manifest)
     frozen["status"] = "frozen"
     frozen["approval"] = dict(approval)
